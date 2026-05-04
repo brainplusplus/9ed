@@ -14,6 +14,7 @@ import { EditorArea } from '../../components/editor/EditorArea';
 import { TerminalPanel } from '../../components/terminal/TerminalPanel';
 import { ChatPanel } from '../../components/chat/ChatPanel';
 import { BottomNav, type MobileView } from '../../components/shared/BottomNav';
+import { ShortcutsHelp } from '../../components/shared/ShortcutsHelp';
 import { getFileContent } from '../../api';
 import type { FileTab } from '../../types';
 
@@ -55,6 +56,7 @@ export function IDEWorkspace() {
   const [tabletSidebarOpen, setTabletSidebarOpen] = useState(false);
   const [tabletChatOpen, setTabletChatOpen] = useState(false);
   const [mobileView, setMobileView] = useState<MobileView>('editor');
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     if (layoutMode === 'tablet') {
@@ -139,6 +141,10 @@ export function IDEWorkspace() {
         e.preventDefault();
         toggleChat();
       }
+      if (e.key === 'F1') {
+        e.preventDefault();
+        setShowHelp((v) => !v);
+      }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -161,6 +167,8 @@ export function IDEWorkspace() {
       {activePanel === 'projects' && <ProjectList />}
     </>
   );
+
+  const helpOverlay = showHelp ? <ShortcutsHelp onClose={() => setShowHelp(false)} /> : null;
 
   if (layoutMode === 'mobile') {
     return (
@@ -194,6 +202,7 @@ export function IDEWorkspace() {
           )}
         </div>
         <BottomNav activeView={mobileView} onViewChange={setMobileView} />
+        {helpOverlay}
       </div>
     );
   }
@@ -237,6 +246,7 @@ export function IDEWorkspace() {
             </div>
           </>
         )}
+        {helpOverlay}
       </div>
     );
   }
@@ -279,6 +289,7 @@ export function IDEWorkspace() {
           </>
         )}
       </Group>
+      {helpOverlay}
     </div>
   );
 }

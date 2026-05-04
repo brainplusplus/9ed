@@ -292,7 +292,8 @@ export async function gitStashAction(project: string, action: 'list' | 'push' | 
 export async function getGitDiff(project: string, path: string): Promise<string> {
   const params = new URLSearchParams({ project, path });
   const response = await fetch(`/api/git/diff?${params}`, { credentials: 'include' });
-  return parseResponse<string>(response);
+  const data = await parseResponse<{ diff: string }>(response);
+  return data.diff;
 }
 
 export async function getGitDiffLines(project: string, path: string): Promise<GutterChange[]> {
@@ -304,7 +305,8 @@ export async function getGitDiffLines(project: string, path: string): Promise<Gu
 export async function getGitFileAtHEAD(project: string, path: string): Promise<string> {
   const params = new URLSearchParams({ project, path });
   const response = await fetch(`/api/git/file-at-head?${params}`, { credentials: 'include' });
-  return parseResponse<string>(response);
+  const data = await parseResponse<{ content: string }>(response);
+  return data.content;
 }
 
 export async function gitDiscard(project: string, paths: string[]): Promise<void> {

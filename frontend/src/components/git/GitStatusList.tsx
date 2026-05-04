@@ -83,7 +83,7 @@ export function GitStatusList({ files, title, staged, projectPath, onFileClick }
   return (
     <div className="git-section">
       <div className="git-section-header">
-        <span>{title} ({files.length})</span>
+        <span>{title} <span className="git-section-count">{files.length}</span></span>
         <div style={{ display: 'flex', gap: '4px' }}>
           {!staged && (
             <button className="git-file-action" onClick={handleStageAll} type="button" title="Stage All">
@@ -103,7 +103,8 @@ export function GitStatusList({ files, title, staged, projectPath, onFileClick }
             {statusIcon(file.status)}
           </span>
           <span className="git-file-path" title={file.path}>
-            {file.path.split('/').pop() ?? file.path}
+            <span className="git-file-name">{file.path.split(/[/\\]/).pop() ?? file.path}</span>
+            <span className="git-file-dir">{file.path.split(/[/\\]/).slice(0, -1).join('/')}</span>
           </span>
           {!staged && (
             <button

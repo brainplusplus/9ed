@@ -721,7 +721,10 @@ body {
 .git-file-status.added { color: #a6e3a1; }
 .git-file-status.deleted { color: #f38ba8; }
 .git-file-status.untracked { color: #a6adc8; }
-.git-file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: baseline; gap: 6px; }
+.git-file-name { flex-shrink: 0; }
+.git-file-dir { font-size: 0.72rem; color: var(--activity-fg); margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-section-count { background: #45475a; color: var(--sidebar-fg); border-radius: 10px; padding: 0 6px; font-size: 0.72rem; min-width: 18px; text-align: center; display: inline-block; }
 .git-file-action { padding: 2px 6px; border: none; background: transparent; color: var(--activity-fg); cursor: pointer; font-size: 0.85rem; border-radius: 3px; }
 .git-file-action:hover { background: var(--sidebar-hover); color: var(--sidebar-fg); }
 .git-commit-box { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
@@ -884,3 +887,12 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
+
+/* Shortcuts Help */
+.shortcuts-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: flex; align-items: center; justify-content: center; }
+.shortcuts-modal { background: var(--sidebar-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 24px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.shortcuts-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 16px; color: var(--sidebar-fg); }
+.shortcuts-group { margin-bottom: 16px; }
+.shortcuts-group-title { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--activity-fg); margin-bottom: 8px; }
+.shortcut-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 0.85rem; color: var(--sidebar-fg); }
+.shortcut-key { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; background: var(--activity-bg); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 8px; color: var(--sidebar-fg); }

@@ -16,6 +16,7 @@ var knownAgents = []struct {
 }{
 	{"opencode", "OpenCode", "opencode"},
 	{"claude", "Claude Code", "claude"},
+	{"codex", "Codex CLI", "codex"},
 }
 
 // DiscoverAgents checks PATH for known agent binaries and returns their availability.

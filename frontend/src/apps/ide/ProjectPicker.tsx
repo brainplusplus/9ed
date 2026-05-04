@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getConfig, getDrives, getFileTree } from '../../api';
-import { useWorkspaceStore } from '../../stores/workspace';
+import { useWorkspaceStore, loadRecentProjects, type RecentProject } from '../../stores/workspace';
 import type { DirEntry } from '../../types';
 
 type TreeNode = DirEntry & { children?: TreeNode[]; expanded?: boolean; fullPath: string };
@@ -11,11 +11,16 @@ export function ProjectPicker() {
   const setActiveProject = useWorkspaceStore((s) => s.setActiveProject);
   const setShowPicker = useWorkspaceStore((s) => s.setShowPicker);
 
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [drives, setDrives] = useState<string[]>([]);
   const [rootPath, setRootPath] = useState('');
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRecentProjects(loadRecentProjects());
+  }, []);
 
   const loadTree = useCallback(async (path: string) => {
     setLoading(true);
@@ -97,6 +102,26 @@ export function ProjectPicker() {
           <p className="eyebrow">Web IDE</p>
           <h1>Open Project</h1>
         </header>
+
+        {recentProjects.length > 0 && (
+          <div className="picker-section">
+            <h3 className="picker-section-title">Recent Projects</h3>
+            <div className="picker-projects">
+              {recentProjects.map((rp) => (
+                <button
+                  key={rp.path}
+                  className="picker-project-btn"
+                  onClick={() => addProject(rp.path, rp.name)}
+                  type="button"
+                >
+                  <span className="picker-project-name">{rp.name}</span>
+                  <span className="picker-project-path">{rp.path}</span>
+                </button>
+              ))}
+            </div>
+            <div className="picker-divider" />
+          </div>
+        )}
 
         {projects.length > 0 && (
           <div className="picker-section">
