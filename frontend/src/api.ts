@@ -327,14 +327,16 @@ export async function getChatAgents(): Promise<ChatAgent[]> {
   return parseResponse<ChatAgent[]>(response);
 }
 
-export async function createChatSession(agentId: string): Promise<{ id: string }> {
+export async function createChatSession(agentId: string, workDir?: string): Promise<{ id: string; mode: string }> {
   const response = await fetch('/api/chat/sessions', {
     method: 'POST',
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agentId }),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ agentId, workDir }),
   });
-  return parseResponse<{ id: string }>(response);
+  return parseResponse<{ id: string; mode: string }>(response);
 }
 
 export async function deleteChatSession(id: string): Promise<void> {

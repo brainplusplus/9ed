@@ -8,7 +8,13 @@
     "build": "vite build --config vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --environment jsdom",
-    "preview": "vite preview --config vite.config.ts"
+    "preview": "vite preview --config vite.config.ts",
+    "server": "go run ./cmd/server",
+    "server:build": "go build -o server ./cmd/server",
+    "start": "npm install && npm run build && go run ./cmd/server",
+    "go:test": "go test ./...",
+    "go:build": "go build ./...",
+    "check": "npm run typecheck && go vet ./..."
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -17,7 +23,9 @@
     "monaco-editor": "^0.55.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.10.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.12"
   },
   "devDependencies": {

@@ -34,16 +34,14 @@ export function ActivityBar() {
           <span className="activity-icon">{p.icon}</span>
         </button>
       ))}
-      <div style={{ marginTop: 'auto' }}>
-        <button
-          className={`activity-btn${chatVisible ? ' active' : ''}`}
-          onClick={toggleChat}
-          title="Chat (Ctrl+Shift+L)"
-          type="button"
-        >
-          <span className="activity-icon">💬</span>
-        </button>
-      </div>
+      <button
+        className={`activity-btn${chatVisible ? ' active' : ''}`}
+        onClick={toggleChat}
+        title="Chat (Ctrl+Shift+L)"
+        type="button"
+      >
+        <span className="activity-icon">💬</span>
+      </button>
     </nav>
   );
 }

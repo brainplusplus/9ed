@@ -106,10 +106,31 @@ export type GutterChange = {
 };
 
 // Chat types
+export type AgentModel = {
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  canReason?: boolean;
+};
+
+export type AgentProvider = {
+  id: string;
+  name: string;
+  baseUrl?: string;
+  hasKey: boolean;
+};
+
 export type ChatAgent = {
   id: string;
   label: string;
   available: boolean;
+  configFound: boolean;
+  activeModel: string;
+  models: AgentModel[];
+  providers: AgentProvider[];
+  agentName?: string;
 };
 
 export type CodeContext = {
@@ -120,12 +141,85 @@ export type CodeContext = {
   language: string;
 };
 
+export type ToolCallLocation = {
+  path: string;
+  line?: number;
+};
+
+export type ToolCallInfo = {
+  toolCallId: string;
+  title: string;
+  kind: string;
+  status: string;
+  content?: string;
+  locations?: ToolCallLocation[];
+};
+
+export type DiffInfo = {
+  path: string;
+  oldText: string;
+  newText: string;
+};
+
+export type PlanEntryInfo = {
+  content: string;
+  priority?: string;
+  status?: string;
+};
+
 export type ChatMessage = {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool_call' | 'plan';
   content: string;
   context?: CodeContext;
   timestamp: number;
+  thinking?: string;
+  toolCall?: ToolCallInfo;
+  diffs?: DiffInfo[];
+  plan?: PlanEntryInfo[];
+};
+
+export type SlashCommandInfo = {
+  name: string;
+  description: string;
+  inputHint?: string;
+};
+
+export type ConfigOptionInfo = {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  type: string;
+  currentValue: string;
+  options: ConfigValueInfo[];
+};
+
+export type ConfigValueInfo = {
+  value: string;
+  name: string;
+  description?: string;
+};
+
+export type ChatEvent = {
+  type: string;
+  text?: string;
+  thinking?: string;
+  toolCallId?: string;
+  toolTitle?: string;
+  toolKind?: string;
+  toolStatus?: string;
+  toolContent?: string;
+  toolLocations?: ToolCallLocation[];
+  diffPath?: string;
+  diffOldText?: string;
+  diffNewText?: string;
+  planEntries?: PlanEntryInfo[];
+  commands?: SlashCommandInfo[];
+  configOptions?: ConfigOptionInfo[];
+  title?: string;
+  stopReason?: string;
+  error?: string;
 };
 
 export type ChatSessionInfo = {
@@ -133,8 +227,10 @@ export type ChatSessionInfo = {
   agentId: string;
   title: string;
   messages: ChatMessage[];
-  status: 'idle' | 'streaming' | 'error';
+  status: 'connecting' | 'idle' | 'streaming' | 'error';
   createdAt: number;
+  commands?: SlashCommandInfo[];
+  configOptions?: ConfigOptionInfo[];
 };
 
 export type HistorySessionRecord = {

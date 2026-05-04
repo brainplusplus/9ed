@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../../stores/chat';
 import { useChatSession } from '../../hooks/useChatSession';
 import { getChatAgents, createChatSession } from '../../api';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
-import { AgentPicker } from './AgentPicker';
+import { AgentPicker, ConfigBar } from './AgentPicker';
 import { ChatSessionList } from './ChatSessionList';
 import type { ChatSessionInfo } from '../../types';
 
@@ -16,9 +16,11 @@ export function ChatPanel() {
   const createSessionStore = useChatStore((s) => s.createSession);
   const { sendMessage, cancel, connected } = useChatSession();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [creating, setCreating] = useState(false);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isStreaming = activeSession?.status === 'streaming';
+  const isConnecting = activeSession?.status === 'connecting' || creating;
 
   useEffect(() => {
     getChatAgents()
@@ -34,6 +36,8 @@ export function ChatPanel() {
     const available = agents.filter((a) => a.available);
     if (available.length === 0) return;
     const agentId = available[0].id;
+
+    setCreating(true);
     try {
       const { id } = await createChatSession(agentId);
       const agent = agents.find((a) => a.id === agentId);
@@ -48,6 +52,8 @@ export function ChatPanel() {
       createSessionStore(session);
     } catch {
       // failed to create session
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -70,32 +76,54 @@ export function ChatPanel() {
           <AgentPicker />
         </div>
         <div className="chat-header-right">
-          <button className="chat-new-btn" onClick={handleNewChat} type="button" title="New chat">
-            +
+          <button
+            className="chat-new-btn"
+            onClick={handleNewChat}
+            type="button"
+            title="New chat"
+            disabled={creating}
+          >
+            {creating ? '...' : '+'}
           </button>
           <ChatSessionList />
         </div>
       </div>
 
-      {!activeSession ? (
+      {isConnecting && !activeSession ? (
+        <div className="chat-empty">
+          <div className="chat-connecting">
+            <span className="chat-connecting-spinner" />
+            Connecting to agent...
+          </div>
+        </div>
+      ) : !activeSession ? (
         <div className="chat-empty">Select an agent to start</div>
       ) : (
         <>
           <div className="chat-messages">
-            {activeSession.messages.map((msg) => (
-              <ChatMessage key={msg.id} message={msg} />
+            {activeSession.messages.map((msg, idx) => (
+              <ChatMessage
+                key={msg.id}
+                message={msg}
+                streaming={isStreaming && msg.role === 'assistant' && idx === activeSession.messages.length - 1}
+              />
             ))}
-            {isStreaming && activeSession.messages[activeSession.messages.length - 1]?.role === 'user' && (
-              <div className="chat-streaming">● Thinking...</div>
+            {isStreaming && (
+              <div className="chat-streaming">
+                <span className="chat-typing-indicator"><span /><span /><span /></span>
+              </div>
             )}
             <div ref={messagesEndRef} />
           </div>
-          <ChatInput
-            onSend={handleSend}
-            onCancel={cancel}
-            streaming={isStreaming}
-            disabled={!connected}
-          />
+          <div className="chat-bottom-bar">
+            <ConfigBar />
+            <ChatInput
+              onSend={handleSend}
+              onCancel={cancel}
+              streaming={isStreaming}
+              disabled={!connected || isConnecting}
+            />
+          </div>
         </>
       )}
     </div>

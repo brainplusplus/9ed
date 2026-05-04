@@ -15,10 +15,13 @@ type Config struct {
 	BasicAuthPassword string
 	Mode              string
 	WorkspaceRoot     string
+	AutokillPort      bool
 }
 
 func LoadFromEnv() (Config, error) {
 	_ = godotenv.Load()
+
+	autokill := strings.TrimSpace(strings.ToLower(os.Getenv("AUTOKILL_PORT")))
 
 	cfg := Config{
 		Port:              strings.TrimSpace(os.Getenv("PORT")),
@@ -26,6 +29,7 @@ func LoadFromEnv() (Config, error) {
 		BasicAuthPassword: os.Getenv("BASIC_AUTH_PASSWORD"),
 		Mode:              strings.TrimSpace(strings.ToLower(os.Getenv("MODE"))),
 		WorkspaceRoot:     strings.TrimSpace(os.Getenv("WORKSPACE_ROOT")),
+		AutokillPort:      autokill == "" || autokill == "true" || autokill == "1",
 	}
 
 	if cfg.Port == "" {

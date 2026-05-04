@@ -2,6 +2,30 @@ import { useEffect, useState } from 'react';
 import { useChatStore } from '../../stores/chat';
 import { deleteChatSession } from '../../api';
 
+const agentLabels: Record<string, string> = {
+  opencode: 'OpenCode',
+  claude: 'Claude Code',
+  codex: 'Codex CLI',
+  pi: 'Pi',
+  amp: 'Amp',
+  copilot: 'Copilot',
+};
+
+function formatSessionTitle(agentId: string, title: string): string {
+  const agent = agentLabels[agentId] ?? agentId;
+  if (!title || title === agent) return agent;
+  return `${agent} — ${title}`;
+}
+
+function SessionStatusIcon({ status }: { status: string }) {
+  switch (status) {
+    case 'streaming': return <span className="session-status-icon session-status-active" title="Working">⟳</span>;
+    case 'connecting': return <span className="session-status-icon session-status-connecting" title="Connecting">◌</span>;
+    case 'error': return <span className="session-status-icon session-status-error" title="Error">✗</span>;
+    default: return null;
+  }
+}
+
 export function ChatSessionList() {
   const sessions = useChatStore((s) => s.sessions);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -69,6 +93,7 @@ export function ChatSessionList() {
                 fontSize: '0.82rem',
               }}
             >
+              <SessionStatusIcon status={session.status} />
               <button
                 style={{
                   flex: 1,
@@ -86,7 +111,7 @@ export function ChatSessionList() {
                 }}
                 type="button"
               >
-                <div>{session.title}</div>
+                <div>{formatSessionTitle(session.agentId, session.title)}</div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--activity-fg)' }}>
                   {new Date(session.createdAt).toLocaleTimeString()}
                 </div>
@@ -147,7 +172,7 @@ export function ChatSessionList() {
                 }}
                 type="button"
               >
-                <div>{hist.title || 'Untitled'}</div>
+                <div>{formatSessionTitle(hist.agentId, hist.title)}</div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--activity-fg)' }}>
                   {new Date(hist.updatedAt).toLocaleDateString()}
                 </div>

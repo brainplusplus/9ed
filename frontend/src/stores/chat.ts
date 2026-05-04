@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ChatAgent, ChatMessage, ChatSessionInfo, HistorySessionRecord } from '../types';
+import type { ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, HistorySessionRecord, ToolCallInfo } from '../types';
 import { getChatHistory, getChatSessionMessages, saveChatMessage, deleteChatHistory } from '../api';
 
 type ChatState = {
@@ -15,6 +15,7 @@ type ChatState = {
   setActiveSession: (id: string | null) => void;
   addMessage: (sessionId: string, message: ChatMessage) => void;
   appendToLastMessage: (sessionId: string, chunk: string) => void;
+  handleChatEvent: (sessionId: string, event: ChatEvent) => void;
   finalizeAssistantMessage: (sessionId: string) => void;
   setSessionStatus: (sessionId: string, status: ChatSessionInfo['status']) => void;
   toggleChat: () => void;
@@ -26,6 +27,13 @@ type ChatState = {
 
 function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: ChatSessionInfo) => ChatSessionInfo): ChatSessionInfo[] {
   return sessions.map((s) => (s.id === id ? updater(s) : s));
+}
+
+function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (predicate(arr[i])) return i;
+  }
+  return -1;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -49,10 +57,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   addMessage: (sessionId, message) => {
     set((state) => ({
-      sessions: updateSession(state.sessions, sessionId, (s) => ({
-        ...s,
-        messages: [...s.messages, message],
-      })),
+      sessions: updateSession(state.sessions, sessionId, (s) => {
+        const updated = { ...s, messages: [...s.messages, message] };
+        if (message.role === 'user' && s.messages.filter((m) => m.role === 'user').length === 0) {
+          updated.title = message.content.slice(0, 60).replace(/\n/g, ' ');
+        }
+        return updated;
+      }),
     }));
     if (message.role === 'user') {
       const session = get().sessions.find((s) => s.id === sessionId);
@@ -78,6 +89,100 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return { ...s, messages: msgs };
       }),
     })),
+
+  handleChatEvent: (sessionId, event) => {
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, (s) => {
+        const msgs = [...s.messages];
+        const last = msgs[msgs.length - 1];
+        const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+        switch (event.type) {
+          case 'text': {
+            if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = { ...last, content: last.content + (event.text ?? '') };
+            } else {
+              msgs.push({ id: genId(), role: 'assistant', content: event.text ?? '', timestamp: Date.now() });
+            }
+            break;
+          }
+
+          case 'thinking':
+            if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + (event.thinking ?? '') };
+            }
+            break;
+
+          case 'tool_call': {
+            const tc: ToolCallInfo = {
+              toolCallId: event.toolCallId ?? '',
+              title: event.toolTitle ?? '',
+              kind: event.toolKind ?? '',
+              status: event.toolStatus ?? 'pending',
+              locations: event.toolLocations,
+            };
+            msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall: tc, timestamp: Date.now() });
+            break;
+          }
+
+          case 'tool_call_update': {
+            const idx = findLastIndex(msgs, (m: ChatMessage) => m.role === 'tool_call' && m.toolCall?.toolCallId === event.toolCallId);
+            if (idx >= 0) {
+              const entry = msgs[idx];
+              const tc = entry.toolCall!;
+              msgs[idx] = {
+                ...entry,
+                toolCall: {
+                  ...tc,
+                  status: event.toolStatus ?? tc.status,
+                  title: event.toolTitle ?? tc.title,
+                  content: event.toolContent ?? tc.content,
+                },
+              };
+            }
+            break;
+          }
+
+          case 'diff': {
+            const diff = { path: event.diffPath ?? '', oldText: event.diffOldText ?? '', newText: event.diffNewText ?? '' };
+            const tcIdx = findLastIndex(msgs, (m: ChatMessage) => m.role === 'tool_call');
+            if (tcIdx >= 0) {
+              const entry = msgs[tcIdx];
+              msgs[tcIdx] = { ...entry, diffs: [...(entry.diffs ?? []), diff] };
+            } else if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = { ...last, diffs: [...(last.diffs ?? []), diff] };
+            }
+            break;
+          }
+
+          case 'plan':
+            msgs.push({ id: genId(), role: 'plan', content: '', plan: event.planEntries ?? [], timestamp: Date.now() });
+            break;
+
+          case 'commands':
+            return { ...s, commands: event.commands ?? [], messages: msgs };
+
+          case 'config_options':
+            return { ...s, configOptions: event.configOptions ?? [], messages: msgs };
+
+          case 'title':
+            return { ...s, title: event.title ?? s.title, messages: msgs };
+
+          case 'done':
+            return { ...s, messages: msgs, status: 'idle' };
+
+          case 'error': {
+            if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = { ...last, content: last.content + `\n\n⚠️ ${event.error ?? 'Unknown error'}` };
+            }
+            return { ...s, messages: msgs, status: 'error' };
+          }
+        }
+
+        return { ...s, messages: msgs };
+      }),
+    }));
+  },
 
   finalizeAssistantMessage: (sessionId) => {
     const session = get().sessions.find((s) => s.id === sessionId);

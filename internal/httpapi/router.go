@@ -24,36 +24,36 @@ type SessionManager interface {
 }
 
 type Dependencies struct {
-	Shells        []shells.Profile
-	Sessions      SessionManager
-	Mode          string
-	WorkspaceRoot string
-	Watcher       *watcher.FileWatcher
-	ChatManager   *chat.Manager
-	ChatStore     *chat.ChatStore
+	Shells             []shells.Profile
+	Sessions           SessionManager
+	Mode               string
+	WorkspaceRoot      string
+	Watcher            *watcher.FileWatcher
+	ChatSessionManager *chat.SessionManager
+	ChatStore          *chat.ChatStore
 }
 
 type API struct {
-	shells        []shells.Profile
-	sessions      SessionManager
-	upgrader      websocket.Upgrader
-	mode          string
-	workspaceRoot string
-	watcher       *watcher.FileWatcher
-	chatManager   *chat.Manager
-	chatStore     *chat.ChatStore
+	shells             []shells.Profile
+	sessions           SessionManager
+	upgrader           websocket.Upgrader
+	mode               string
+	workspaceRoot      string
+	watcher            *watcher.FileWatcher
+	chatSessionManager *chat.SessionManager
+	chatStore          *chat.ChatStore
 }
 
 func New(deps Dependencies) *API {
 	return &API{
-		shells:        deps.Shells,
-		sessions:      deps.Sessions,
-		upgrader:      websocket.Upgrader{CheckOrigin: sameOrigin},
-		mode:          deps.Mode,
-		workspaceRoot: deps.WorkspaceRoot,
-		watcher:       deps.Watcher,
-		chatManager:   deps.ChatManager,
-		chatStore:     deps.ChatStore,
+		shells:             deps.Shells,
+		sessions:           deps.Sessions,
+		upgrader:           websocket.Upgrader{CheckOrigin: sameOrigin},
+		mode:               deps.Mode,
+		workspaceRoot:      deps.WorkspaceRoot,
+		watcher:            deps.Watcher,
+		chatSessionManager: deps.ChatSessionManager,
+		chatStore:          deps.ChatStore,
 	}
 }
 
@@ -77,18 +77,16 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/files", a.handleFileDelete)
 	mux.HandleFunc("/ws/watch", a.handleFileWatch)
 
-	// Chat API routes
 	mux.HandleFunc("/api/chat/agents", a.handleChatAgents)
 	mux.HandleFunc("/api/chat/sessions", a.handleChatSessions)
 	mux.HandleFunc("/api/chat/sessions/", a.handleChatSessionByID)
 	mux.HandleFunc("/api/chat/history", a.handleChatHistory)
 	mux.HandleFunc("/api/chat/history/", a.handleChatHistoryByID)
+	mux.HandleFunc("/api/chat/install-acp", a.handleChatInstallACP)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
-	// Projects API routes
 	mux.HandleFunc("/api/projects/recent", a.handleRecentProjects)
 
-	// Git API routes
 	mux.HandleFunc("/api/git/status", a.handleGitStatus)
 	mux.HandleFunc("/api/git/log", a.handleGitLog)
 	mux.HandleFunc("/api/git/branches", a.handleGitBranches)

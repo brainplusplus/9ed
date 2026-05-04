@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,34 +10,31 @@ import (
 	"time"
 
 	"go-webttyd/internal/chat"
+	"go-webttyd/internal/chat/agentconfig"
 )
 
 type chatCreateRequest struct {
 	AgentID string `json:"agentId"`
+	WorkDir string `json:"workDir,omitempty"`
 }
 
 type chatCreateResponse struct {
-	ID string `json:"id"`
+	ID   string `json:"id"`
+	Mode string `json:"mode"`
 }
 
 type chatSessionInfo struct {
 	ID      string `json:"id"`
 	AgentID string `json:"agentId"`
+	Mode    string `json:"mode"`
 }
 
 type chatWSInbound struct {
-	Type    string          `json:"type"`
-	Content string          `json:"content,omitempty"`
-	Context json.RawMessage `json:"context,omitempty"`
-}
-
-type chatWSOutbound struct {
-	Type         string `json:"type"`
-	Content      string `json:"content,omitempty"`
-	Message      string `json:"message,omitempty"`
-	Action       string `json:"action,omitempty"`
-	Detail       string `json:"detail,omitempty"`
-	NewSessionID string `json:"newSessionId,omitempty"`
+	Type     string          `json:"type"`
+	Content  string          `json:"content,omitempty"`
+	Context  json.RawMessage `json:"context,omitempty"`
+	ConfigID string          `json:"configId,omitempty"`
+	Value    string          `json:"value,omitempty"`
 }
 
 func (a *API) handleChatAgents(w http.ResponseWriter, r *http.Request) {
@@ -44,22 +42,26 @@ func (a *API) handleChatAgents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	agents := chat.DiscoverAgents()
-	writeJSON(w, http.StatusOK, agents)
+	configs := agentconfig.DetectAll()
+	writeJSON(w, http.StatusOK, configs)
 }
 
 func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
-	if a.chatManager == nil {
+	if a.chatSessionManager == nil {
 		http.Error(w, "chat not available", http.StatusServiceUnavailable)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		sessions := a.chatManager.List()
+		sessions := a.chatSessionManager.List()
 		infos := make([]chatSessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			infos = append(infos, chatSessionInfo{ID: s.ID, AgentID: s.AgentID})
+			infos = append(infos, chatSessionInfo{
+				ID:      s.ID(),
+				AgentID: s.AgentID(),
+				Mode:    string(s.Mode()),
+			})
 		}
 		writeJSON(w, http.StatusOK, infos)
 
@@ -70,19 +72,27 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		agent, ok := findAgent(req.AgentID)
+		agent, ok := findAgentDescriptor(req.AgentID)
 		if !ok {
-			http.Error(w, "unknown agent", http.StatusBadRequest)
+			http.Error(w, "unknown or unavailable agent", http.StatusBadRequest)
 			return
 		}
 
-		session, err := a.chatManager.Create(agent)
+		workDir := req.WorkDir
+		if workDir == "" {
+			workDir = a.workspaceRoot
+		}
+
+		session, err := a.chatSessionManager.Create(context.Background(), agent, workDir)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		writeJSON(w, http.StatusCreated, chatCreateResponse{ID: session.ID})
+		writeJSON(w, http.StatusCreated, chatCreateResponse{
+			ID:   session.ID(),
+			Mode: string(session.Mode()),
+		})
 
 	default:
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
@@ -90,7 +100,7 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleChatSessionByID(w http.ResponseWriter, r *http.Request) {
-	if a.chatManager == nil {
+	if a.chatSessionManager == nil {
 		http.Error(w, "chat not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -106,18 +116,18 @@ func (a *API) handleChatSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.chatManager.Remove(id)
+	a.chatSessionManager.Remove(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
-	if a.chatManager == nil {
+	if a.chatSessionManager == nil {
 		http.Error(w, "chat not available", http.StatusServiceUnavailable)
 		return
 	}
 
 	sessionID := strings.TrimPrefix(r.URL.Path, "/ws/chat/")
-	session, ok := a.chatManager.Get(sessionID)
+	session, ok := a.chatSessionManager.Get(sessionID)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -130,91 +140,61 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	var writeMu sync.Mutex
-	sendMsg := func(msg chatWSOutbound) {
+	sendEvent := func(evt chat.ChatEvent) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_ = conn.WriteJSON(msg)
+		_ = conn.WriteJSON(evt)
 	}
 
-	sendError := func(message string) {
-		sendMsg(chatWSOutbound{Type: "error", Message: message})
-	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
-	stopOutput := make(chan struct{})
 	go func() {
-		streamTimer := time.NewTimer(500 * time.Millisecond)
-		streamTimer.Stop()
-		streaming := false
-
 		for {
 			select {
-			case <-stopOutput:
+			case <-ctx.Done():
 				return
-			case data, ok := <-session.Output():
+			case <-session.Done():
+				sendEvent(chat.ChatEvent{Type: "done", StopReason: "session_closed"})
+				return
+			case evt, ok := <-session.Events():
 				if !ok {
-					if streaming {
-						sendMsg(chatWSOutbound{Type: "stream_end"})
-					}
 					return
 				}
-				if data == "" {
-					continue
-				}
-				streaming = true
-				streamTimer.Reset(500 * time.Millisecond)
-				parsed := chat.StripANSI(data)
-				if parsed != "" {
-					sendMsg(chatWSOutbound{Type: "stream", Content: parsed})
-				}
-			case <-streamTimer.C:
-				if streaming {
-					sendMsg(chatWSOutbound{Type: "stream_end"})
-					streaming = false
-				}
+				sendEvent(evt)
 			}
 		}
 	}()
 
-	defer close(stopOutput)
-
 	for {
 		var msg chatWSInbound
 		if err := conn.ReadJSON(&msg); err != nil {
+			cancel()
 			return
 		}
 
 		switch msg.Type {
 		case "message":
-			if err := session.Write(msg.Content + "\n"); err != nil {
-				sendError(err.Error())
-				return
+			content := msg.Content
+			if msg.Context != nil && len(msg.Context) > 0 {
+				content = formatContextMessage(msg.Content, msg.Context)
 			}
-
-		case "message_with_context":
-			formatted := formatContextMessage(msg.Content, msg.Context)
-			if err := session.Write(formatted + "\n"); err != nil {
-				sendError(err.Error())
-				return
+			if err := session.Send(ctx, content); err != nil {
+				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
-
-		case "new_chat":
-			newSession, err := session.Reset()
-			if err != nil {
-				sendError(fmt.Sprintf("reset failed: %v", err))
-				continue
-			}
-			a.chatManager.ReplaceSession(sessionID, newSession)
-			session = newSession
-			sessionID = newSession.ID
-			sendMsg(chatWSOutbound{Type: "session_reset", NewSessionID: newSession.ID})
 
 		case "cancel":
-			if err := session.Interrupt(); err != nil {
-				sendError(err.Error())
+			if err := session.Cancel(); err != nil {
+				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
+			}
+
+		case "set_config_option":
+			if err := session.SetConfigOption(ctx, msg.ConfigID, msg.Value); err != nil {
+				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
 
 		default:
-			sendError("unsupported message type")
+			sendEvent(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})
 		}
 	}
 }
@@ -346,6 +326,29 @@ func (a *API) handleChatHistoryByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *API) handleChatInstallACP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		AgentID string `json:"agentId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	path, err := chat.InstallACPAdapter(req.AgentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"path": path})
+}
+
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -353,14 +356,14 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen]
 }
 
-func findAgent(id string) (chat.Agent, bool) {
-	agents := chat.DiscoverAgents()
+func findAgentDescriptor(id string) (chat.AgentDescriptor, bool) {
+	agents := chat.DiscoverAgentDescriptors()
 	for _, a := range agents {
 		if a.ID == id && a.Available {
 			return a, true
 		}
 	}
-	return chat.Agent{}, false
+	return chat.AgentDescriptor{}, false
 }
 
 func formatContextMessage(content string, ctx json.RawMessage) string {

@@ -1,36 +1,67 @@
 import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { ChatMessage as ChatMessageType } from '../../types';
 
 type ChatMessageProps = {
   message: ChatMessageType;
+  streaming?: boolean;
 };
 
-type ContentBlock =
-  | { kind: 'text'; text: string }
-  | { kind: 'code'; lang: string; code: string };
-
-function parseContent(raw: string): ContentBlock[] {
-  const blocks: ContentBlock[] = [];
-  const parts = raw.split('```');
-
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 0) {
-      const text = parts[i].trim();
-      if (text) blocks.push({ kind: 'text', text });
-    } else {
-      const newlineIdx = parts[i].indexOf('\n');
-      const lang = newlineIdx > 0 ? parts[i].slice(0, newlineIdx).trim() : '';
-      const code = newlineIdx > 0 ? parts[i].slice(newlineIdx + 1).trim() : parts[i].trim();
-      blocks.push({ kind: 'code', lang, code });
-    }
+function toolKindIcon(kind: string): string {
+  switch (kind) {
+    case 'read': return '📄';
+    case 'edit': return '✏️';
+    case 'delete': return '🗑️';
+    case 'move': return '📦';
+    case 'search': return '🔍';
+    case 'execute': return '▶️';
+    case 'think': return '💭';
+    case 'fetch': return '🌐';
+    default: return '⚙️';
   }
-
-  return blocks;
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+function ToolCallStatusIcon({ status }: { status: string }) {
+  switch (status) {
+    case 'completed': return <span className="tool-status tool-status-done">✓</span>;
+    case 'failed': return <span className="tool-status tool-status-fail">✗</span>;
+    case 'in_progress': return <span className="tool-status tool-status-running">⟳</span>;
+    default: return <span className="tool-status tool-status-pending">○</span>;
+  }
+}
+
+export function ChatMessage({ message, streaming }: ChatMessageProps) {
   const [contextExpanded, setContextExpanded] = useState(false);
-  const blocks = parseContent(message.content);
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
+
+  if (message.role === 'tool_call' && message.toolCall) {
+    return (
+      <div className="chat-entry-tool">
+        <ToolCallCard tc={message.toolCall} />
+        {message.diffs && message.diffs.length > 0 && (
+          <div className="chat-message-diffs">
+            {message.diffs.map((diff, i) => (
+              <div key={i} className="diff-block">
+                <div className="diff-header">{diff.path}</div>
+                <pre className="diff-content">
+                  <code>{formatDiff(diff.oldText, diff.newText)}</code>
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (message.role === 'plan' && message.plan) {
+    return (
+      <div className="chat-entry-plan">
+        <PlanBlock entries={message.plan} />
+      </div>
+    );
+  }
 
   return (
     <div className={`chat-message ${message.role}`}>
@@ -44,22 +75,134 @@ export function ChatMessage({ message }: ChatMessageProps) {
           )}
         </div>
       )}
-      <div className="chat-message-bubble">
-        {blocks.map((block, i) =>
-          block.kind === 'code' ? (
-            <pre key={i} className="chat-message-code">
-              <code>{block.code}</code>
-            </pre>
+
+      {message.thinking && (
+        <div className="chat-message-thinking" onClick={() => setThinkingExpanded(!thinkingExpanded)}>
+          <div className="chat-message-thinking-header">
+            💭 Thinking {thinkingExpanded ? '▾' : '▸'}
+          </div>
+          {thinkingExpanded && (
+            <div className="chat-message-thinking-content">{message.thinking}</div>
+          )}
+        </div>
+      )}
+
+      <div className="chat-message-bubble chat-markdown">
+        {message.content ? (
+          streaming ? (
+            <pre className="chat-streaming-text">{message.content}</pre>
           ) : (
-            block.text.split('\n\n').map((para, j) => (
-              <p key={`${i}-${j}`} style={{ margin: '4px 0' }}>{para}</p>
-            ))
-          ),
-        )}
-        {message.content === '' && message.role === 'assistant' && (
-          <span style={{ opacity: 0.6 }}>...</span>
-        )}
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          )
+        ) : message.role === 'assistant' ? (
+          <span className="chat-typing-indicator"><span /><span /><span /></span>
+        ) : null}
       </div>
+
+      {message.diffs && message.diffs.length > 0 && (
+        <div className="chat-message-diffs">
+          {message.diffs.map((diff, i) => (
+            <div key={i} className="diff-block">
+              <div className="diff-header">{diff.path}</div>
+              <pre className="diff-content">
+                <code>{formatDiff(diff.oldText, diff.newText)}</code>
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+function PlanBlock({ entries }: { entries: import('../../types').PlanEntryInfo[] }) {
+  const [expanded, setExpanded] = useState(true);
+  const completed = entries.filter((e) => e.status === 'completed').length;
+  const inProgress = entries.filter((e) => e.status === 'in_progress').length;
+  const total = entries.length;
+  const allDone = completed === total;
+
+  const statusLabel = allDone
+    ? 'All Done'
+    : inProgress > 0
+      ? `${completed}/${total}`
+      : `${total} Tasks`;
+
+  return (
+    <div className={`chat-plan-block ${allDone ? 'plan-done' : ''}`}>
+      <div className="chat-plan-header" onClick={() => setExpanded(!expanded)}>
+        <span className="chat-plan-toggle">{expanded ? '▾' : '▸'}</span>
+        <span className="chat-plan-label">Plan</span>
+        <span className="chat-plan-status">{statusLabel}</span>
+      </div>
+      {expanded && (
+        <div className="chat-plan-entries">
+          {entries.map((entry, i) => (
+            <div key={i} className={`chat-plan-entry chat-plan-entry-${entry.status ?? 'pending'}`}>
+              <span className="chat-plan-entry-icon">
+                {entry.status === 'completed' ? '✓' : entry.status === 'in_progress' ? '⟳' : '○'}
+              </span>
+              <span className={entry.status === 'completed' ? 'chat-plan-entry-done-text' : ''}>{entry.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolCallCard({ tc }: { tc: import('../../types').ToolCallInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetails = !!(tc.content || (tc.locations && tc.locations.length > 0));
+  const fileName = tc.locations?.[0]?.path?.split(/[/\\]/).pop();
+
+  return (
+    <div className={`tool-call tool-call-${tc.status}`} onClick={() => hasDetails && setExpanded(!expanded)}>
+      <div className="tool-call-header">
+        <ToolCallStatusIcon status={tc.status} />
+        <span className="tool-call-icon">{toolKindIcon(tc.kind)}</span>
+        <span className="tool-call-title">{tc.title}</span>
+        {fileName && <span className="tool-call-file">{fileName}</span>}
+        {hasDetails && <span className="tool-call-expand">{expanded ? '▾' : '▸'}</span>}
+      </div>
+      {expanded && (
+        <div className="tool-call-details">
+          {tc.locations && tc.locations.map((loc, i) => (
+            <div key={i} className="tool-call-location">
+              {loc.path}{loc.line ? `:${loc.line}` : ''}
+            </div>
+          ))}
+          {tc.content && <pre className="tool-call-output">{tc.content}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatDiff(oldText: string, newText: string): string {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  const result: string[] = [];
+
+  const maxLen = Math.max(oldLines.length, newLines.length);
+  let oi = 0;
+  let ni = 0;
+
+  while (oi < oldLines.length || ni < newLines.length) {
+    if (oi < oldLines.length && ni < newLines.length && oldLines[oi] === newLines[ni]) {
+      result.push(`  ${oldLines[oi]}`);
+      oi++;
+      ni++;
+    } else if (oi < oldLines.length && (ni >= newLines.length || !newLines.includes(oldLines[oi]))) {
+      result.push(`- ${oldLines[oi]}`);
+      oi++;
+    } else if (ni < newLines.length) {
+      result.push(`+ ${newLines[ni]}`);
+      ni++;
+    }
+
+    if (result.length > maxLen * 2) break;
+  }
+
+  return result.join('\n');
 }

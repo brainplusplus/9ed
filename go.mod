@@ -3,6 +3,7 @@ module go-webttyd
 go 1.25.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/aymanbagabas/go-pty v0.2.2
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/uuid v1.6.0

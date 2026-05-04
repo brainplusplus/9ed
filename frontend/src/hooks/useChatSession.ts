@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createChatWebSocket } from '../api';
 import { useChatStore } from '../stores/chat';
-import type { CodeContext } from '../types';
+import type { ChatEvent, CodeContext } from '../types';
 
 type UseChatSessionResult = {
   sendMessage: (content: string, context?: CodeContext) => void;
   cancel: () => void;
+  setConfigOption: (configId: string, value: string) => void;
   connected: boolean;
 };
 
 export function useChatSession(): UseChatSessionResult {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const addMessage = useChatStore((s) => s.addMessage);
-  const appendToLastMessage = useChatStore((s) => s.appendToLastMessage);
+  const handleChatEvent = useChatStore((s) => s.handleChatEvent);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
   const finalizeAssistantMessage = useChatStore((s) => s.finalizeAssistantMessage);
 
@@ -32,23 +33,11 @@ export function useChatSession(): UseChatSessionResult {
 
     ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data) as { type: string; content?: string; error?: string };
-        switch (data.type) {
-          case 'stream':
-            if (data.content) {
-              appendToLastMessage(activeSessionId, data.content);
-            }
-            break;
-          case 'stream_end':
-            finalizeAssistantMessage(activeSessionId);
-            setSessionStatus(activeSessionId, 'idle');
-            break;
-          case 'error':
-            setSessionStatus(activeSessionId, 'error');
-            break;
-          case 'session_reset':
-            setSessionStatus(activeSessionId, 'idle');
-            break;
+        const data = JSON.parse(event.data) as ChatEvent;
+        handleChatEvent(activeSessionId, data);
+
+        if (data.type === 'done') {
+          finalizeAssistantMessage(activeSessionId);
         }
       } catch {
         // ignore malformed messages
@@ -63,7 +52,7 @@ export function useChatSession(): UseChatSessionResult {
       wsRef.current = null;
       setConnected(false);
     };
-  }, [activeSessionId, appendToLastMessage, setSessionStatus, finalizeAssistantMessage]);
+  }, [activeSessionId, handleChatEvent, setSessionStatus, finalizeAssistantMessage]);
 
   const sendMessage = useCallback(
     (content: string, context?: CodeContext) => {
@@ -78,18 +67,13 @@ export function useChatSession(): UseChatSessionResult {
         timestamp: Date.now(),
       };
       addMessage(activeSessionId, userMessage);
-
-      const assistantId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-      addMessage(activeSessionId, {
-        id: assistantId,
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-      });
-
       setSessionStatus(activeSessionId, 'streaming');
 
-      wsRef.current.send(JSON.stringify({ type: 'message', content, context }));
+      const payload: { type: string; content: string; context?: unknown } = { type: 'message', content };
+      if (context) {
+        payload.context = context;
+      }
+      wsRef.current.send(JSON.stringify(payload));
     },
     [activeSessionId, addMessage, setSessionStatus],
   );
@@ -100,5 +84,10 @@ export function useChatSession(): UseChatSessionResult {
     setSessionStatus(activeSessionId, 'idle');
   }, [activeSessionId, setSessionStatus]);
 
-  return { sendMessage, cancel, connected };
+  const setConfigOption = useCallback((configId: string, value: string) => {
+    if (!activeSessionId || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'set_config_option', configId, value }));
+  }, [activeSessionId]);
+
+  return { sendMessage, cancel, setConfigOption, connected };
 }

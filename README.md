@@ -1,6 +1,6 @@
 # Web IDE Terminal
 
-Browser-based IDE with terminal, git source control, AI chat, and responsive layout.
+Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and responsive layout.
 
 ## Features
 
@@ -21,16 +21,23 @@ Browser-based IDE with terminal, git source control, AI chat, and responsive lay
 - Branch management: create, switch, delete, merge
 - Stash support: save, pop, apply, drop
 - Commit history with pagination
-- Diff view (Monaco DiffEditor, side-by-side)
+- Diff view (Monaco DiffEditor, side-by-side) — click any changed file to see diff
 - Git gutter decorations (green=added, blue=modified, red=deleted)
 - File-level discard changes
 
-### AI Chat
-- Side panel with conversation UI
-- Agent harness: spawns CLI agents (OpenCode, Claude Code, Codex) as PTY subprocesses
-- Inline code prompt: select code → quick actions (Explain, Refactor, Test, Fix)
-- Streaming responses via WebSocket
-- Multiple chat sessions with "New Chat" support
+### AI Chat (ACP Protocol)
+- **ACP (Agent Client Protocol)** — structured JSON-RPC 2.0 communication with AI agents
+- Supports: OpenCode, Claude Code, Codex CLI, Pi, Amp, GitHub Copilot
+- Auto-install ACP adapters (npm) when agent is selected
+- Dynamic model picker, mode/agent selector, thinking level — all from ACP `configOptions`
+- Slash command autocomplete from `available_commands_update`
+- Streaming responses with markdown rendering
+- Tool call visualization (read, edit, search, execute) with collapsible details
+- Plan/todo tracking with progress indicators
+- Thinking/reasoning display (collapsible)
+- Diff view for file changes made by agent
+- Auto-title sessions from first message or agent-generated title
+- PTY fallback for agents without ACP adapter
 
 ### Responsive Layout
 - **Desktop** (≥1024px): Full panel layout with resizable sidebar, editor, terminal, chat
@@ -47,16 +54,30 @@ Browser-based IDE with terminal, git source control, AI chat, and responsive lay
 - Go 1.24+
 - Node.js 20+
 - Git (for source control features)
-- Optional: OpenCode, Claude Code, or Codex CLI (for AI chat)
+- Optional: OpenCode, Claude Code, Codex CLI, Pi, Amp (for AI chat)
 
-## Setup
+## Quick Start
 
-1. Copy `.env.example` to `.env`
-2. Configure environment variables
-3. Install frontend dependencies: `npm install`
-4. Build frontend: `npm run build`
-5. Start server: `go run ./cmd/server`
-6. Open `http://localhost:8080`
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+npm run start
+# Open http://localhost:8080
+```
+
+## Scripts
+
+| Command | Action |
+|---------|--------|
+| `npm run start` | Install deps + build frontend + run server |
+| `npm run server` | Run Go server only (dev) |
+| `npm run dev` | Vite dev server (frontend hot reload) |
+| `npm run build` | Build frontend |
+| `npm run server:build` | Compile Go binary |
+| `npm run check` | TypeScript typecheck + Go vet |
+| `npm run go:test` | Run all Go tests |
+| `npm run go:build` | Build all Go packages |
+| `npm run typecheck` | TypeScript typecheck only |
 
 ## Environment Variables
 
@@ -66,7 +87,21 @@ Browser-based IDE with terminal, git source control, AI chat, and responsive lay
 | `BASIC_AUTH_USERNAME` | Required username | — |
 | `BASIC_AUTH_PASSWORD` | Required password | — |
 | `MODE` | `simple` (terminal only) or `full` (IDE) | `simple` |
-| `WORKSPACE_ROOT` | Default workspace directory | — |
+| `WORKSPACE_ROOT` | Default workspace directory | cwd |
+| `AUTOKILL_PORT` | Kill existing process on port before start | `true` |
+
+## AI Agent Support
+
+| Agent | ACP Support | Auto-Install | Fallback |
+|-------|-------------|--------------|----------|
+| OpenCode | Native (`opencode acp`) | — | PTY |
+| Claude Code | Via adapter (`claude-agent-acp`) | `npm i -g @agentclientprotocol/claude-agent-acp` | PTY |
+| Codex CLI | Via adapter (`codex-acp`) | `npm i -g @zed-industries/codex-acp` | PTY |
+| Pi | Via adapter (`pi-acp`) | `npm i -g pi-acp` | PTY |
+| Amp | Via adapter (`amp-acp`) | `npm i -g amp-acp` | PTY |
+| GitHub Copilot | Via adapter (`github-copilot-cli`) | `npm i -g github-copilot-cli` | — |
+
+ACP adapters are auto-installed when you select an agent for the first time. No manual setup needed.
 
 ## Keyboard Shortcuts
 
@@ -83,47 +118,56 @@ Browser-based IDE with terminal, git source control, AI chat, and responsive lay
 ## Project Structure
 
 ```
-cmd/server/          — Application entry point
+cmd/server/            — Application entry point (autokill, config)
 internal/
-  config/            — .env loading and validation
-  auth/              — Basic Auth middleware + session cookies
-  shells/            — OS-aware shell discovery
-  terminal/          — PTY session spawning and management
-  filesystem/        — File operations with path security
-  watcher/           — Real-time file watcher (fsnotify)
-  git/               — Git CLI wrapper (status, log, branch, diff, stash, blame)
-  chat/              — AI agent harness (PTY subprocess management)
-  httpapi/           — REST API + WebSocket handlers
-  server/            — HTTP assembly and static serving
+  config/              — .env loading and validation
+  auth/                — Basic Auth middleware + session cookies
+  shells/              — OS-aware shell discovery
+  terminal/            — PTY session spawning and management
+  filesystem/          — File operations with path security
+  watcher/             — Real-time file watcher (fsnotify)
+  git/                 — Git CLI wrapper (status, log, branch, diff, stash, blame)
+  chat/
+    acp/               — ACP client (JSON-RPC 2.0 over stdio)
+      protocol.go      — ACP message types and constants
+      client.go        — JSON-RPC transport (request correlation, notifications)
+      adapter.go       — Subprocess lifecycle + high-level ACP methods
+    acpinstall/        — Auto-install ACP adapters via npm/pip
+    agentconfig/       — Agent config file detection (models, providers)
+    agent.go           — Unified ChatSession interface (ACP + PTY)
+    pty_session.go     — PTY fallback implementation
+    session_manager.go — Session lifecycle management
+  httpapi/             — REST API + WebSocket handlers
+  server/              — HTTP assembly and static serving
 frontend/src/
-  apps/ide/          — IDE mode entry (workspace, project picker)
-  apps/terminal/     — Simple terminal mode
+  apps/ide/            — IDE mode entry (workspace, project picker)
+  apps/terminal/       — Simple terminal mode
   components/
-    editor/          — Monaco editor, diff view, tabs
-    git/             — Git panel, status list, branch picker, stash
-    chat/            — Chat panel, messages, input, inline prompt
-    sidebar/         — Activity bar, file tree, search, projects
-    terminal/        — Terminal panel (xterm.js)
-    shared/          — Bottom nav, shortcuts help
-  stores/            — Zustand state (workspace, git, chat)
-  hooks/             — Custom hooks (git status, gutter, chat, layout)
+    editor/            — Monaco editor, diff view, tabs
+    git/               — Git panel, status list, branch picker, stash
+    chat/              — Chat panel, messages, input, agent picker, config bar
+    sidebar/           — Activity bar, file tree, search, projects
+    terminal/          — Terminal panel (xterm.js)
+    shared/            — Bottom nav, shortcuts help
+  stores/              — Zustand state (workspace, git, chat)
+  hooks/               — Custom hooks (git status, gutter, chat, layout)
 ```
 
 ## Development
 
 ```bash
-# Run all tests
-go test ./...
+# Run Go server (backend only)
+npm run server
 
-# Build Go binary
-go build ./...
-
-# Frontend typecheck
-npm run typecheck
-
-# Frontend build
-npm run build
-
-# Dev server (frontend hot reload)
+# Run frontend dev server (hot reload, proxy to Go backend)
 npm run dev
+
+# Run all checks
+npm run check
+
+# Run all Go tests
+npm run go:test
+
+# Build everything for production
+npm run start
 ```

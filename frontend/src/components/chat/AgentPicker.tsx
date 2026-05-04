@@ -1,20 +1,23 @@
 import { useState } from 'react';
 import { useChatStore } from '../../stores/chat';
+import { useChatSession } from '../../hooks/useChatSession';
 import { createChatSession } from '../../api';
-import type { ChatSessionInfo } from '../../types';
+import type { ChatSessionInfo, ConfigOptionInfo } from '../../types';
 
 export function AgentPicker() {
   const agents = useChatStore((s) => s.agents);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const createSessionStore = useChatStore((s) => s.createSession);
-  const [open, setOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const currentAgent = agents.find((a) => a.id === activeSession?.agentId);
 
-  const handleSelect = async (agentId: string) => {
-    setOpen(false);
+  const handleSelectAgent = async (agentId: string) => {
+    setAgentOpen(false);
+    setConnecting(true);
     try {
       const { id } = await createChatSession(agentId);
       const agent = agents.find((a) => a.id === agentId);
@@ -28,55 +31,117 @@ export function AgentPicker() {
       };
       createSessionStore(session);
     } catch {
-      // session creation failed silently
+    } finally {
+      setConnecting(false);
     }
   };
 
+  const buttonLabel = connecting
+    ? 'Connecting...'
+    : currentAgent?.label ?? 'Select agent';
+
   return (
     <div style={{ position: 'relative' }}>
-      <button className="agent-picker" onClick={() => setOpen(!open)} type="button">
-        {currentAgent?.label ?? 'Select agent'} ▾
+      <button
+        className="agent-picker"
+        onClick={() => setAgentOpen(!agentOpen)}
+        type="button"
+        disabled={connecting}
+        style={connecting ? { opacity: 0.7 } : undefined}
+      >
+        {connecting && <span className="chat-connecting-spinner" style={{ width: 10, height: 10, marginRight: 6, display: 'inline-block', verticalAlign: 'middle' }} />}
+        {buttonLabel} ▾
       </button>
-      {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            background: 'var(--sidebar-bg)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '4px',
-            zIndex: 100,
-            minWidth: '160px',
-          }}
-        >
+      {agentOpen && !connecting && (
+        <div className="picker-dropdown">
           {agents.map((agent) => (
             <button
               key={agent.id}
+              className="picker-dropdown-item"
               style={{
-                display: 'block',
-                width: '100%',
-                padding: '6px 12px',
-                background: 'none',
-                border: 'none',
-                color: agent.available ? 'var(--sidebar-fg)' : 'var(--activity-fg)',
-                cursor: agent.available ? 'pointer' : 'not-allowed',
-                textAlign: 'left',
-                fontSize: '0.82rem',
+                background: agent.id === currentAgent?.id ? 'var(--list-active-bg, rgba(255,255,255,0.1))' : 'none',
                 opacity: agent.available ? 1 : 0.5,
+                cursor: agent.available ? 'pointer' : 'not-allowed',
               }}
-              onClick={() => agent.available && handleSelect(agent.id)}
+              onClick={() => agent.available && handleSelectAgent(agent.id)}
               disabled={!agent.available}
               type="button"
             >
               {agent.label}
             </button>
           ))}
-          {agents.length === 0 && (
-            <div style={{ padding: '8px 12px', fontSize: '0.8rem', color: 'var(--activity-fg)' }}>
-              No agents available
-            </div>
-          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ConfigBar() {
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const sessions = useChatStore((s) => s.sessions);
+  const { setConfigOption } = useChatSession();
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+
+  const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const configOptions = activeSession?.configOptions ?? [];
+
+  if (configOptions.length === 0) return null;
+
+  const handleChange = (configId: string, value: string) => {
+    setOpenDropdown(null);
+    setConfigOption(configId, value);
+  };
+
+  return (
+    <div className="chat-config-bar">
+      {configOptions.map((opt) => (
+        <ConfigDropdown
+          key={opt.id}
+          option={opt}
+          isOpen={openDropdown === opt.id}
+          onToggle={() => setOpenDropdown(openDropdown === opt.id ? null : opt.id)}
+          onChange={(value) => handleChange(opt.id, value)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ConfigDropdown({ option, isOpen, onToggle, onChange }: {
+  option: ConfigOptionInfo;
+  isOpen: boolean;
+  onToggle: () => void;
+  onChange: (value: string) => void;
+}) {
+  const currentOption = option.options.find((o) => o.value === option.currentValue);
+  const label = currentOption?.name ?? option.currentValue;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        className="agent-picker"
+        onClick={onToggle}
+        type="button"
+        style={{ fontSize: '0.72rem', padding: '2px 6px' }}
+        title={option.name}
+      >
+        {label} ▾
+      </button>
+      {isOpen && (
+        <div className="picker-dropdown picker-dropdown-up">
+          {option.options.map((val) => (
+            <button
+              key={val.value}
+              className="picker-dropdown-item"
+              style={{
+                background: val.value === option.currentValue ? 'var(--list-active-bg, rgba(255,255,255,0.1))' : 'none',
+              }}
+              onClick={() => onChange(val.value)}
+              type="button"
+            >
+              {val.name}
+            </button>
+          ))}
         </div>
       )}
     </div>

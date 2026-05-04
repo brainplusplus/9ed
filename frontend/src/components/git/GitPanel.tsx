@@ -43,9 +43,11 @@ export function GitPanel({ projectPath, onOpenDiff }: GitPanelProps) {
 
   const handleFileClick = useCallback(async (file: GitFileStatus) => {
     try {
+      const sep = projectPath.includes('\\') ? '\\' : '/';
+      const fullPath = projectPath + sep + file.path.replace(/\//g, sep);
       const [headContent, workingContent] = await Promise.all([
         getGitFileAtHEAD(projectPath, file.path).catch(() => ''),
-        getFileContent(file.path).then((fc) => fc.content).catch(() => ''),
+        getFileContent(fullPath).then((fc) => fc.content).catch(() => ''),
       ]);
       const lang = languageFromPath(file.path);
       onOpenDiff(file.path, headContent, workingContent, lang);
