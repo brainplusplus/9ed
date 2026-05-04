@@ -69,6 +69,25 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/files/upload", a.handleFileUpload)
 	mux.HandleFunc("/api/files", a.handleFileDelete)
 	mux.HandleFunc("/ws/watch", a.handleFileWatch)
+
+	// Git API routes
+	mux.HandleFunc("/api/git/status", a.handleGitStatus)
+	mux.HandleFunc("/api/git/log", a.handleGitLog)
+	mux.HandleFunc("/api/git/branches", a.handleGitBranches)
+	mux.HandleFunc("/api/git/stage", a.handleGitStage)
+	mux.HandleFunc("/api/git/unstage", a.handleGitUnstage)
+	mux.HandleFunc("/api/git/commit", a.handleGitCommit)
+	mux.HandleFunc("/api/git/push", a.handleGitPush)
+	mux.HandleFunc("/api/git/pull", a.handleGitPull)
+	mux.HandleFunc("/api/git/branch", a.handleGitBranch)
+	mux.HandleFunc("/api/git/merge", a.handleGitMerge)
+	mux.HandleFunc("/api/git/stash", a.handleGitStash)
+	mux.HandleFunc("/api/git/diff", a.handleGitDiff)
+	mux.HandleFunc("/api/git/diff-lines", a.handleGitDiffLines)
+	mux.HandleFunc("/api/git/blame", a.handleGitBlame)
+	mux.HandleFunc("/api/git/discard", a.handleGitDiscard)
+	mux.HandleFunc("/api/git/file-at-head", a.handleGitFileAtHEAD)
+
 	return mux
 }
 

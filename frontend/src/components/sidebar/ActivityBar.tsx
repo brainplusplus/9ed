@@ -4,6 +4,7 @@ import type { ActivePanel } from '../../types';
 const panels: { id: ActivePanel; icon: string; label: string }[] = [
   { id: 'explorer', icon: '📁', label: 'Explorer' },
   { id: 'search', icon: '🔍', label: 'Search' },
+  { id: 'git', icon: '🌿', label: 'Source Control' },
   { id: 'projects', icon: '📂', label: 'Projects' },
   { id: 'terminal', icon: '🖥', label: 'Terminal' },
 ];

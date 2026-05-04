@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 
 import { useWorkspaceStore } from '../../stores/workspace';
 import { useFileWatcher } from '../../hooks/useFileWatcher';
+import { useGitStatus } from '../../hooks/useGitStatus';
 import { ActivityBar } from '../../components/sidebar/ActivityBar';
 import { FileTree } from '../../components/sidebar/FileTree';
 import { SearchPanel } from '../../components/sidebar/SearchPanel';
 import { ProjectList } from '../../components/sidebar/ProjectList';
+import { GitPanel } from '../../components/git/GitPanel';
 import { EditorArea } from '../../components/editor/EditorArea';
 import { TerminalPanel } from '../../components/terminal/TerminalPanel';
 import { getFileContent } from '../../api';
@@ -35,9 +37,13 @@ export function IDEWorkspace() {
   const openFile = useWorkspaceStore((s) => s.openFile);
   const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
+  const setActivePanel = useWorkspaceStore((s) => s.setActivePanel);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
 
+  useGitStatus(activeProject?.path ?? null);
+
+  const editorAreaRef = useRef<HTMLDivElement>(null);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
 
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
@@ -86,6 +92,12 @@ export function IDEWorkspace() {
     }
   }, [activeProjectId, openFile]);
 
+  const handleOpenDiff = useCallback((filePath: string, original: string, modified: string, language: string) => {
+    const el = editorAreaRef.current?.querySelector('[data-has-diff-support]') as
+      (HTMLDivElement & { openDiffTab?: (fp: string, o: string, m: string, l: string) => void }) | null;
+    el?.openDiffTab?.(filePath, original, modified, language);
+  }, []);
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
@@ -96,10 +108,15 @@ export function IDEWorkspace() {
         e.preventDefault();
         toggleTerminal();
       }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault();
+        setActivePanel('git');
+        if (!sidebarVisible) toggleSidebar();
+      }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleSidebar, toggleTerminal]);
+  }, [toggleSidebar, toggleTerminal, setActivePanel, sidebarVisible]);
 
   return (
     <div className="ide-shell">
@@ -117,6 +134,9 @@ export function IDEWorkspace() {
               {activePanel === 'search' && activeProject && (
                 <SearchPanel rootPath={activeProject.path} onResultClick={handleFileSelect} />
               )}
+              {activePanel === 'git' && activeProject && (
+                <GitPanel projectPath={activeProject.path} onOpenDiff={handleOpenDiff} />
+              )}
               {activePanel === 'projects' && <ProjectList />}
             </Panel>
             <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
@@ -125,7 +145,9 @@ export function IDEWorkspace() {
         <Panel minSize="20%" className="ide-content">
           <Group orientation="vertical" style={{ height: '100%' }}>
             <Panel minSize="15%" className="ide-editor-area">
-              <EditorArea />
+              <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                <EditorArea />
+              </div>
             </Panel>
             {terminalVisible && (
               <>

@@ -1,4 +1,4 @@
-import type { AppConfig, DirEntry, FileContent, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, SearchResult, SessionResponse, ShellProfile } from './types';
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -169,5 +169,153 @@ export async function uploadFiles(targetPath: string, files: FileList): Promise<
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || 'Failed to upload');
+  }
+}
+
+export async function getGitStatus(project: string): Promise<GitFileStatus[]> {
+  const response = await fetch(`/api/git/status?project=${encodeURIComponent(project)}`, { credentials: 'include' });
+  return parseResponse<GitFileStatus[]>(response);
+}
+
+export async function getGitLog(project: string, limit = 50, offset = 0): Promise<GitCommit[]> {
+  const params = new URLSearchParams({ project, limit: String(limit), offset: String(offset) });
+  const response = await fetch(`/api/git/log?${params}`, { credentials: 'include' });
+  return parseResponse<GitCommit[]>(response);
+}
+
+export async function getGitBranches(project: string): Promise<GitBranch[]> {
+  const response = await fetch(`/api/git/branches?project=${encodeURIComponent(project)}`, { credentials: 'include' });
+  return parseResponse<GitBranch[]>(response);
+}
+
+export async function gitStage(project: string, paths: string[]): Promise<void> {
+  const response = await fetch('/api/git/stage', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, paths }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to stage files');
+  }
+}
+
+export async function gitUnstage(project: string, paths: string[]): Promise<void> {
+  const response = await fetch('/api/git/unstage', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, paths }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to unstage files');
+  }
+}
+
+export async function gitCommit(project: string, message: string, amend = false): Promise<void> {
+  const response = await fetch('/api/git/commit', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, message, amend }),
+  });
+  if (!response.ok) {
+    const msg = await response.text();
+    throw new Error(msg || 'Failed to commit');
+  }
+}
+
+export async function gitPush(project: string, remote?: string, branch?: string): Promise<string> {
+  const response = await fetch('/api/git/push', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, remote, branch }),
+  });
+  return parseResponse<string>(response);
+}
+
+export async function gitPull(project: string, remote?: string, branch?: string): Promise<string> {
+  const response = await fetch('/api/git/pull', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, remote, branch }),
+  });
+  return parseResponse<string>(response);
+}
+
+export async function gitBranchAction(project: string, action: 'create' | 'delete' | 'checkout', name: string): Promise<void> {
+  const response = await fetch('/api/git/branch', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, action, name }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Branch action failed');
+  }
+}
+
+export async function gitMerge(project: string, branch: string): Promise<void> {
+  const response = await fetch('/api/git/merge', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, branch }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Merge failed');
+  }
+}
+
+export async function gitStashAction(project: string, action: 'list' | 'push' | 'pop' | 'drop', index?: number, message?: string): Promise<GitStash[] | void> {
+  const response = await fetch('/api/git/stash', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, action, index, message }),
+  });
+  if (action === 'list') {
+    return parseResponse<GitStash[]>(response);
+  }
+  if (!response.ok) {
+    const msg = await response.text();
+    throw new Error(msg || 'Stash action failed');
+  }
+}
+
+export async function getGitDiff(project: string, path: string): Promise<string> {
+  const params = new URLSearchParams({ project, path });
+  const response = await fetch(`/api/git/diff?${params}`, { credentials: 'include' });
+  return parseResponse<string>(response);
+}
+
+export async function getGitDiffLines(project: string, path: string): Promise<GutterChange[]> {
+  const params = new URLSearchParams({ project, path });
+  const response = await fetch(`/api/git/diff-lines?${params}`, { credentials: 'include' });
+  return parseResponse<GutterChange[]>(response);
+}
+
+export async function getGitFileAtHEAD(project: string, path: string): Promise<string> {
+  const params = new URLSearchParams({ project, path });
+  const response = await fetch(`/api/git/file-at-head?${params}`, { credentials: 'include' });
+  return parseResponse<string>(response);
+}
+
+export async function gitDiscard(project: string, paths: string[]): Promise<void> {
+  const response = await fetch('/api/git/discard', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, paths }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to discard changes');
   }
 }

@@ -63,9 +63,44 @@ export type Project = {
   terminalSessions: string[];
 };
 
-export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal';
+export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal' | 'git';
 
 export type AppConfig = {
   mode: 'simple' | 'full';
   workspaceRoot: string;
+};
+
+// Git types
+export type GitFileStatus = {
+  path: string;
+  status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+  staged: boolean;
+};
+
+export type GitBranch = {
+  name: string;
+  current: boolean;
+  remote?: string;
+  ahead: number;
+  behind: number;
+};
+
+export type GitCommit = {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+  relativeDate: string;
+};
+
+export type GitStash = {
+  index: number;
+  message: string;
+};
+
+export type GutterChange = {
+  startLine: number;
+  endLine: number;
+  type: 'added' | 'modified' | 'deleted';
 };
