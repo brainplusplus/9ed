@@ -4,6 +4,7 @@ import { Group, Panel, Separator } from 'react-resizable-panels';
 import { useWorkspaceStore } from '../../stores/workspace';
 import { useFileWatcher } from '../../hooks/useFileWatcher';
 import { useGitStatus } from '../../hooks/useGitStatus';
+import { useLayoutMode } from '../../hooks/useLayoutMode';
 import { ActivityBar } from '../../components/sidebar/ActivityBar';
 import { FileTree } from '../../components/sidebar/FileTree';
 import { SearchPanel } from '../../components/sidebar/SearchPanel';
@@ -12,6 +13,7 @@ import { GitPanel } from '../../components/git/GitPanel';
 import { EditorArea } from '../../components/editor/EditorArea';
 import { TerminalPanel } from '../../components/terminal/TerminalPanel';
 import { ChatPanel } from '../../components/chat/ChatPanel';
+import { BottomNav, type MobileView } from '../../components/shared/BottomNav';
 import { getFileContent } from '../../api';
 import type { FileTab } from '../../types';
 
@@ -30,6 +32,7 @@ function languageFromPath(filePath: string): string {
 }
 
 export function IDEWorkspace() {
+  const layoutMode = useLayoutMode();
   const activePanel = useWorkspaceStore((s) => s.activePanel);
   const sidebarVisible = useWorkspaceStore((s) => s.sidebarVisible);
   const terminalVisible = useWorkspaceStore((s) => s.terminalVisible);
@@ -48,6 +51,22 @@ export function IDEWorkspace() {
 
   const editorAreaRef = useRef<HTMLDivElement>(null);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
+
+  const [tabletSidebarOpen, setTabletSidebarOpen] = useState(false);
+  const [tabletChatOpen, setTabletChatOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<MobileView>('editor');
+
+  useEffect(() => {
+    if (layoutMode === 'tablet') {
+      setTabletSidebarOpen(sidebarVisible);
+    }
+  }, [layoutMode, sidebarVisible]);
+
+  useEffect(() => {
+    if (layoutMode === 'tablet') {
+      setTabletChatOpen(chatVisible);
+    }
+  }, [layoutMode, chatVisible]);
 
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const markFileSaved = useWorkspaceStore((s) => s.markFileSaved);
@@ -125,6 +144,103 @@ export function IDEWorkspace() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleSidebar, toggleTerminal, toggleChat, setActivePanel, sidebarVisible]);
 
+  const sidebarContent = (
+    <>
+      <div className="sidebar-header">
+        <strong>{activeProject?.name ?? 'No project'}</strong>
+      </div>
+      {activePanel === 'explorer' && activeProject && (
+        <FileTree rootPath={activeProject.path} onFileSelect={handleFileSelect} refreshKey={treeRefreshKey} />
+      )}
+      {activePanel === 'search' && activeProject && (
+        <SearchPanel rootPath={activeProject.path} onResultClick={handleFileSelect} />
+      )}
+      {activePanel === 'git' && activeProject && (
+        <GitPanel projectPath={activeProject.path} onOpenDiff={handleOpenDiff} />
+      )}
+      {activePanel === 'projects' && <ProjectList />}
+    </>
+  );
+
+  if (layoutMode === 'mobile') {
+    return (
+      <div className="mobile-shell">
+        <div className="mobile-panel">
+          {mobileView === 'explorer' && activeProject && (
+            <div className="ide-sidebar" style={{ height: '100%' }}>
+              {sidebarContent}
+            </div>
+          )}
+          {mobileView === 'git' && activeProject && (
+            <div className="ide-sidebar" style={{ height: '100%' }}>
+              <div className="sidebar-header"><strong>Git</strong></div>
+              <GitPanel projectPath={activeProject.path} onOpenDiff={handleOpenDiff} />
+            </div>
+          )}
+          {mobileView === 'editor' && (
+            <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              <EditorArea />
+            </div>
+          )}
+          {mobileView === 'terminal' && (
+            <div style={{ height: '100%' }}>
+              <TerminalPanel />
+            </div>
+          )}
+          {mobileView === 'chat' && (
+            <div style={{ height: '100%' }}>
+              <ChatPanel />
+            </div>
+          )}
+        </div>
+        <BottomNav activeView={mobileView} onViewChange={setMobileView} />
+      </div>
+    );
+  }
+
+  if (layoutMode === 'tablet') {
+    return (
+      <div className="tablet-shell">
+        <ActivityBar />
+        <div className="tablet-main">
+          <Group orientation="vertical" style={{ height: '100%' }}>
+            <Panel minSize="15%" className="ide-editor-area">
+              <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                <EditorArea />
+              </div>
+            </Panel>
+            {terminalVisible && (
+              <>
+                <Separator className="resize-handle-v" style={{ cursor: 'row-resize' }} />
+                <Panel defaultSize="38%" minSize="10%" maxSize="70%" className="ide-terminal-area">
+                  <TerminalPanel />
+                </Panel>
+              </>
+            )}
+          </Group>
+        </div>
+
+        {tabletSidebarOpen && (
+          <>
+            <div className="overlay-backdrop" onClick={() => setTabletSidebarOpen(false)} />
+            <div className="sidebar-overlay open">
+              {sidebarContent}
+            </div>
+          </>
+        )}
+
+        {tabletChatOpen && (
+          <>
+            <div className="overlay-backdrop" onClick={() => setTabletChatOpen(false)} />
+            <div className="chat-overlay open">
+              <ChatPanel />
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="ide-shell">
       <ActivityBar />
@@ -132,19 +248,7 @@ export function IDEWorkspace() {
         {sidebarVisible && (
           <>
             <Panel defaultSize="28%" minSize="15%" maxSize="50%" className="ide-sidebar">
-              <div className="sidebar-header">
-                <strong>{activeProject?.name ?? 'No project'}</strong>
-              </div>
-              {activePanel === 'explorer' && activeProject && (
-                <FileTree rootPath={activeProject.path} onFileSelect={handleFileSelect} refreshKey={treeRefreshKey} />
-              )}
-              {activePanel === 'search' && activeProject && (
-                <SearchPanel rootPath={activeProject.path} onResultClick={handleFileSelect} />
-              )}
-              {activePanel === 'git' && activeProject && (
-                <GitPanel projectPath={activeProject.path} onOpenDiff={handleOpenDiff} />
-              )}
-              {activePanel === 'projects' && <ProjectList />}
+              {sidebarContent}
             </Panel>
             <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
           </>
