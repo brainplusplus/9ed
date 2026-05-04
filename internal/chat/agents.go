@@ -29,8 +29,9 @@ func DiscoverAgents() []Agent {
 			Command: ka.cmd,
 			Args:    []string{},
 		}
-		if _, err := exec.LookPath(ka.cmd); err == nil {
+		if fullPath, err := exec.LookPath(ka.cmd); err == nil {
 			a.Available = true
+			a.Command = fullPath // store resolved full path for PTY spawn
 		}
 		agents = append(agents, a)
 	}
