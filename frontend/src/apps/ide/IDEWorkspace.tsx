@@ -11,6 +11,7 @@ import { ProjectList } from '../../components/sidebar/ProjectList';
 import { GitPanel } from '../../components/git/GitPanel';
 import { EditorArea } from '../../components/editor/EditorArea';
 import { TerminalPanel } from '../../components/terminal/TerminalPanel';
+import { ChatPanel } from '../../components/chat/ChatPanel';
 import { getFileContent } from '../../api';
 import type { FileTab } from '../../types';
 
@@ -32,11 +33,13 @@ export function IDEWorkspace() {
   const activePanel = useWorkspaceStore((s) => s.activePanel);
   const sidebarVisible = useWorkspaceStore((s) => s.sidebarVisible);
   const terminalVisible = useWorkspaceStore((s) => s.terminalVisible);
+  const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const projects = useWorkspaceStore((s) => s.projects);
   const openFile = useWorkspaceStore((s) => s.openFile);
   const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
+  const toggleChat = useWorkspaceStore((s) => s.toggleChat);
   const setActivePanel = useWorkspaceStore((s) => s.setActivePanel);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
@@ -113,10 +116,14 @@ export function IDEWorkspace() {
         setActivePanel('git');
         if (!sidebarVisible) toggleSidebar();
       }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'l' || e.key === 'L')) {
+        e.preventDefault();
+        toggleChat();
+      }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleSidebar, toggleTerminal, setActivePanel, sidebarVisible]);
+  }, [toggleSidebar, toggleTerminal, toggleChat, setActivePanel, sidebarVisible]);
 
   return (
     <div className="ide-shell">
@@ -159,6 +166,14 @@ export function IDEWorkspace() {
             )}
           </Group>
         </Panel>
+        {chatVisible && (
+          <>
+            <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
+            <Panel defaultSize="25%" minSize="15%" maxSize="40%" className="ide-chat-area">
+              <ChatPanel />
+            </Panel>
+          </>
+        )}
       </Group>
     </div>
   );

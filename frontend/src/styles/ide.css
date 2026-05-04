@@ -748,3 +748,34 @@ body {
 .git-stash-item { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 0.8rem; }
 .git-load-more { padding: 8px 12px; border: none; background: transparent; color: var(--activity-fg); cursor: pointer; font-size: 0.8rem; text-align: center; width: 100%; }
 .git-load-more:hover { background: var(--sidebar-hover); }
+
+.ide-chat-area { border-left: 1px solid var(--border-color); display: flex; flex-direction: column; overflow: hidden; }
+.chat-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.chat-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--border-color); gap: 8px; }
+.chat-header-left { display: flex; align-items: center; gap: 8px; }
+.chat-header-right { display: flex; align-items: center; gap: 4px; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.chat-message { display: flex; flex-direction: column; gap: 4px; }
+.chat-message.user { align-items: flex-end; }
+.chat-message.assistant { align-items: flex-start; }
+.chat-message-bubble { max-width: 90%; padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; line-height: 1.5; }
+.chat-message.user .chat-message-bubble { background: #45475a; color: var(--sidebar-fg); }
+.chat-message.assistant .chat-message-bubble { background: var(--activity-bg); color: var(--sidebar-fg); }
+.chat-message-code { background: #11111b; border-radius: 6px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; overflow-x: auto; margin: 4px 0; }
+.chat-message-context { background: var(--activity-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 0.75rem; margin-bottom: 4px; cursor: pointer; }
+.chat-message-context-header { color: var(--activity-fg); font-size: 0.72rem; }
+.chat-input-area { padding: 8px 12px; border-top: 1px solid var(--border-color); display: flex; gap: 6px; align-items: flex-end; }
+.chat-textarea { flex: 1; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--activity-bg); color: var(--sidebar-fg); font-size: 0.85rem; resize: none; min-height: 36px; max-height: 144px; font-family: inherit; line-height: 1.4; }
+.chat-send-btn { padding: 6px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--sidebar-hover); color: var(--sidebar-fg); cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+.chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-send-btn.stop { background: #45273a; border-color: #f38ba8; color: #f38ba8; }
+.chat-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--activity-fg); font-size: 0.85rem; text-align: center; padding: 24px; }
+.chat-streaming { padding: 8px 12px; color: var(--activity-fg); font-size: 0.82rem; }
+.agent-picker { padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--activity-bg); color: var(--sidebar-fg); font-size: 0.8rem; cursor: pointer; }
+.chat-new-btn { padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--sidebar-hover); color: var(--sidebar-fg); cursor: pointer; font-size: 0.8rem; }
+
+.inline-prompt { position: absolute; z-index: 50; background: var(--sidebar-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); min-width: 280px; }
+.inline-prompt-input { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--activity-bg); color: var(--sidebar-fg); font-size: 0.82rem; width: 100%; }
+.inline-prompt-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.inline-prompt-btn { padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--sidebar-hover); color: var(--sidebar-fg); cursor: pointer; font-size: 0.75rem; }
+.inline-prompt-btn:hover { background: #585b70; }

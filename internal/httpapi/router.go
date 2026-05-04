@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"go-webttyd/internal/chat"
 	"go-webttyd/internal/shells"
 	"go-webttyd/internal/terminal"
 	"go-webttyd/internal/watcher"
@@ -28,6 +29,7 @@ type Dependencies struct {
 	Mode          string
 	WorkspaceRoot string
 	Watcher       *watcher.FileWatcher
+	ChatManager   *chat.Manager
 }
 
 type API struct {
@@ -37,6 +39,7 @@ type API struct {
 	mode          string
 	workspaceRoot string
 	watcher       *watcher.FileWatcher
+	chatManager   *chat.Manager
 }
 
 func New(deps Dependencies) *API {
@@ -47,6 +50,7 @@ func New(deps Dependencies) *API {
 		mode:          deps.Mode,
 		workspaceRoot: deps.WorkspaceRoot,
 		watcher:       deps.Watcher,
+		chatManager:   deps.ChatManager,
 	}
 }
 
@@ -69,6 +73,12 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/files/upload", a.handleFileUpload)
 	mux.HandleFunc("/api/files", a.handleFileDelete)
 	mux.HandleFunc("/ws/watch", a.handleFileWatch)
+
+	// Chat API routes
+	mux.HandleFunc("/api/chat/agents", a.handleChatAgents)
+	mux.HandleFunc("/api/chat/sessions", a.handleChatSessions)
+	mux.HandleFunc("/api/chat/sessions/", a.handleChatSessionByID)
+	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
 	// Git API routes
 	mux.HandleFunc("/api/git/status", a.handleGitStatus)

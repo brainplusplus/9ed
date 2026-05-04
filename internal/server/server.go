@@ -10,6 +10,7 @@ import (
 	"log"
 
 	"go-webttyd/internal/auth"
+	"go-webttyd/internal/chat"
 	"go-webttyd/internal/config"
 	"go-webttyd/internal/httpapi"
 	"go-webttyd/internal/shells"
@@ -35,12 +36,18 @@ func New(cfg config.Config) *Server {
 		}
 	}
 
+	var chatMgr *chat.Manager
+	if cfg.Mode == "full" {
+		chatMgr = chat.NewManager()
+	}
+
 	api := httpapi.New(httpapi.Dependencies{
 		Shells:        profiles,
 		Sessions:      manager,
 		Mode:          cfg.Mode,
 		WorkspaceRoot: cfg.WorkspaceRoot,
 		Watcher:       fw,
+		ChatManager:   chatMgr,
 	})
 
 	return &Server{

@@ -104,3 +104,35 @@ export type GutterChange = {
   endLine: number;
   type: 'added' | 'modified' | 'deleted';
 };
+
+// Chat types
+export type ChatAgent = {
+  id: string;
+  label: string;
+  available: boolean;
+};
+
+export type CodeContext = {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  selectedCode: string;
+  language: string;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  context?: CodeContext;
+  timestamp: number;
+};
+
+export type ChatSessionInfo = {
+  id: string;
+  agentId: string;
+  title: string;
+  messages: ChatMessage[];
+  status: 'idle' | 'streaming' | 'error';
+  createdAt: number;
+};

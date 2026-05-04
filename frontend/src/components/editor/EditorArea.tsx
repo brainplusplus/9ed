@@ -4,7 +4,9 @@ import { useGitGutter } from '../../hooks/useGitGutter';
 import { EditorTabs } from './EditorTabs';
 import { MonacoEditor } from './MonacoEditor';
 import { GitDiffView } from '../git/GitDiffView';
+import { InlinePrompt } from '../chat/InlinePrompt';
 import { saveFileContent } from '../../api';
+import type { CodeContext } from '../../types';
 
 type DiffTab = {
   id: string;
@@ -25,6 +27,7 @@ export function EditorArea() {
 
   const [diffTabs, setDiffTabs] = useState<DiffTab[]>([]);
   const [activeDiffId, setActiveDiffId] = useState<string | null>(null);
+  const [inlineSelection, setInlineSelection] = useState<{ context: CodeContext; position: { top: number; left: number } } | null>(null);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
   const activeFile = useMemo(
@@ -141,11 +144,20 @@ export function EditorArea() {
           key={activeFile.id}
           value={activeFile.content}
           language={activeFile.language}
+          filePath={activeFile.path}
           onChange={handleContentChange}
           onSave={handleSave}
           gutterChanges={gutterChanges}
+          onSelectionChange={setInlineSelection}
         />
       ) : null}
+      {inlineSelection && (
+        <InlinePrompt
+          context={inlineSelection.context}
+          position={inlineSelection.position}
+          onDismiss={() => setInlineSelection(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import type { AppConfig, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, ChatAgent, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, SearchResult, SessionResponse, ShellProfile } from './types';
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -318,4 +318,35 @@ export async function gitDiscard(project: string, paths: string[]): Promise<void
     const message = await response.text();
     throw new Error(message || 'Failed to discard changes');
   }
+}
+
+export async function getChatAgents(): Promise<ChatAgent[]> {
+  const response = await fetch('/api/chat/agents', { credentials: 'include' });
+  return parseResponse<ChatAgent[]>(response);
+}
+
+export async function createChatSession(agentId: string): Promise<{ id: string }> {
+  const response = await fetch('/api/chat/sessions', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId }),
+  });
+  return parseResponse<{ id: string }>(response);
+}
+
+export async function deleteChatSession(id: string): Promise<void> {
+  const response = await fetch(`/api/chat/sessions/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok && response.status !== 404) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to delete chat session');
+  }
+}
+
+export function createChatWebSocket(sessionId: string): WebSocket {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return new WebSocket(`${protocol}//${window.location.host}/ws/chat/${sessionId}`);
 }
