@@ -41,6 +41,15 @@ func New(cfg config.Config) *Server {
 		chatMgr = chat.NewManager()
 	}
 
+	var chatStore *chat.ChatStore
+	if cfg.Mode == "full" {
+		var err error
+		chatStore, err = chat.NewChatStore(chat.DefaultDBPath())
+		if err != nil {
+			log.Printf("warning: chat history unavailable: %v", err)
+		}
+	}
+
 	api := httpapi.New(httpapi.Dependencies{
 		Shells:        profiles,
 		Sessions:      manager,
@@ -48,6 +57,7 @@ func New(cfg config.Config) *Server {
 		WorkspaceRoot: cfg.WorkspaceRoot,
 		Watcher:       fw,
 		ChatManager:   chatMgr,
+		ChatStore:     chatStore,
 	})
 
 	return &Server{

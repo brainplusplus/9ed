@@ -136,3 +136,24 @@ export type ChatSessionInfo = {
   status: 'idle' | 'streaming' | 'error';
   createdAt: number;
 };
+
+export type HistorySessionRecord = {
+  id: string;
+  agentId: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type HistoryMessageRecord = {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  contextFile?: string;
+  contextStartLine?: number;
+  contextEndLine?: number;
+  contextCode?: string;
+  contextLanguage?: string;
+  timestamp: number;
+};

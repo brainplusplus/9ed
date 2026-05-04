@@ -1,4 +1,4 @@
-import type { AppConfig, ChatAgent, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -351,4 +351,59 @@ export async function deleteChatSession(id: string): Promise<void> {
 export function createChatWebSocket(sessionId: string): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return new WebSocket(`${protocol}//${window.location.host}/ws/chat/${sessionId}`);
+}
+
+export async function getChatHistory(): Promise<HistorySessionRecord[]> {
+  const response = await fetch('/api/chat/history', { credentials: 'include' });
+  return parseResponse<HistorySessionRecord[]>(response);
+}
+
+export async function getChatSessionMessages(sessionId: string): Promise<HistoryMessageRecord[]> {
+  const response = await fetch(`/api/chat/history/${sessionId}`, { credentials: 'include' });
+  return parseResponse<HistoryMessageRecord[]>(response);
+}
+
+export async function saveChatMessage(msg: {
+  sessionId: string;
+  agentId?: string;
+  title?: string;
+  role: string;
+  content: string;
+  context?: CodeContext;
+}): Promise<void> {
+  const body: Record<string, unknown> = {
+    sessionId: msg.sessionId,
+    agentId: msg.agentId,
+    title: msg.title,
+    role: msg.role,
+    content: msg.content,
+  };
+  if (msg.context) {
+    body.contextFile = msg.context.filePath;
+    body.contextStartLine = msg.context.startLine;
+    body.contextEndLine = msg.context.endLine;
+    body.contextCode = msg.context.selectedCode;
+    body.contextLanguage = msg.context.language;
+  }
+  const response = await fetch('/api/chat/history', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to save chat message');
+  }
+}
+
+export async function deleteChatHistory(sessionId: string): Promise<void> {
+  const response = await fetch(`/api/chat/history/${sessionId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok && response.status !== 404) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to delete chat history');
+  }
 }

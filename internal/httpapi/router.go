@@ -30,6 +30,7 @@ type Dependencies struct {
 	WorkspaceRoot string
 	Watcher       *watcher.FileWatcher
 	ChatManager   *chat.Manager
+	ChatStore     *chat.ChatStore
 }
 
 type API struct {
@@ -40,6 +41,7 @@ type API struct {
 	workspaceRoot string
 	watcher       *watcher.FileWatcher
 	chatManager   *chat.Manager
+	chatStore     *chat.ChatStore
 }
 
 func New(deps Dependencies) *API {
@@ -51,6 +53,7 @@ func New(deps Dependencies) *API {
 		workspaceRoot: deps.WorkspaceRoot,
 		watcher:       deps.Watcher,
 		chatManager:   deps.ChatManager,
+		chatStore:     deps.ChatStore,
 	}
 }
 
@@ -78,6 +81,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/agents", a.handleChatAgents)
 	mux.HandleFunc("/api/chat/sessions", a.handleChatSessions)
 	mux.HandleFunc("/api/chat/sessions/", a.handleChatSessionByID)
+	mux.HandleFunc("/api/chat/history", a.handleChatHistory)
+	mux.HandleFunc("/api/chat/history/", a.handleChatHistoryByID)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
 	// Git API routes

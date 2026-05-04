@@ -219,6 +219,140 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type chatHistoryMessageRequest struct {
+	SessionID    string `json:"sessionId"`
+	AgentID      string `json:"agentId"`
+	Title        string `json:"title"`
+	Role         string `json:"role"`
+	Content      string `json:"content"`
+	ContextFile  string `json:"contextFile,omitempty"`
+	ContextStart int    `json:"contextStartLine,omitempty"`
+	ContextEnd   int    `json:"contextEndLine,omitempty"`
+	ContextCode  string `json:"contextCode,omitempty"`
+	ContextLang  string `json:"contextLanguage,omitempty"`
+}
+
+func (a *API) handleChatHistory(w http.ResponseWriter, r *http.Request) {
+	if a.chatStore == nil {
+		http.Error(w, "chat history not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		sessions, err := a.chatStore.ListSessions(50)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if sessions == nil {
+			sessions = []chat.SessionRecord{}
+		}
+		writeJSON(w, http.StatusOK, sessions)
+
+	case http.MethodPost:
+		var req chatHistoryMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.SessionID == "" || req.Role == "" || req.Content == "" {
+			http.Error(w, "sessionId, role, and content are required", http.StatusBadRequest)
+			return
+		}
+
+		sessions, _ := a.chatStore.ListSessions(0)
+		sessionExists := false
+		for _, s := range sessions {
+			if s.ID == req.SessionID {
+				sessionExists = true
+				break
+			}
+		}
+
+		if !sessionExists {
+			agentId := req.AgentID
+			if agentId == "" {
+				agentId = "unknown"
+			}
+			title := req.Title
+			if title == "" {
+				title = truncate(req.Content, 50)
+			}
+			if err := a.chatStore.CreateSession(req.SessionID, agentId, title); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		now := time.Now().UnixMilli()
+		msgID := fmt.Sprintf("%s-%d", req.SessionID, now)
+		msg := chat.MessageRecord{
+			ID:           msgID,
+			SessionID:    req.SessionID,
+			Role:         req.Role,
+			Content:      req.Content,
+			ContextFile:  req.ContextFile,
+			ContextStart: req.ContextStart,
+			ContextEnd:   req.ContextEnd,
+			ContextCode:  req.ContextCode,
+			ContextLang:  req.ContextLang,
+			Timestamp:    now,
+		}
+		if err := a.chatStore.AddMessage(msg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+
+	default:
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) handleChatHistoryByID(w http.ResponseWriter, r *http.Request) {
+	if a.chatStore == nil {
+		http.Error(w, "chat history not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	sessionID := strings.TrimPrefix(r.URL.Path, "/api/chat/history/")
+	if sessionID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		messages, err := a.chatStore.GetMessages(sessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if messages == nil {
+			messages = []chat.MessageRecord{}
+		}
+		writeJSON(w, http.StatusOK, messages)
+
+	case http.MethodDelete:
+		if err := a.chatStore.DeleteSession(sessionID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 func findAgent(id string) (chat.Agent, bool) {
 	agents := chat.DiscoverAgents()
 	for _, a := range agents {

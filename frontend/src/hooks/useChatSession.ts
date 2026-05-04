@@ -14,6 +14,7 @@ export function useChatSession(): UseChatSessionResult {
   const addMessage = useChatStore((s) => s.addMessage);
   const appendToLastMessage = useChatStore((s) => s.appendToLastMessage);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
+  const finalizeAssistantMessage = useChatStore((s) => s.finalizeAssistantMessage);
 
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -39,6 +40,7 @@ export function useChatSession(): UseChatSessionResult {
             }
             break;
           case 'stream_end':
+            finalizeAssistantMessage(activeSessionId);
             setSessionStatus(activeSessionId, 'idle');
             break;
           case 'error':
@@ -61,7 +63,7 @@ export function useChatSession(): UseChatSessionResult {
       wsRef.current = null;
       setConnected(false);
     };
-  }, [activeSessionId, appendToLastMessage, setSessionStatus]);
+  }, [activeSessionId, appendToLastMessage, setSessionStatus, finalizeAssistantMessage]);
 
   const sendMessage = useCallback(
     (content: string, context?: CodeContext) => {
