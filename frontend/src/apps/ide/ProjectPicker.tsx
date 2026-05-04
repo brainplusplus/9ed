@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getConfig, getDrives, getFileTree } from '../../api';
-import { useWorkspaceStore, loadRecentProjects, type RecentProject } from '../../stores/workspace';
+import { getConfig, getDrives, getFileTree, getRecentProjects, removeRecentProject, type RecentProject } from '../../api';
+import { useWorkspaceStore } from '../../stores/workspace';
 import type { DirEntry } from '../../types';
 
 type TreeNode = DirEntry & { children?: TreeNode[]; expanded?: boolean; fullPath: string };
@@ -19,7 +19,7 @@ export function ProjectPicker() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setRecentProjects(loadRecentProjects());
+    void getRecentProjects().then(setRecentProjects).catch(() => {});
   }, []);
 
   const loadTree = useCallback(async (path: string) => {
@@ -108,15 +108,29 @@ export function ProjectPicker() {
             <h3 className="picker-section-title">Recent Projects</h3>
             <div className="picker-projects">
               {recentProjects.map((rp) => (
-                <button
-                  key={rp.path}
-                  className="picker-project-btn"
-                  onClick={() => addProject(rp.path, rp.name)}
-                  type="button"
-                >
-                  <span className="picker-project-name">{rp.name}</span>
-                  <span className="picker-project-path">{rp.path}</span>
-                </button>
+                <div key={rp.path} className="picker-project-row">
+                  <button
+                    className="picker-project-btn"
+                    onClick={() => addProject(rp.path, rp.name)}
+                    type="button"
+                  >
+                    <span className="picker-project-name">{rp.name}</span>
+                    <span className="picker-project-path">{rp.path}</span>
+                  </button>
+                  <button
+                    className="picker-project-remove"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void removeRecentProject(rp.path).then(() => {
+                        setRecentProjects((prev) => prev.filter((p) => p.path !== rp.path));
+                      });
+                    }}
+                    type="button"
+                    title="Remove from recent"
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
             </div>
             <div className="picker-divider" />

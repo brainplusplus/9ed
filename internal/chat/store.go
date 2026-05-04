@@ -22,6 +22,12 @@ type SessionRecord struct {
 	UpdatedAt int64  `json:"updatedAt"`
 }
 
+type RecentProject struct {
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	LastOpened int64  `json:"lastOpened"`
+}
+
 type MessageRecord struct {
 	ID           string `json:"id"`
 	SessionID    string `json:"sessionId"`
@@ -45,7 +51,7 @@ func DefaultDBPath() string {
 	if home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".go-webttyd", "chat.db")
+	return filepath.Join(home, ".go-webttyd", "ide.db")
 }
 
 func NewChatStore(dbPath string) (*ChatStore, error) {
@@ -101,6 +107,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS recent_projects (
+    path TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    last_opened INTEGER NOT NULL
+);
 `
 	_, err := db.Exec(schema)
 	return err
@@ -200,6 +212,45 @@ func (s *ChatStore) GetMessages(sessionId string) ([]MessageRecord, error) {
 		messages = append(messages, m)
 	}
 	return messages, rows.Err()
+}
+
+func (s *ChatStore) ListRecentProjects(limit int) ([]RecentProject, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		"SELECT path, name, last_opened FROM recent_projects ORDER BY last_opened DESC LIMIT ?",
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []RecentProject
+	for rows.Next() {
+		var p RecentProject
+		if err := rows.Scan(&p.Path, &p.Name, &p.LastOpened); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+	return projects, rows.Err()
+}
+
+func (s *ChatStore) SaveRecentProject(path, name string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.Exec(
+		`INSERT INTO recent_projects (path, name, last_opened) VALUES (?, ?, ?)
+		 ON CONFLICT(path) DO UPDATE SET name = excluded.name, last_opened = excluded.last_opened`,
+		path, name, now,
+	)
+	return err
+}
+
+func (s *ChatStore) RemoveRecentProject(path string) error {
+	_, err := s.db.Exec("DELETE FROM recent_projects WHERE path = ?", path)
+	return err
 }
 
 func nullString(s string) interface{} {

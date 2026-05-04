@@ -1,24 +1,6 @@
 import { create } from 'zustand';
 import type { ActivePanel, FileTab, Project } from '../types';
-
-const STORAGE_KEY = 'webide-recent-projects';
-
-type RecentProject = { path: string; name: string; lastOpened: number };
-
-function loadRecentProjects(): RecentProject[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveRecentProject(path: string, name: string) {
-  const recent = loadRecentProjects().filter((p) => p.path !== path);
-  recent.unshift({ path, name, lastOpened: Date.now() });
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(recent.slice(0, 20)));
-}
-
-export { loadRecentProjects, type RecentProject };
+import { saveRecentProject } from '../api';
 
 type WorkspaceState = {
   projects: Project[];
@@ -67,7 +49,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   addProject: (path, name) => {
     const id = generateId();
-    saveRecentProject(path, name);
+    void saveRecentProject(path, name);
     set((state) => ({
       projects: [...state.projects, { id, path, name, openFiles: [], activeFileId: null, terminalSessions: [] }],
       activeProjectId: id,

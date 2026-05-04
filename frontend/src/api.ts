@@ -407,3 +407,36 @@ export async function deleteChatHistory(sessionId: string): Promise<void> {
     throw new Error(message || 'Failed to delete chat history');
   }
 }
+
+export type RecentProject = { path: string; name: string; lastOpened: number };
+
+export async function getRecentProjects(): Promise<RecentProject[]> {
+  const response = await fetch('/api/projects/recent', { credentials: 'include' });
+  return parseResponse<RecentProject[]>(response);
+}
+
+export async function saveRecentProject(path: string, name: string): Promise<void> {
+  const response = await fetch('/api/projects/recent', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, name }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to save recent project');
+  }
+}
+
+export async function removeRecentProject(path: string): Promise<void> {
+  const response = await fetch('/api/projects/recent', {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to remove recent project');
+  }
+}

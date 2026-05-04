@@ -85,6 +85,9 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/history/", a.handleChatHistoryByID)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
+	// Projects API routes
+	mux.HandleFunc("/api/projects/recent", a.handleRecentProjects)
+
 	// Git API routes
 	mux.HandleFunc("/api/git/status", a.handleGitStatus)
 	mux.HandleFunc("/api/git/log", a.handleGitLog)
