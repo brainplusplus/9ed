@@ -37,6 +37,8 @@ export function MonacoEditor({ value, language, filePath, onChange, onSave, gutt
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
   const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
 
   const checkSelection = useCallback(() => {
     const ed = editorRef.current;
@@ -85,8 +87,8 @@ export function MonacoEditor({ value, language, filePath, onChange, onSave, gutt
     editorRef.current = editorInstance;
     editorInstance.addCommand(
       // eslint-disable-next-line no-bitwise
-      2048 | 49, // KeyMod.CtrlCmd | KeyCode.KeyS
-      () => onSave(),
+      2048 | 49,
+      () => onSaveRef.current(),
     );
 
     if (gutterChanges && gutterChanges.length > 0) {
@@ -126,6 +128,7 @@ export function MonacoEditor({ value, language, filePath, onChange, onSave, gutt
         height="100%"
         language={language}
         value={value}
+        path={filePath}
         theme="vs-dark"
         onChange={(val) => onChange(val ?? '')}
         onMount={handleMount}

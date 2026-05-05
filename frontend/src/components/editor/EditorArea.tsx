@@ -5,7 +5,8 @@ import { EditorTabs } from './EditorTabs';
 import { MonacoEditor } from './MonacoEditor';
 import { GitDiffView } from '../git/GitDiffView';
 import { InlinePrompt } from '../chat/InlinePrompt';
-import { saveFileContent } from '../../api';
+import { getFileContent, saveFileContent } from '../../api';
+import { recentSaveTimestamps } from '../../apps/ide/IDEWorkspace';
 import type { CodeContext } from '../../types';
 
 type DiffTab = {
@@ -24,6 +25,7 @@ export function EditorArea() {
   const setActiveFile = useWorkspaceStore((s) => s.setActiveFile);
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const markFileSaved = useWorkspaceStore((s) => s.markFileSaved);
+  const resolveConflict = useWorkspaceStore((s) => s.resolveConflict);
 
   const [diffTabs, setDiffTabs] = useState<DiffTab[]>([]);
   const [activeDiffId, setActiveDiffId] = useState<string | null>(null);
@@ -45,6 +47,8 @@ export function EditorArea() {
   const handleSave = useCallback(async () => {
     if (!activeProjectId || !activeFile) return;
     try {
+      const normalizedPath = activeFile.path.replace(/\\/g, '/');
+      recentSaveTimestamps.set(normalizedPath, Date.now());
       await saveFileContent(activeFile.path, activeFile.content);
       markFileSaved(activeProjectId, activeFile.id);
     } catch (err) {
@@ -83,12 +87,16 @@ export function EditorArea() {
       id: f.id,
       name: f.name,
       modified: f.modified,
+      conflict: f.conflict,
+      deleted: f.deleted,
       isDiff: false,
     }));
     const dTabs = diffTabs.map((d) => ({
       id: d.id,
       name: `↔ ${d.name}`,
       modified: false,
+      conflict: false,
+      deleted: false,
       isDiff: true,
     }));
     return [...fileTabs, ...dTabs];
@@ -114,20 +122,20 @@ export function EditorArea() {
     }
   }, [activeProjectId, closeFile, closeDiffTab]);
 
-  if (!activeProject || (activeProject.openFiles.length === 0 && diffTabs.length === 0)) {
-    return (
-      <div className="editor-empty">
-        <p>Open a file from the explorer to start editing.</p>
-      </div>
-    );
-  }
+  const isEmpty = !activeProject || (activeProject.openFiles.length === 0 && diffTabs.length === 0);
 
   return (
     <div className="editor-area" data-has-diff-support="true" ref={(el) => {
       if (el) (el as HTMLDivElement & { openDiffTab?: typeof openDiffTab }).openDiffTab = openDiffTab;
     }}>
+      {isEmpty ? (
+        <div className="editor-empty">
+          <p>Open a file from the explorer to start editing.</p>
+        </div>
+      ) : (
+        <>
       <EditorTabs
-        files={allTabs.map((t) => ({ id: t.id, path: t.id, name: t.name, content: '', language: '', modified: t.modified }))}
+        files={allTabs.map((t) => ({ id: t.id, path: t.id, name: t.name, content: '', language: '', modified: t.modified, conflict: t.conflict, deleted: t.deleted }))}
         activeFileId={activeTabId}
         onSelect={handleTabSelect}
         onClose={handleTabClose}
@@ -140,16 +148,65 @@ export function EditorArea() {
           filePath={activeDiff.filePath}
         />
       ) : activeFile ? (
-        <MonacoEditor
-          key={activeFile.id}
-          value={activeFile.content}
-          language={activeFile.language}
-          filePath={activeFile.path}
-          onChange={handleContentChange}
-          onSave={handleSave}
-          gutterChanges={gutterChanges}
-          onSelectionChange={setInlineSelection}
-        />
+        <>
+          {activeFile.conflict && (
+            <div className="editor-conflict-bar">
+              <span>⚠ File changed on disk.</span>
+              <button type="button" onClick={() => {
+                if (!activeProjectId) return;
+                recentSaveTimestamps.set(activeFile.path.replace(/\\/g, '/'), Date.now());
+                void saveFileContent(activeFile.path, activeFile.content).then(() => {
+                  resolveConflict(activeProjectId, activeFile.id, 'overwrite');
+                  markFileSaved(activeProjectId, activeFile.id);
+                });
+              }}>Overwrite</button>
+              <button type="button" onClick={() => {
+                if (!activeProjectId) return;
+                void getFileContent(activeFile.path).then((fc) => {
+                  resolveConflict(activeProjectId, activeFile.id, 'revert', fc.content);
+                });
+              }}>Revert</button>
+            </div>
+          )}
+          {activeFile.deleted && (
+            <div className="editor-conflict-bar deleted">
+              <span>⊘ File has been deleted from disk.</span>
+              <button type="button" onClick={() => {
+                if (!activeProjectId) return;
+                recentSaveTimestamps.set(activeFile.path.replace(/\\/g, '/'), Date.now());
+                void saveFileContent(activeFile.path, activeFile.content).then(() => {
+                  const store = useWorkspaceStore.getState();
+                  store.markFileSaved(activeProjectId, activeFile.id);
+                  useWorkspaceStore.setState({
+                    projects: store.projects.map((p) =>
+                      p.id === activeProjectId
+                        ? { ...p, openFiles: p.openFiles.map((f) => f.id === activeFile.id ? { ...f, deleted: false } : f) }
+                        : p
+                    ),
+                  });
+                });
+              }}>Recreate</button>
+              <button type="button" onClick={() => {
+                if (activeProjectId) closeFile(activeProjectId, activeFile.id);
+              }}>Close</button>
+            </div>
+          )}
+          <MonacoEditor
+            key={activeFile.id}
+            value={activeFile.content}
+            language={activeFile.language}
+            filePath={activeFile.path}
+            onChange={handleContentChange}
+            onSave={handleSave}
+            gutterChanges={gutterChanges}
+            onSelectionChange={setInlineSelection}
+          />
+          {activeFile.modified && (
+            <button className="editor-save-fab" onClick={handleSave} type="button" title="Save (Ctrl+S)">
+              💾
+            </button>
+          )}
+        </>
       ) : null}
       {inlineSelection && (
         <InlinePrompt
@@ -157,6 +214,8 @@ export function EditorArea() {
           position={inlineSelection.position}
           onDismiss={() => setInlineSelection(null)}
         />
+      )}
+      </>
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,23 @@ type chatSessionInfo struct {
 }
 
 type chatWSInbound struct {
-	Type     string          `json:"type"`
-	Content  string          `json:"content,omitempty"`
-	Context  json.RawMessage `json:"context,omitempty"`
-	ConfigID string          `json:"configId,omitempty"`
-	Value    string          `json:"value,omitempty"`
+	Type        string            `json:"type"`
+	Content     string            `json:"content,omitempty"`
+	Context     json.RawMessage   `json:"context,omitempty"`
+	ConfigID    string            `json:"configId,omitempty"`
+	Value       string            `json:"value,omitempty"`
+	Attachments []chatAttachment  `json:"attachments,omitempty"`
+
+	PermissionID string `json:"permissionId,omitempty"`
+	OptionID     string `json:"optionId,omitempty"`
+	Cancelled    bool   `json:"cancelled,omitempty"`
+	AutoApprove  bool   `json:"autoApprove,omitempty"`
+}
+
+type chatAttachment struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+	Name string `json:"name"`
 }
 
 func (a *API) handleChatAgents(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +192,9 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			if msg.Context != nil && len(msg.Context) > 0 {
 				content = formatContextMessage(msg.Content, msg.Context)
 			}
+			if len(msg.Attachments) > 0 {
+				content = formatAttachments(content, msg.Attachments)
+			}
 			if err := session.Send(ctx, content); err != nil {
 				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
@@ -192,6 +208,16 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err := session.SetConfigOption(ctx, msg.ConfigID, msg.Value); err != nil {
 				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
+
+		case "permission_response":
+			session.RespondPermission(chat.PermissionResponse{
+				PermissionID: msg.PermissionID,
+				OptionID:     msg.OptionID,
+				Cancelled:    msg.Cancelled,
+			})
+
+		case "set_auto_approve":
+			session.SetAutoApprove(msg.AutoApprove)
 
 		default:
 			sendEvent(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})
@@ -364,6 +390,22 @@ func findAgentDescriptor(id string) (chat.AgentDescriptor, bool) {
 		}
 	}
 	return chat.AgentDescriptor{}, false
+}
+
+func formatAttachments(content string, attachments []chatAttachment) string {
+	var sb strings.Builder
+	for _, att := range attachments {
+		if att.Type == "file" {
+			data, err := os.ReadFile(att.Path)
+			if err == nil {
+				sb.WriteString(fmt.Sprintf("\n\nFile: %s\n```\n%s\n```\n", att.Name, string(data)))
+			}
+		}
+	}
+	if sb.Len() > 0 {
+		return content + sb.String()
+	}
+	return content
 }
 
 func formatContextMessage(content string, ctx json.RawMessage) string {

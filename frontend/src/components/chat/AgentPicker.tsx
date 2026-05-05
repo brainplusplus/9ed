@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useChatStore } from '../../stores/chat';
-import { useChatSession } from '../../hooks/useChatSession';
 import { createChatSession } from '../../api';
 import type { ChatSessionInfo, ConfigOptionInfo } from '../../types';
 
@@ -76,20 +75,32 @@ export function AgentPicker() {
   );
 }
 
-export function ConfigBar() {
+type ConfigBarProps = {
+  setConfigOption?: (configId: string, value: string) => void;
+  setAutoApprove?: (enabled: boolean) => void;
+};
+
+export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
-  const { setConfigOption } = useChatSession();
+  const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
+  const toggleIncludeIgnored = useChatStore((s) => s.toggleIncludeIgnored);
+  const autoApprove = useChatStore((s) => s.autoApprove);
+  const toggleAutoApprove = useChatStore((s) => s.toggleAutoApprove);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const configOptions = activeSession?.configOptions ?? [];
 
-  if (configOptions.length === 0) return null;
-
   const handleChange = (configId: string, value: string) => {
     setOpenDropdown(null);
-    setConfigOption(configId, value);
+    setConfigOption?.(configId, value);
+  };
+
+  const handleAutoApproveToggle = () => {
+    const newValue = !autoApprove;
+    toggleAutoApprove();
+    setAutoApprove?.(newValue);
   };
 
   return (
@@ -103,6 +114,22 @@ export function ConfigBar() {
           onChange={(value) => handleChange(opt.id, value)}
         />
       ))}
+      <label className="chat-config-toggle" title="Auto-approve all tool permissions (yolo mode)">
+        <input
+          type="checkbox"
+          checked={autoApprove}
+          onChange={handleAutoApproveToggle}
+        />
+        <span className="chat-config-toggle-label">🔓 Auto</span>
+      </label>
+      <label className="chat-config-toggle" title="Include gitignored files in @ mentions">
+        <input
+          type="checkbox"
+          checked={includeIgnored}
+          onChange={toggleIncludeIgnored}
+        />
+        <span className="chat-config-toggle-label">@ ignored</span>
+      </label>
     </div>
   );
 }

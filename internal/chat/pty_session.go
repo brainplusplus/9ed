@@ -99,6 +99,8 @@ func (s *ptySession) AgentID() string    { return s.agentID }
 func (s *ptySession) Mode() SessionMode  { return ModePTY }
 func (s *ptySession) Events() <-chan ChatEvent { return s.events }
 func (s *ptySession) Done() <-chan struct{}    { return s.done }
+func (s *ptySession) RespondPermission(_ PermissionResponse) {}
+func (s *ptySession) SetAutoApprove(_ bool) {}
 
 func (s *ptySession) SetConfigOption(_ context.Context, _, _ string) error {
 	return nil

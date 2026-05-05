@@ -25,6 +25,7 @@ var knownAgents = []struct {
 	{"opencode", "OpenCode", "opencode", "opencode", []string{"acp"}},
 	{"claude", "Claude Code", "claude", "claude-agent-acp", []string{}},
 	{"codex", "Codex CLI", "codex", "codex-acp", []string{}},
+	{"gemini", "Gemini CLI", "gemini", "gemini", []string{"--experimental-acp"}},
 	{"pi", "Pi", "pi", "pi-acp", []string{}},
 	{"amp", "Amp", "amp", "amp-acp", []string{}},
 	{"copilot", "GitHub Copilot", "copilot", "github-copilot-cli", []string{}},
@@ -52,6 +53,7 @@ func DiscoverAgents() []Agent {
 var ptyFallbackArgs = map[string][]string{
 	"claude": {"--print", "--output-format", "stream-json", "--verbose"},
 	"codex":  {"--quiet"},
+	"gemini": {"--output-format", "stream-json", "--prompt"},
 }
 
 // DiscoverAgentDescriptors returns agents with ACP capability metadata.

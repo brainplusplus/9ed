@@ -2,6 +2,9 @@
 
 Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and responsive layout.
 
+![Desktop - Explorer & Editor](docs/screenshots/desktop-explorer.png)
+![Desktop - Git Diff View](docs/screenshots/desktop-git-diff.png)
+
 ## Features
 
 ### Terminal
@@ -11,10 +14,13 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and re
 
 ### IDE Mode (Full)
 - Monaco Editor with multi-tab file editing
-- File explorer with tree navigation
+- File explorer with tree navigation and context menu (New, Rename, Delete, Copy, Cut, Paste)
 - Full-text search across project files
 - Multi-project workspace support
 - Real-time file watcher (auto-sync on external changes)
+- Workspace state persistence (open tabs, active file restored on reopen)
+- Vue & Svelte syntax highlighting
+- .gitignore-aware file dimming in explorer
 
 ### Git Source Control
 - Full git panel: status, stage/unstage, commit, push, pull
@@ -24,10 +30,12 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and re
 - Diff view (Monaco DiffEditor, side-by-side) — click any changed file to see diff
 - Git gutter decorations (green=added, blue=modified, red=deleted)
 - File-level discard changes
+- Change count badge on activity bar icon
+- Untracked files show full content as added (green)
 
 ### AI Chat (ACP Protocol)
 - **ACP (Agent Client Protocol)** — structured JSON-RPC 2.0 communication with AI agents
-- Supports: OpenCode, Claude Code, Codex CLI, Pi, Amp, GitHub Copilot
+- Supports: OpenCode, Claude Code, Codex CLI, Gemini, Pi, Amp, GitHub Copilot
 - Auto-install ACP adapters (npm) when agent is selected
 - Dynamic model picker, mode/agent selector, thinking level — all from ACP `configOptions`
 - Slash command autocomplete from `available_commands_update`
@@ -38,11 +46,27 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and re
 - Diff view for file changes made by agent
 - Auto-title sessions from first message or agent-generated title
 - PTY fallback for agents without ACP adapter
+- **Permission dialog** — approve/reject tool calls (ACP `session/request_permission`)
+- **Auto-approve mode** — skip permission prompts for trusted environments
+- **Message queue** — type and queue messages while agent is streaming
+- **@ file mentions** — reference any project file with autocomplete (filename + directory path)
+
+![Mobile - Chat](docs/screenshots/mobile-chat.png)
+![Mobile - Editor](docs/screenshots/mobile-editor.png)
 
 ### Responsive Layout
 - **Desktop** (≥1024px): Full panel layout with resizable sidebar, editor, terminal, chat
 - **Tablet** (768–1023px): Overlay sidebar and chat panels
 - **Mobile** (<768px): Single-panel view with bottom navigation
+- File/git click auto-switches to editor view on mobile/tablet
+- Floating save button on mobile/tablet
+
+### Editor Features
+- Context menu on tabs: Close, Close Others, Close Left/Right, Close All, Copy Path
+- Context menu on files: New File/Folder, Cut, Copy, Paste, Duplicate, Rename, Delete
+- Conflict detection: "File changed on disk" bar with Overwrite/Revert options
+- Deleted file detection: indicator + Recreate/Close options
+- External change auto-reload (when no unsaved edits)
 
 ### Security
 - Basic Auth protection for UI, API, and WebSocket
@@ -54,7 +78,7 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and re
 - Go 1.24+
 - Node.js 20+
 - Git (for source control features)
-- Optional: OpenCode, Claude Code, Codex CLI, Pi, Amp (for AI chat)
+- Optional: OpenCode, Claude Code, Codex CLI, Gemini, Pi, Amp (for AI chat)
 
 ## Quick Start
 
@@ -97,6 +121,7 @@ npm run start
 | OpenCode | Native (`opencode acp`) | — | PTY |
 | Claude Code | Via adapter (`claude-agent-acp`) | `npm i -g @agentclientprotocol/claude-agent-acp` | PTY |
 | Codex CLI | Via adapter (`codex-acp`) | `npm i -g @zed-industries/codex-acp` | PTY |
+| Gemini | Native (`gemini --experimental-acp`) | — | PTY |
 | Pi | Via adapter (`pi-acp`) | `npm i -g pi-acp` | PTY |
 | Amp | Via adapter (`amp-acp`) | `npm i -g amp-acp` | PTY |
 | GitHub Copilot | Via adapter (`github-copilot-cli`) | `npm i -g github-copilot-cli` | — |
@@ -114,6 +139,8 @@ ACP adapters are auto-installed when you select an agent for the first time. No 
 | `F1` | Show keyboard shortcuts |
 | `Ctrl+S` | Save file |
 | `Ctrl+Shift+I` | Inline AI prompt (select code first) |
+| `F2` | Rename file (in explorer) |
+| Right-click | Context menu (explorer, tabs) |
 
 ## Project Structure
 
@@ -124,9 +151,9 @@ internal/
   auth/                — Basic Auth middleware + session cookies
   shells/              — OS-aware shell discovery
   terminal/            — PTY session spawning and management
-  filesystem/          — File operations with path security
+  filesystem/          — File operations with path security (recursive copy)
   watcher/             — Real-time file watcher (fsnotify)
-  git/                 — Git CLI wrapper (status, log, branch, diff, stash, blame)
+  git/                 — Git CLI wrapper (status, log, branch, diff, stash, blame, check-ignore)
   chat/
     acp/               — ACP client (JSON-RPC 2.0 over stdio)
       protocol.go      — ACP message types and constants
@@ -134,23 +161,25 @@ internal/
       adapter.go       — Subprocess lifecycle + high-level ACP methods
     acpinstall/        — Auto-install ACP adapters via npm/pip
     agentconfig/       — Agent config file detection (models, providers)
-    agent.go           — Unified ChatSession interface (ACP + PTY)
+    agent.go           — Unified ChatSession interface (ACP + PTY + permission handling)
     pty_session.go     — PTY fallback implementation
     session_manager.go — Session lifecycle management
+    store.go           — SQLite persistence (chat history, workspace state, recent projects)
   httpapi/             — REST API + WebSocket handlers
   server/              — HTTP assembly and static serving
 frontend/src/
   apps/ide/            — IDE mode entry (workspace, project picker)
   apps/terminal/       — Simple terminal mode
+  config/              — Monaco editor setup (TS/JS diagnostics, Vue/Svelte languages)
   components/
-    editor/            — Monaco editor, diff view, tabs
-    git/               — Git panel, status list, branch picker, stash
-    chat/              — Chat panel, messages, input, agent picker, config bar
-    sidebar/           — Activity bar, file tree, search, projects
+    editor/            — Monaco editor, diff view, tabs with context menu
+    git/               — Git panel, status list, branch picker, stash, diff view
+    chat/              — Chat panel, messages, input, agent picker, permission dialog, queue
+    sidebar/           — Activity bar (with badge), file tree (with context menu), search
     terminal/          — Terminal panel (xterm.js)
-    shared/            — Bottom nav, shortcuts help
+    shared/            — Bottom nav, shortcuts help, context menu
   stores/              — Zustand state (workspace, git, chat)
-  hooks/               — Custom hooks (git status, gutter, chat, layout)
+  hooks/               — Custom hooks (git status, gutter, chat, layout, workspace persistence)
 ```
 
 ## Development

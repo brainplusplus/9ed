@@ -86,6 +86,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
 	mux.HandleFunc("/api/projects/recent", a.handleRecentProjects)
+	mux.HandleFunc("/api/workspace/state", a.handleWorkspaceState)
 
 	mux.HandleFunc("/api/git/status", a.handleGitStatus)
 	mux.HandleFunc("/api/git/log", a.handleGitLog)
@@ -103,6 +104,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/git/blame", a.handleGitBlame)
 	mux.HandleFunc("/api/git/discard", a.handleGitDiscard)
 	mux.HandleFunc("/api/git/file-at-head", a.handleGitFileAtHEAD)
+	mux.HandleFunc("/api/git/files", a.handleGitFiles)
 
 	return mux
 }

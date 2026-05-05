@@ -322,6 +322,14 @@ export async function gitDiscard(project: string, paths: string[]): Promise<void
   }
 }
 
+export type GitRepoFile = { path: string; ignored?: boolean };
+
+export async function getGitFiles(project: string, includeIgnored: boolean): Promise<GitRepoFile[]> {
+  const params = new URLSearchParams({ project, includeIgnored: String(includeIgnored) });
+  const response = await fetch(`/api/git/files?${params}`, { credentials: 'include' });
+  return parseResponse<GitRepoFile[]>(response);
+}
+
 export async function getChatAgents(): Promise<ChatAgent[]> {
   const response = await fetch('/api/chat/agents', { credentials: 'include' });
   return parseResponse<ChatAgent[]>(response);
@@ -408,6 +416,29 @@ export async function deleteChatHistory(sessionId: string): Promise<void> {
     const message = await response.text();
     throw new Error(message || 'Failed to delete chat history');
   }
+}
+
+export type WorkspaceState = {
+  openFiles: { path: string; name: string; language: string }[];
+  activeFilePath: string | null;
+  sidebarPanel: string;
+  chatVisible: boolean;
+};
+
+export async function getWorkspaceState(projectPath: string): Promise<WorkspaceState | null> {
+  const response = await fetch(`/api/workspace/state?projectPath=${encodeURIComponent(projectPath)}`, { credentials: 'include' });
+  if (!response.ok) return null;
+  const data = await response.json();
+  return data ?? null;
+}
+
+export async function saveWorkspaceState(projectPath: string, state: WorkspaceState): Promise<void> {
+  await fetch('/api/workspace/state', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectPath, state }),
+  });
 }
 
 export type RecentProject = { path: string; name: string; lastOpened: number };

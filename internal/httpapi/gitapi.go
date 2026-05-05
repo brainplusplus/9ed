@@ -517,6 +517,33 @@ func (a *API) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (a *API) handleGitFiles(w http.ResponseWriter, r *http.Request) {
+	if !a.requireFullMode(w) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		project = a.workspaceRoot
+	}
+	includeIgnored := r.URL.Query().Get("includeIgnored") == "true"
+
+	repo := git.New(project)
+	files, err := repo.ListFiles(includeIgnored)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if files == nil {
+		files = []git.RepoFile{}
+	}
+	writeJSON(w, http.StatusOK, files)
+}
+
 func (a *API) handleGitFileAtHEAD(w http.ResponseWriter, r *http.Request) {
 	if !a.requireFullMode(w) {
 		return
@@ -539,7 +566,7 @@ func (a *API) handleGitFileAtHEAD(w http.ResponseWriter, r *http.Request) {
 	repo := git.New(project)
 	content, err := repo.FileAtHEAD(path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSON(w, http.StatusOK, map[string]string{"content": ""})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})

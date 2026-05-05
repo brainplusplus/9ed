@@ -22,9 +22,18 @@ type WorkspaceState = {
 
   openFile: (projectId: string, file: FileTab) => void;
   closeFile: (projectId: string, fileId: string) => void;
+  closeOtherFiles: (projectId: string, fileId: string) => void;
+  closeFilesToLeft: (projectId: string, fileId: string) => void;
+  closeFilesToRight: (projectId: string, fileId: string) => void;
+  closeAllFiles: (projectId: string) => void;
   setActiveFile: (projectId: string, fileId: string) => void;
   updateFileContent: (projectId: string, fileId: string, content: string) => void;
   markFileSaved: (projectId: string, fileId: string) => void;
+  renameOpenFile: (projectId: string, oldPath: string, newPath: string, newName: string) => void;
+  closeFileByPath: (projectId: string, filePath: string) => void;
+  markFileConflict: (projectId: string, fileId: string) => void;
+  markFileDeleted: (projectId: string, filePath: string) => void;
+  resolveConflict: (projectId: string, fileId: string, action: 'overwrite' | 'revert', newContent?: string) => void;
 
   addTerminalSession: (projectId: string, sessionId: string) => void;
   removeTerminalSession: (projectId: string, sessionId: string) => void;
@@ -44,7 +53,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   activePanel: 'explorer',
   sidebarVisible: true,
   terminalVisible: true,
-  chatVisible: false,
+  chatVisible: true,
   showPicker: false,
 
   addProject: (path, name) => {
@@ -103,6 +112,43 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       }),
     })),
 
+  closeOtherFiles: (projectId, fileId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const kept = p.openFiles.filter((f) => f.id === fileId);
+        return { ...p, openFiles: kept, activeFileId: kept.length ? fileId : null };
+      }),
+    })),
+
+  closeFilesToLeft: (projectId, fileId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const idx = p.openFiles.findIndex((f) => f.id === fileId);
+        const kept = p.openFiles.slice(idx);
+        const activeStillOpen = kept.some((f) => f.id === p.activeFileId);
+        return { ...p, openFiles: kept, activeFileId: activeStillOpen ? p.activeFileId : fileId };
+      }),
+    })),
+
+  closeFilesToRight: (projectId, fileId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const idx = p.openFiles.findIndex((f) => f.id === fileId);
+        const kept = p.openFiles.slice(0, idx + 1);
+        const activeStillOpen = kept.some((f) => f.id === p.activeFileId);
+        return { ...p, openFiles: kept, activeFileId: activeStillOpen ? p.activeFileId : fileId };
+      }),
+    })),
+
+  closeAllFiles: (projectId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        openFiles: [],
+        activeFileId: null,
+      })),
+    })),
+
   setActiveFile: (projectId, fileId) =>
     set((state) => ({
       projects: updateProject(state.projects, projectId, (p) => ({ ...p, activeFileId: fileId })),
@@ -122,6 +168,63 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         ...p,
         openFiles: p.openFiles.map((f) => (f.id === fileId ? { ...f, modified: false } : f)),
       })),
+    })),
+
+  markFileConflict: (projectId, fileId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        openFiles: p.openFiles.map((f) => (f.id === fileId ? { ...f, conflict: true } : f)),
+      })),
+    })),
+
+  markFileDeleted: (projectId, filePath) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        openFiles: p.openFiles.map((f) => (f.path === filePath ? { ...f, deleted: true } : f)),
+      })),
+    })),
+
+  resolveConflict: (projectId, fileId, action, newContent) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        openFiles: p.openFiles.map((f) => {
+          if (f.id !== fileId) return f;
+          if (action === 'revert' && newContent !== undefined) {
+            return { ...f, content: newContent, modified: false, conflict: false };
+          }
+          return { ...f, conflict: false };
+        }),
+      })),
+    })),
+
+  renameOpenFile: (projectId, oldPath, newPath, newName) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        openFiles: p.openFiles.map((f) =>
+          f.path === oldPath ? { ...f, path: newPath, id: newPath, name: newName } : f
+        ),
+        activeFileId: p.activeFileId === oldPath ? newPath : p.activeFileId,
+      })),
+    })),
+
+  closeFileByPath: (projectId, filePath) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const file = p.openFiles.find((f) => f.path === filePath);
+        if (!file) return p;
+        const idx = p.openFiles.indexOf(file);
+        const next = p.openFiles.filter((f) => f.path !== filePath);
+        let nextActive = p.activeFileId;
+        if (p.activeFileId === file.id) {
+          const fallback = next[idx] ?? next[idx - 1] ?? null;
+          nextActive = fallback?.id ?? null;
+        }
+        return { ...p, openFiles: next, activeFileId: nextActive };
+      }),
     })),
 
   addTerminalSession: (projectId, sessionId) =>

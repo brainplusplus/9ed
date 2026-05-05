@@ -113,6 +113,12 @@ CREATE TABLE IF NOT EXISTS recent_projects (
     name TEXT NOT NULL,
     last_opened INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS workspace_state (
+    project_path TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 `
 	_, err := db.Exec(schema)
 	return err
@@ -250,6 +256,28 @@ func (s *ChatStore) SaveRecentProject(path, name string) error {
 
 func (s *ChatStore) RemoveRecentProject(path string) error {
 	_, err := s.db.Exec("DELETE FROM recent_projects WHERE path = ?", path)
+	return err
+}
+
+func (s *ChatStore) GetWorkspaceState(projectPath string) (string, error) {
+	var stateJSON string
+	err := s.db.QueryRow(
+		"SELECT state_json FROM workspace_state WHERE project_path = ?",
+		projectPath,
+	).Scan(&stateJSON)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return stateJSON, err
+}
+
+func (s *ChatStore) SaveWorkspaceState(projectPath, stateJSON string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.Exec(
+		`INSERT INTO workspace_state (project_path, state_json, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(project_path) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
+		projectPath, stateJSON, now,
+	)
 	return err
 }
 

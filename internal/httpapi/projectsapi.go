@@ -66,3 +66,55 @@ func (a *API) handleRecentProjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 	}
 }
+
+type workspaceStateRequest struct {
+	ProjectPath string `json:"projectPath"`
+	State       json.RawMessage `json:"state"`
+}
+
+func (a *API) handleWorkspaceState(w http.ResponseWriter, r *http.Request) {
+	if a.chatStore == nil {
+		http.Error(w, "store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		projectPath := r.URL.Query().Get("projectPath")
+		if projectPath == "" {
+			http.Error(w, "projectPath parameter is required", http.StatusBadRequest)
+			return
+		}
+		stateJSON, err := a.chatStore.GetWorkspaceState(projectPath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if stateJSON == "" {
+			writeJSON(w, http.StatusOK, nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(stateJSON))
+
+	case http.MethodPost:
+		var req workspaceStateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.ProjectPath == "" {
+			http.Error(w, "projectPath is required", http.StatusBadRequest)
+			return
+		}
+		if err := a.chatStore.SaveWorkspaceState(req.ProjectPath, string(req.State)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	}
+}

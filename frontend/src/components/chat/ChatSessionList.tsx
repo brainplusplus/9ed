@@ -6,6 +6,7 @@ const agentLabels: Record<string, string> = {
   opencode: 'OpenCode',
   claude: 'Claude Code',
   codex: 'Codex CLI',
+  gemini: 'Gemini CLI',
   pi: 'Pi',
   amp: 'Amp',
   copilot: 'Copilot',

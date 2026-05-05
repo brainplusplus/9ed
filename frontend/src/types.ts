@@ -30,6 +30,7 @@ export type DirEntry = {
   type: 'file' | 'dir';
   size: number;
   modified: number;
+  ignored?: boolean;
 };
 
 export type FileContent = {
@@ -52,6 +53,8 @@ export type FileTab = {
   content: string;
   language: string;
   modified: boolean;
+  conflict?: boolean;
+  deleted?: boolean;
 };
 
 export type Project = {
@@ -201,6 +204,12 @@ export type ConfigValueInfo = {
   description?: string;
 };
 
+export type PermissionOptionInfo = {
+  optionId: string;
+  name: string;
+  kind: string;
+};
+
 export type ChatEvent = {
   type: string;
   text?: string;
@@ -220,6 +229,17 @@ export type ChatEvent = {
   title?: string;
   stopReason?: string;
   error?: string;
+  permissionId?: string;
+  permissionTitle?: string;
+  permissionOptions?: PermissionOptionInfo[];
+};
+
+export type PendingPermission = {
+  permissionId: string;
+  title: string;
+  toolCallId?: string;
+  toolKind?: string;
+  options: PermissionOptionInfo[];
 };
 
 export type ChatSessionInfo = {
@@ -231,6 +251,7 @@ export type ChatSessionInfo = {
   createdAt: number;
   commands?: SlashCommandInfo[];
   configOptions?: ConfigOptionInfo[];
+  pendingPermission?: PendingPermission;
 };
 
 export type HistorySessionRecord = {

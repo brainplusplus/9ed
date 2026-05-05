@@ -2,6 +2,13 @@ import { create } from 'zustand';
 import type { ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, HistorySessionRecord, ToolCallInfo } from '../types';
 import { getChatHistory, getChatSessionMessages, saveChatMessage, deleteChatHistory } from '../api';
 
+export type QueuedMessage = {
+  id: string;
+  content: string;
+  attachments?: { type: 'file' | 'image'; path: string; name: string }[];
+  createdAt: number;
+};
+
 type ChatState = {
   sessions: ChatSessionInfo[];
   activeSessionId: string | null;
@@ -9,6 +16,9 @@ type ChatState = {
   chatVisible: boolean;
   historySessions: HistorySessionRecord[];
   historyLoaded: boolean;
+  queuedMessages: Record<string, QueuedMessage[]>;
+  includeIgnoredInMentions: boolean;
+  autoApprove: boolean;
 
   loadAgents: (agents: ChatAgent[]) => void;
   createSession: (session: ChatSessionInfo) => void;
@@ -23,6 +33,14 @@ type ChatState = {
   loadHistory: () => Promise<void>;
   loadHistorySession: (sessionId: string) => Promise<void>;
   deleteHistorySession: (sessionId: string) => Promise<void>;
+  enqueueMessage: (sessionId: string, msg: QueuedMessage) => void;
+  dequeueMessage: (sessionId: string) => QueuedMessage | undefined;
+  removeQueuedMessage: (sessionId: string, msgId: string) => void;
+  editQueuedMessage: (sessionId: string, msgId: string, content: string) => void;
+  reorderQueuedMessages: (sessionId: string, fromIdx: number, toIdx: number) => void;
+  clearQueue: (sessionId: string) => void;
+  toggleIncludeIgnored: () => void;
+  toggleAutoApprove: () => void;
 };
 
 function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: ChatSessionInfo) => ChatSessionInfo): ChatSessionInfo[] {
@@ -43,6 +61,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   chatVisible: false,
   historySessions: [],
   historyLoaded: false,
+  queuedMessages: {},
+  includeIgnoredInMentions: false,
+  autoApprove: false,
 
   loadAgents: (agents) => set({ agents }),
 
@@ -168,14 +189,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case 'title':
             return { ...s, title: event.title ?? s.title, messages: msgs };
 
+          case 'permission_request':
+            return {
+              ...s,
+              messages: msgs,
+              pendingPermission: {
+                permissionId: event.permissionId ?? '',
+                title: event.permissionTitle ?? '',
+                toolCallId: event.toolCallId,
+                toolKind: event.toolKind,
+                options: event.permissionOptions ?? [],
+              },
+            };
+
           case 'done':
-            return { ...s, messages: msgs, status: 'idle' };
+            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined };
 
           case 'error': {
             if (last && last.role === 'assistant') {
               msgs[msgs.length - 1] = { ...last, content: last.content + `\n\n⚠️ ${event.error ?? 'Unknown error'}` };
             }
-            return { ...s, messages: msgs, status: 'error' };
+            return { ...s, messages: msgs, status: 'error', pendingPermission: undefined };
           }
         }
 
@@ -271,4 +305,60 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {
     }
   },
+
+  enqueueMessage: (sessionId, msg) =>
+    set((state) => ({
+      queuedMessages: {
+        ...state.queuedMessages,
+        [sessionId]: [...(state.queuedMessages[sessionId] ?? []), msg],
+      },
+    })),
+
+  dequeueMessage: (sessionId) => {
+    const queue = get().queuedMessages[sessionId];
+    if (!queue || queue.length === 0) return undefined;
+    const [first, ...rest] = queue;
+    set((state) => ({
+      queuedMessages: { ...state.queuedMessages, [sessionId]: rest },
+    }));
+    return first;
+  },
+
+  removeQueuedMessage: (sessionId, msgId) =>
+    set((state) => ({
+      queuedMessages: {
+        ...state.queuedMessages,
+        [sessionId]: (state.queuedMessages[sessionId] ?? []).filter((m) => m.id !== msgId),
+      },
+    })),
+
+  editQueuedMessage: (sessionId, msgId, content) =>
+    set((state) => ({
+      queuedMessages: {
+        ...state.queuedMessages,
+        [sessionId]: (state.queuedMessages[sessionId] ?? []).map((m) =>
+          m.id === msgId ? { ...m, content } : m
+        ),
+      },
+    })),
+
+  reorderQueuedMessages: (sessionId, fromIdx, toIdx) =>
+    set((state) => {
+      const queue = [...(state.queuedMessages[sessionId] ?? [])];
+      if (fromIdx < 0 || fromIdx >= queue.length || toIdx < 0 || toIdx >= queue.length) return state;
+      const [item] = queue.splice(fromIdx, 1);
+      queue.splice(toIdx, 0, item);
+      return { queuedMessages: { ...state.queuedMessages, [sessionId]: queue } };
+    }),
+
+  clearQueue: (sessionId) =>
+    set((state) => ({
+      queuedMessages: { ...state.queuedMessages, [sessionId]: [] },
+    })),
+
+  toggleIncludeIgnored: () =>
+    set((state) => ({ includeIgnoredInMentions: !state.includeIgnoredInMentions })),
+
+  toggleAutoApprove: () =>
+    set((state) => ({ autoApprove: !state.autoApprove })),
 }));

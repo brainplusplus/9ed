@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -14,48 +15,33 @@ import (
 type ChatEvent struct {
 	Type string `json:"type"`
 
-	// For "text" events
-	Text string `json:"text,omitempty"`
-
-	// For "thinking" events
-	Thinking string `json:"thinking,omitempty"`
-
-	// For "tool_call" events
+	Text      string `json:"text,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
 	ToolCallID string `json:"toolCallId,omitempty"`
 	ToolTitle  string `json:"toolTitle,omitempty"`
 	ToolKind   string `json:"toolKind,omitempty"`
 	ToolStatus string `json:"toolStatus,omitempty"`
-
-	// For "tool_call_update" events
 	ToolContent string `json:"toolContent,omitempty"`
-
-	// For "tool_call" location events
 	ToolLocations []ToolLocation `json:"toolLocations,omitempty"`
-
-	// For "diff" events
 	DiffPath    string `json:"diffPath,omitempty"`
 	DiffOldText string `json:"diffOldText,omitempty"`
 	DiffNewText string `json:"diffNewText,omitempty"`
-
-	// For "plan" events
 	PlanEntries []PlanEntry `json:"planEntries,omitempty"`
-
-	// For "commands" events
 	Commands []CommandInfo `json:"commands,omitempty"`
-
-	// For "config_options" events
 	ConfigOptions []ConfigOptionInfo `json:"configOptions,omitempty"`
-
-	// For "title" events
 	Title string `json:"title,omitempty"`
-
-	// For "done" events
 	StopReason string `json:"stopReason,omitempty"`
-
-	// For "error" events
 	Error string `json:"error,omitempty"`
 
+	PermissionID      string             `json:"permissionId,omitempty"`
+	PermissionTitle   string             `json:"permissionTitle,omitempty"`
+	PermissionOptions []PermissionOption `json:"permissionOptions,omitempty"`
+}
 
+type PermissionOption struct {
+	OptionID string `json:"optionId"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
 }
 
 type CommandInfo struct {
@@ -91,7 +77,6 @@ type PlanEntry struct {
 	Status   string `json:"status,omitempty"`
 }
 
-// ChatSession is the unified interface for both ACP and PTY chat sessions.
 type ChatSession interface {
 	ID() string
 	AgentID() string
@@ -102,6 +87,8 @@ type ChatSession interface {
 	Close() error
 	Done() <-chan struct{}
 	Mode() SessionMode
+	RespondPermission(resp PermissionResponse)
+	SetAutoApprove(enabled bool)
 }
 
 // SessionMode distinguishes ACP from PTY sessions.
@@ -153,16 +140,24 @@ func NewChatSession(ctx context.Context, agent AgentDescriptor, workDir string) 
 	return newPTYSession(agent, workDir)
 }
 
+type PermissionResponse struct {
+	PermissionID string `json:"permissionId"`
+	OptionID     string `json:"optionId"`
+	Cancelled    bool   `json:"cancelled"`
+}
+
 type acpSession struct {
-	id         string
-	agentID    string
-	adapter    *acp.Adapter
-	sessionID  string
-	events     chan ChatEvent
-	done       chan struct{}
-	cancelFn   context.CancelFunc
-	promptDone chan *acp.SessionPromptResult
-	textBuf    strings.Builder
+	id           string
+	agentID      string
+	adapter      *acp.Adapter
+	sessionID    string
+	events       chan ChatEvent
+	done         chan struct{}
+	cancelFn     context.CancelFunc
+	promptDone   chan *acp.SessionPromptResult
+	textBuf      strings.Builder
+	permissionCh chan PermissionResponse
+	autoApprove  bool
 }
 
 func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (*acpSession, error) {
@@ -197,14 +192,15 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 	}
 
 	s := &acpSession{
-		id:         result.SessionID,
-		agentID:    agent.ID,
-		adapter:    adapter,
-		sessionID:  result.SessionID,
-		events:     make(chan ChatEvent, 128),
-		done:       make(chan struct{}),
-		cancelFn:   cancel,
-		promptDone: make(chan *acp.SessionPromptResult, 1),
+		id:           result.SessionID,
+		agentID:      agent.ID,
+		adapter:      adapter,
+		sessionID:    result.SessionID,
+		events:       make(chan ChatEvent, 128),
+		done:         make(chan struct{}),
+		cancelFn:     cancel,
+		promptDone:   make(chan *acp.SessionPromptResult, 1),
+		permissionCh: make(chan PermissionResponse, 1),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -227,6 +223,17 @@ func (s *acpSession) AgentID() string    { return s.agentID }
 func (s *acpSession) Mode() SessionMode  { return ModeACP }
 func (s *acpSession) Events() <-chan ChatEvent { return s.events }
 func (s *acpSession) Done() <-chan struct{}    { return s.done }
+
+func (s *acpSession) RespondPermission(resp PermissionResponse) {
+	select {
+	case s.permissionCh <- resp:
+	default:
+	}
+}
+
+func (s *acpSession) SetAutoApprove(enabled bool) {
+	s.autoApprove = enabled
+}
 
 func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string) error {
 	opts, err := s.adapter.SetConfigOption(ctx, s.sessionID, configID, value)
@@ -446,22 +453,70 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 		if jsonUnmarshal(req.Params, &params) != nil {
 			return
 		}
-		optionID := ""
-		for _, opt := range params.Options {
-			if opt.Kind == acp.PermissionAllowOnce || opt.Kind == acp.PermissionAllowAlways {
-				optionID = opt.OptionID
-				break
+
+		if s.autoApprove {
+			optionID := ""
+			for _, opt := range params.Options {
+				if opt.Kind == acp.PermissionAllowOnce {
+					optionID = opt.OptionID
+					break
+				}
+			}
+			if optionID == "" {
+				for _, opt := range params.Options {
+					if opt.Kind == acp.PermissionAllowAlways {
+						optionID = opt.OptionID
+						break
+					}
+				}
+			}
+			if optionID == "" && len(params.Options) > 0 {
+				optionID = params.Options[0].OptionID
+			}
+			_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
+				Outcome: acp.PermissionOutcome{Outcome: "selected", OptionID: optionID},
+			}, nil)
+			return
+		}
+
+		permID := fmt.Sprintf("perm_%d", req.ID)
+		title := ""
+		if params.ToolCall.Title != "" {
+			title = params.ToolCall.Title
+		}
+
+		options := make([]PermissionOption, len(params.Options))
+		for i, opt := range params.Options {
+			options[i] = PermissionOption{
+				OptionID: opt.OptionID,
+				Name:     opt.Name,
+				Kind:     string(opt.Kind),
 			}
 		}
-		if optionID == "" && len(params.Options) > 0 {
-			optionID = params.Options[0].OptionID
+
+		s.events <- ChatEvent{
+			Type:              "permission_request",
+			PermissionID:      permID,
+			PermissionTitle:   title,
+			PermissionOptions: options,
+			ToolCallID:        params.ToolCall.ToolCallID,
+			ToolKind:          string(params.ToolCall.Kind),
 		}
-		_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
-			Outcome: acp.PermissionOutcome{
-				Outcome:  "selected",
-				OptionID: optionID,
-			},
-		}, nil)
+
+		resp := <-s.permissionCh
+
+		if resp.Cancelled {
+			_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
+				Outcome: acp.PermissionOutcome{Outcome: "cancelled"},
+			}, nil)
+		} else {
+			_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
+				Outcome: acp.PermissionOutcome{
+					Outcome:  "selected",
+					OptionID: resp.OptionID,
+				},
+			}, nil)
+		}
 
 	case acp.MethodFSReadTextFile:
 		var params acp.FSReadTextFileParams

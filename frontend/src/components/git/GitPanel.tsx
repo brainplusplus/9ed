@@ -23,6 +23,7 @@ function languageFromPath(filePath: string): string {
     json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
     md: 'markdown', sql: 'sql', sh: 'shell', bash: 'shell',
     xml: 'xml', svg: 'xml', dockerfile: 'dockerfile',
+    vue: 'vue', svelte: 'svelte',
   };
   return map[ext] ?? 'plaintext';
 }

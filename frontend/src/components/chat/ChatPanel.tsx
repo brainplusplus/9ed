@@ -4,21 +4,21 @@ import { useChatSession } from '../../hooks/useChatSession';
 import { getChatAgents, createChatSession } from '../../api';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
+import { ChatQueue } from './ChatQueue';
+import { PermissionDialog } from './PermissionDialog';
 import { AgentPicker, ConfigBar } from './AgentPicker';
 import { ChatSessionList } from './ChatSessionList';
 import type { ChatSessionInfo } from '../../types';
 
 export function ChatPanel() {
-  const sessions = useChatStore((s) => s.sessions);
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSession = useChatStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
   const agents = useChatStore((s) => s.agents);
   const loadAgents = useChatStore((s) => s.loadAgents);
   const createSessionStore = useChatStore((s) => s.createSession);
-  const { sendMessage, cancel, connected } = useChatSession();
+  const { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected } = useChatSession();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [creating, setCreating] = useState(false);
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isStreaming = activeSession?.status === 'streaming';
   const isConnecting = activeSession?.status === 'connecting' || creating;
 
@@ -28,9 +28,11 @@ export function ChatPanel() {
       .catch(() => {});
   }, [loadAgents]);
 
+  const messages = activeSession?.messages;
+  const lastMsgContent = messages?.[messages.length - 1]?.content;
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeSession?.messages.length, activeSession?.messages[activeSession.messages.length - 1]?.content]);
+  }, [messages?.length, lastMsgContent]);
 
   const handleNewChat = async () => {
     const available = agents.filter((a) => a.available);
@@ -57,8 +59,8 @@ export function ChatPanel() {
     }
   };
 
-  const handleSend = (content: string) => {
-    sendMessage(content);
+  const handleSend = (content: string, attachments?: import('./ChatInput').Attachment[]) => {
+    sendMessage(content, undefined, attachments);
   };
 
   if (agents.length === 0) {
@@ -108,7 +110,14 @@ export function ChatPanel() {
                 streaming={isStreaming && msg.role === 'assistant' && idx === activeSession.messages.length - 1}
               />
             ))}
-            {isStreaming && (
+            {activeSession.pendingPermission && (
+              <PermissionDialog
+                permission={activeSession.pendingPermission}
+                onRespond={respondPermission}
+                onReject={rejectPermission}
+              />
+            )}
+            {isStreaming && !activeSession.pendingPermission && (
               <div className="chat-streaming">
                 <span className="chat-typing-indicator"><span /><span /><span /></span>
               </div>
@@ -116,7 +125,8 @@ export function ChatPanel() {
             <div ref={messagesEndRef} />
           </div>
           <div className="chat-bottom-bar">
-            <ConfigBar />
+            {activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
+            <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} />
             <ChatInput
               onSend={handleSend}
               onCancel={cancel}

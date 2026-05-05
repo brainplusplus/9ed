@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"go-webttyd/internal/filesystem"
+	"go-webttyd/internal/git"
 )
 
 const maxFileSize = 10 * 1024 * 1024
@@ -54,6 +55,14 @@ func (a *API) handleFileDrives(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, filesystem.ListDrives())
 }
 
+type fileTreeEntry struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Size     int64  `json:"size"`
+	Modified int64  `json:"modified"`
+	Ignored  bool   `json:"ignored,omitempty"`
+}
+
 func (a *API) handleFileTree(w http.ResponseWriter, r *http.Request) {
 	if !a.requireFullMode(w) {
 		return
@@ -83,7 +92,35 @@ func (a *API) handleFileTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, entries)
+	repo := git.New(validated)
+	ignoredMap := make(map[string]bool)
+	if repo.IsRepo() {
+		paths := make([]string, len(entries))
+		for i, e := range entries {
+			paths[i] = e.Name
+		}
+		ignored, igErr := repo.CheckIgnored(paths)
+		if igErr == nil {
+			for i, e := range entries {
+				if ignored[i] {
+					ignoredMap[e.Name] = true
+				}
+			}
+		}
+	}
+
+	result := make([]fileTreeEntry, len(entries))
+	for i, e := range entries {
+		result[i] = fileTreeEntry{
+			Name:     e.Name,
+			Type:     e.Type,
+			Size:     e.Size,
+			Modified: e.Modified,
+			Ignored:  ignoredMap[e.Name],
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +143,11 @@ func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		content, err := filesystem.ReadFile(validated, maxFileSize)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if os.IsNotExist(err) {
+				http.Error(w, "file not found", http.StatusNotFound)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		writeJSON(w, http.StatusOK, content)

@@ -28,14 +28,31 @@ export const useGitStore = create<GitState>((set, get) => ({
   error: null,
 
   refresh: async (projectPath) => {
-    set({ loading: true, error: null });
+    const prev = get();
+    if (!prev.loading) {
+      set({ error: null });
+    }
     try {
       const [status, branches, commits] = await Promise.all([
         getGitStatus(projectPath),
         getGitBranches(projectPath),
         getGitLog(projectPath, 50, 0),
       ]);
-      set({ status, branches, commits, loading: false });
+
+      const statusChanged = JSON.stringify(status) !== JSON.stringify(prev.status);
+      const branchesChanged = JSON.stringify(branches) !== JSON.stringify(prev.branches);
+      const commitsChanged = JSON.stringify(commits) !== JSON.stringify(prev.commits);
+
+      if (statusChanged || branchesChanged || commitsChanged) {
+        set({
+          status: statusChanged ? status : prev.status,
+          branches: branchesChanged ? branches : prev.branches,
+          commits: commitsChanged ? commits : prev.commits,
+          loading: false,
+        });
+      } else if (prev.loading) {
+        set({ loading: false });
+      }
     } catch (e) {
       set({ loading: false, error: e instanceof Error ? e.message : 'Git refresh failed' });
     }

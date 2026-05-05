@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '../../stores/workspace';
 import { useFileWatcher } from '../../hooks/useFileWatcher';
 import { useGitStatus } from '../../hooks/useGitStatus';
 import { useLayoutMode } from '../../hooks/useLayoutMode';
+import { useWorkspaceStatePersistence, restoreWorkspaceState } from '../../hooks/useWorkspaceStatePersistence';
 import { ActivityBar } from '../../components/sidebar/ActivityBar';
 import { FileTree } from '../../components/sidebar/FileTree';
 import { SearchPanel } from '../../components/sidebar/SearchPanel';
@@ -18,6 +19,15 @@ import { ShortcutsHelp } from '../../components/shared/ShortcutsHelp';
 import { getFileContent } from '../../api';
 import type { FileTab } from '../../types';
 
+export const recentSaveTimestamps = new Map<string, number>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, ts] of recentSaveTimestamps) {
+    if (now - ts > 5000) recentSaveTimestamps.delete(key);
+  }
+}, 10000);
+
 function languageFromPath(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   const map: Record<string, string> = {
@@ -28,6 +38,13 @@ function languageFromPath(filePath: string): string {
     json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
     md: 'markdown', sql: 'sql', sh: 'shell', bash: 'shell',
     xml: 'xml', svg: 'xml', dockerfile: 'dockerfile',
+    vue: 'vue', svelte: 'svelte',
+    kt: 'kotlin', swift: 'swift', dart: 'dart', lua: 'lua',
+    r: 'r', pl: 'perl', ex: 'elixir', exs: 'elixir',
+    zig: 'zig', nim: 'nim', haskell: 'haskell', hs: 'haskell',
+    clj: 'clojure', scala: 'scala', groovy: 'groovy',
+    tf: 'hcl', hcl: 'hcl', proto: 'protobuf',
+    graphql: 'graphql', gql: 'graphql',
   };
   return map[ext] ?? 'plaintext';
 }
@@ -48,7 +65,19 @@ export function IDEWorkspace() {
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
 
+  useWorkspaceStatePersistence();
   useGitStatus(activeProject?.path ?? null);
+
+  const restoredRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeProject || restoredRef.current.has(activeProject.path)) return;
+    if (activeProject.openFiles.length > 0) {
+      restoredRef.current.add(activeProject.path);
+      return;
+    }
+    restoredRef.current.add(activeProject.path);
+    void restoreWorkspaceState(activeProject.path, activeProject.id);
+  }, [activeProject?.id, activeProject?.path, activeProject?.openFiles.length]);
 
   const editorAreaRef = useRef<HTMLDivElement>(null);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
@@ -57,6 +86,7 @@ export function IDEWorkspace() {
   const [tabletChatOpen, setTabletChatOpen] = useState(false);
   const [mobileView, setMobileView] = useState<MobileView>('editor');
   const [showHelp, setShowHelp] = useState(false);
+  const pendingDiffRef = useRef<{ filePath: string; original: string; modified: string; language: string } | null>(null);
 
   useEffect(() => {
     if (layoutMode === 'tablet') {
@@ -72,16 +102,41 @@ export function IDEWorkspace() {
 
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const markFileSaved = useWorkspaceStore((s) => s.markFileSaved);
+  const markFileConflict = useWorkspaceStore((s) => s.markFileConflict);
+  const markFileDeleted = useWorkspaceStore((s) => s.markFileDeleted);
+
+  const recentSaves = useRef(recentSaveTimestamps);
 
   useFileWatcher({
     root: activeProject?.path ?? null,
     onFileChange: useCallback((event) => {
-      if (event.type === 'create' || event.type === 'delete' || event.type === 'rename') {
+      if (event.type === 'create' || event.type === 'rename') {
         setTreeRefreshKey((k) => k + 1);
+      }
+
+      if (event.type === 'delete') {
+        setTreeRefreshKey((k) => k + 1);
+        if (activeProjectId) {
+          const normalizedPath = event.path.replace(/\\/g, '/');
+          const project = useWorkspaceStore.getState().projects.find((p) => p.id === activeProjectId);
+          const openTab = project?.openFiles.find((f) => {
+            const normalizedTabPath = f.path.replace(/\\/g, '/');
+            return normalizedTabPath === normalizedPath || normalizedPath.endsWith(normalizedTabPath);
+          });
+          if (openTab) {
+            markFileDeleted(activeProjectId, openTab.path);
+          }
+        }
       }
 
       if (event.type === 'modify' && activeProjectId) {
         const normalizedPath = event.path.replace(/\\/g, '/');
+
+        const savedAt = recentSaves.current.get(normalizedPath);
+        if (savedAt && Date.now() - savedAt < 3000) {
+          return;
+        }
+
         const project = useWorkspaceStore.getState().projects.find((p) => p.id === activeProjectId);
         const openTab = project?.openFiles.find((f) => {
           const normalizedTabPath = f.path.replace(/\\/g, '/');
@@ -90,12 +145,16 @@ export function IDEWorkspace() {
 
         if (openTab && !openTab.modified) {
           getFileContent(openTab.path).then((fc) => {
-            updateFileContent(activeProjectId, openTab.id, fc.content);
-            markFileSaved(activeProjectId, openTab.id);
+            if (fc.content !== openTab.content) {
+              updateFileContent(activeProjectId, openTab.id, fc.content);
+              markFileSaved(activeProjectId, openTab.id);
+            }
           }).catch(() => {});
+        } else if (openTab && openTab.modified) {
+          markFileConflict(activeProjectId, openTab.id);
         }
       }
-    }, [activeProjectId, updateFileContent, markFileSaved]),
+    }, [activeProjectId, updateFileContent, markFileSaved, markFileConflict, markFileDeleted]),
   });
 
   const handleFileSelect = useCallback(async (filePath: string, fileName: string) => {
@@ -111,16 +170,28 @@ export function IDEWorkspace() {
         modified: false,
       };
       openFile(activeProjectId, tab);
+      if (layoutMode !== 'desktop') {
+        setMobileView('editor');
+        setTabletSidebarOpen(false);
+      }
     } catch (err) {
       console.error('Failed to open file:', err);
     }
-  }, [activeProjectId, openFile]);
+  }, [activeProjectId, openFile, layoutMode]);
 
   const handleOpenDiff = useCallback((filePath: string, original: string, modified: string, language: string) => {
     const el = editorAreaRef.current?.querySelector('[data-has-diff-support]') as
       (HTMLDivElement & { openDiffTab?: (fp: string, o: string, m: string, l: string) => void }) | null;
-    el?.openDiffTab?.(filePath, original, modified, language);
-  }, []);
+    if (el?.openDiffTab) {
+      el.openDiffTab(filePath, original, modified, language);
+    } else {
+      pendingDiffRef.current = { filePath, original, modified, language };
+    }
+    if (layoutMode !== 'desktop') {
+      setMobileView('editor');
+      setTabletSidebarOpen(false);
+    }
+  }, [layoutMode]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -168,6 +239,19 @@ export function IDEWorkspace() {
     </>
   );
 
+  useEffect(() => {
+    if (mobileView !== 'editor' || !pendingDiffRef.current) return;
+    const timer = setTimeout(() => {
+      const el = editorAreaRef.current?.querySelector('[data-has-diff-support]') as
+        (HTMLDivElement & { openDiffTab?: (fp: string, o: string, m: string, l: string) => void }) | null;
+      if (el?.openDiffTab && pendingDiffRef.current) {
+        el.openDiffTab(pendingDiffRef.current.filePath, pendingDiffRef.current.original, pendingDiffRef.current.modified, pendingDiffRef.current.language);
+        pendingDiffRef.current = null;
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [mobileView]);
+
   const helpOverlay = showHelp ? <ShortcutsHelp onClose={() => setShowHelp(false)} /> : null;
 
   if (layoutMode === 'mobile') {
@@ -201,7 +285,11 @@ export function IDEWorkspace() {
             </div>
           )}
         </div>
-        <BottomNav activeView={mobileView} onViewChange={setMobileView} />
+        <BottomNav activeView={mobileView} onViewChange={(view) => {
+          setMobileView(view);
+          if (view === 'explorer') setActivePanel('explorer');
+          if (view === 'git') setActivePanel('git');
+        }} />
         {helpOverlay}
       </div>
     );

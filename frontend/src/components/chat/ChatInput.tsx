@@ -1,22 +1,43 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChatStore } from '../../stores/chat';
+import type { QueuedMessage } from '../../stores/chat';
+import { getGitFiles } from '../../api';
+import type { GitRepoFile } from '../../api';
+import { useWorkspaceStore } from '../../stores/workspace';
+import type { DirEntry } from '../../types';
 
 type ChatInputProps = {
-  onSend: (content: string) => void;
+  onSend: (content: string, attachments?: Attachment[]) => void;
   onCancel: () => void;
   streaming: boolean;
   disabled: boolean;
 };
 
+export type Attachment = {
+  type: 'file' | 'image';
+  path: string;
+  name: string;
+};
+
 export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionResults, setMentionResults] = useState<DirEntry[]>([]);
+  const [mentionIdx, setMentionIdx] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const sessions = useChatStore((s) => s.sessions);
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const commands = activeSession?.commands ?? [];
+  const commands = useChatStore((s) => {
+    const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return session?.commands;
+  }) ?? [];
+  const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
+  const projects = useWorkspaceStore((s) => s.projects);
+  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
+  const projectPath = projects.find((p) => p.id === activeProjectId)?.path ?? '';
 
   const showCommands = value.startsWith('/') && !value.includes(' ') && commands.length > 0;
   const filteredCommands = useMemo(() => {
@@ -25,6 +46,88 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
     return commands.filter((c) => c.name.toLowerCase().startsWith(query));
   }, [showCommands, value, commands]);
 
+  const [mentionFiles, setMentionFiles] = useState<GitRepoFile[]>([]);
+  const mentionFilesLoaded = useRef(false);
+  const lastMentionProject = useRef('');
+  const lastMentionIncludeIgnored = useRef(false);
+
+  useEffect(() => {
+    if (!projectPath) return;
+    if (mentionFilesLoaded.current && lastMentionProject.current === projectPath && lastMentionIncludeIgnored.current === includeIgnored) return;
+    let cancelled = false;
+    getGitFiles(projectPath, includeIgnored).then((files) => {
+      if (cancelled) return;
+      setMentionFiles(files);
+      mentionFilesLoaded.current = true;
+      lastMentionProject.current = projectPath;
+      lastMentionIncludeIgnored.current = includeIgnored;
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectPath, includeIgnored]);
+
+  useEffect(() => {
+    if (mentionQuery === null) {
+      setMentionResults([]);
+      return;
+    }
+    const q = mentionQuery.toLowerCase();
+    const filtered = mentionFiles
+      .filter((f) => f.path.toLowerCase().includes(q))
+      .slice(0, 12)
+      .map((f): DirEntry => ({
+        name: f.path,
+        type: 'file',
+        size: 0,
+        modified: 0,
+        ignored: f.ignored,
+      }));
+    setMentionResults(filtered);
+    setMentionIdx(0);
+  }, [mentionQuery, mentionFiles]);
+
+  const handleMentionDetect = useCallback((text: string) => {
+    const atIdx = text.lastIndexOf('@');
+    if (atIdx >= 0 && (atIdx === 0 || text[atIdx - 1] === ' ' || text[atIdx - 1] === '\n')) {
+      const after = text.slice(atIdx + 1);
+      if (!after.includes(' ') && !after.includes('\n')) {
+        setMentionQuery(after);
+        return;
+      }
+    }
+    setMentionQuery(null);
+  }, []);
+
+  const selectMention = useCallback((entry: DirEntry) => {
+    const atIdx = value.lastIndexOf('@');
+    const before = value.slice(0, atIdx);
+    const sep = projectPath.includes('\\') ? '\\' : '/';
+    const relativePath = entry.name;
+    const fullPath = projectPath + sep + relativePath.replace(/\//g, sep);
+    setAttachments((prev) => [...prev, { type: 'file', path: fullPath, name: relativePath }]);
+    setValue(before);
+    setMentionQuery(null);
+    textareaRef.current?.focus();
+  }, [value, projectPath]);
+
+  const removeAttachment = useCallback((idx: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        e.preventDefault();
+        const file = items[i].getAsFile();
+        if (file) {
+          const name = `pasted-image-${Date.now()}.png`;
+          setAttachments((prev) => [...prev, { type: 'image', path: URL.createObjectURL(file), name }]);
+        }
+        return;
+      }
+    }
+  }, []);
+
   const adjustHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -32,16 +135,31 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
     el.style.height = Math.min(el.scrollHeight, 144) + 'px';
   }, []);
 
+  const enqueueMessage = useChatStore((s) => s.enqueueMessage);
+
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if (!trimmed || streaming || disabled) return;
-    onSend(trimmed);
+    if ((!trimmed && attachments.length === 0) || disabled) return;
+
+    if (streaming && activeSessionId) {
+      const queuedMsg: QueuedMessage = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        content: trimmed,
+        attachments: attachments.length > 0 ? attachments : undefined,
+        createdAt: Date.now(),
+      };
+      enqueueMessage(activeSessionId, queuedMsg);
+    } else {
+      onSend(trimmed, attachments.length > 0 ? attachments : undefined);
+    }
+
     setValue('');
+    setAttachments([]);
     setSelectedIdx(0);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [value, streaming, disabled, onSend]);
+  }, [value, attachments, streaming, disabled, onSend, activeSessionId, enqueueMessage]);
 
   const selectCommand = useCallback((name: string) => {
     setValue('/' + name + ' ');
@@ -51,7 +169,27 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (filteredCommands.length > 0) {
+      if (mentionResults.length > 0 && mentionQuery !== null) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setMentionIdx((i) => Math.min(i + 1, mentionResults.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setMentionIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+          e.preventDefault();
+          selectMention(mentionResults[mentionIdx]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          setMentionQuery(null);
+          return;
+        }
+      } else if (filteredCommands.length > 0) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
           setSelectedIdx((i) => Math.min(i + 1, filteredCommands.length - 1));
@@ -76,12 +214,33 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
         handleSend();
       }
     },
-    [handleSend, filteredCommands, selectedIdx, selectCommand],
+    [handleSend, filteredCommands, selectedIdx, selectCommand, mentionResults, mentionQuery, mentionIdx, selectMention],
   );
 
   return (
     <div className="chat-input-area" style={{ position: 'relative' }}>
-      {filteredCommands.length > 0 && (
+      {mentionResults.length > 0 && mentionQuery !== null && (
+        <div className="chat-commands-popup">
+          {mentionResults.map((entry, i) => {
+            const parts = entry.name.replace(/\\/g, '/');
+            const lastSlash = parts.lastIndexOf('/');
+            const fileName = lastSlash >= 0 ? parts.slice(lastSlash + 1) : parts;
+            const dirPath = lastSlash >= 0 ? parts.slice(0, lastSlash) : '';
+            return (
+              <div
+                key={entry.name}
+                className={`chat-command-item ${i === mentionIdx ? 'active' : ''}${entry.ignored ? ' mention-ignored' : ''}`}
+                onClick={() => selectMention(entry)}
+              >
+                <span style={{ marginRight: 6 }}>📄</span>
+                <span className="chat-mention-filename">{fileName}</span>
+                {dirPath && <span className="chat-mention-dir">{dirPath}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {filteredCommands.length > 0 && mentionQuery === null && (
         <div className="chat-commands-popup">
           {filteredCommands.map((cmd, i) => (
             <div
@@ -94,6 +253,16 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
           ))}
         </div>
       )}
+      {attachments.length > 0 && (
+        <div className="chat-attachments">
+          {attachments.map((att, i) => (
+            <span key={i} className="chat-attachment-chip">
+              {att.type === 'image' ? '🖼️' : '📄'} {att.name}
+              <button className="chat-attachment-remove" onClick={() => removeAttachment(i)} type="button">×</button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         className="chat-textarea"
@@ -102,12 +271,41 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
         onChange={(e) => {
           setValue(e.target.value);
           setSelectedIdx(0);
+          handleMentionDetect(e.target.value);
           adjustHeight();
         }}
+        onPaste={handlePaste}
         onKeyDown={handleKeyDown}
         rows={1}
         disabled={disabled}
       />
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: 'none' }}
+        accept="image/*,.txt,.md,.ts,.tsx,.js,.jsx,.go,.py,.rs,.json,.yaml,.toml,.css,.html"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const isImage = file.type.startsWith('image/');
+            setAttachments((prev) => [...prev, {
+              type: isImage ? 'image' : 'file',
+              path: isImage ? URL.createObjectURL(file) : file.name,
+              name: file.name,
+            }]);
+          }
+          e.target.value = '';
+        }}
+      />
+      <button
+        className="chat-attach-btn"
+        onClick={() => fileInputRef.current?.click()}
+        type="button"
+        title="Attach file (or type @ to mention)"
+        disabled={disabled}
+      >
+        +
+      </button>
       {streaming ? (
         <button className="chat-send-btn stop" onClick={onCancel} type="button">
           ■
@@ -116,7 +314,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
         <button
           className="chat-send-btn"
           onClick={handleSend}
-          disabled={!value.trim() || disabled}
+          disabled={(!value.trim() && attachments.length === 0) || disabled}
           type="button"
         >
           ⏎
