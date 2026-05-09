@@ -34,10 +34,25 @@ export function GitPanel({ projectPath, onOpenDiff }: GitPanelProps) {
   const loading = useGitStore((s) => s.loading);
   const error = useGitStore((s) => s.error);
   const clearError = useGitStore((s) => s.clearError);
+  const isRepo = useGitStore((s) => s.isRepo);
 
   useEffect(() => {
     refresh(projectPath);
   }, [projectPath, refresh]);
+
+  if (!isRepo) {
+    return (
+      <div className="git-panel">
+        <div className="git-empty-state" style={{ padding: '24px 16px', textAlign: 'center' }}>
+          <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.5 }}>📭</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Not a Git repository</div>
+          <div style={{ color: 'var(--text-faint)', fontSize: '11px', marginTop: '4px' }}>
+            Initialize with <code style={{ background: 'var(--bg-hover)', padding: '1px 4px', borderRadius: '3px' }}>git init</code> to enable source control
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const stagedFiles = useMemo(() => status.filter((f) => f.staged), [status]);
   const unstagedFiles = useMemo(() => status.filter((f) => !f.staged), [status]);

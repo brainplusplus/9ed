@@ -10,6 +10,7 @@ type GitState = {
   gutterChanges: Record<string, GutterChange[]>;
   loading: boolean;
   error: string | null;
+  isRepo: boolean;
 
   refresh: (projectPath: string) => Promise<void>;
   refreshGutter: (projectPath: string, filePath: string) => Promise<void>;
@@ -26,6 +27,7 @@ export const useGitStore = create<GitState>((set, get) => ({
   gutterChanges: {},
   loading: false,
   error: null,
+  isRepo: true,
 
   refresh: async (projectPath) => {
     const prev = get();
@@ -33,8 +35,14 @@ export const useGitStore = create<GitState>((set, get) => ({
       set({ error: null });
     }
     try {
-      const [status, branches, commits] = await Promise.all([
-        getGitStatus(projectPath),
+      const { status, isRepo } = await getGitStatus(projectPath);
+
+      if (!isRepo) {
+        set({ status: [], branches: [], commits: [], stashes: [], loading: false, isRepo: false });
+        return;
+      }
+
+      const [branches, commits] = await Promise.all([
         getGitBranches(projectPath),
         getGitLog(projectPath, 50, 0),
       ]);

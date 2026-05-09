@@ -152,6 +152,8 @@ export function IDEWorkspace() {
           }).catch(() => {});
         } else if (openTab && openTab.modified) {
           markFileConflict(activeProjectId, openTab.id);
+        } else if (!openTab) {
+          setTreeRefreshKey((k) => k + 1);
         }
       }
     }, [activeProjectId, updateFileContent, markFileSaved, markFileConflict, markFileDeleted]),

@@ -172,9 +172,11 @@ export async function uploadFiles(targetPath: string, files: FileList): Promise<
   }
 }
 
-export async function getGitStatus(project: string): Promise<GitFileStatus[]> {
+export async function getGitStatus(project: string): Promise<{ status: GitFileStatus[]; isRepo: boolean }> {
   const response = await fetch(`/api/git/status?project=${encodeURIComponent(project)}`, { credentials: 'include' });
-  return parseResponse<GitFileStatus[]>(response);
+  const isRepo = response.headers.get('X-Git-Repo') !== 'false';
+  const data = await parseResponse<GitFileStatus[]>(response);
+  return { status: data, isRepo };
 }
 
 export async function getGitLog(project: string, limit = 50, offset = 0): Promise<GitCommit[]> {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -468,50 +469,66 @@ func (a *API) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleFileWatch(w http.ResponseWriter, r *http.Request) {
 	if !a.requireFullMode(w) {
+		log.Printf("[ws/watch] Rejected: not full mode")
 		return
 	}
 	if a.watcher == nil {
+		log.Printf("[ws/watch] Rejected: watcher is nil")
 		http.Error(w, "file watcher not available", http.StatusServiceUnavailable)
 		return
 	}
 
 	root := r.URL.Query().Get("root")
 	if root == "" {
+		log.Printf("[ws/watch] Rejected: missing root param")
 		http.Error(w, "root parameter is required", http.StatusBadRequest)
 		return
 	}
 
 	validated, ok := a.validatePath(w, root)
 	if !ok {
+		log.Printf("[ws/watch] Rejected: invalid path %q", root)
 		return
 	}
 
 	conn, err := a.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("[ws/watch] WebSocket upgrade failed: %v", err)
 		return
 	}
 	defer conn.Close()
+	log.Printf("[ws/watch] Client connected, root=%s validated=%s", root, validated)
 
 	if err := a.watcher.WatchRecursive(validated); err != nil {
+		log.Printf("[ws/watch] WatchRecursive failed: %v", err)
 		_ = conn.WriteJSON(map[string]string{"type": "error", "message": err.Error()})
 		return
 	}
 
 	sub := a.watcher.Subscribe(validated)
 	defer a.watcher.Unsubscribe(sub)
+	log.Printf("[ws/watch] Subscribed to watcher, root=%s", validated)
 
 	go func() {
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
+				log.Printf("[ws/watch] Client read loop ended: %v", err)
 				a.watcher.Unsubscribe(sub)
 				return
 			}
 		}
 	}()
 
+	eventCount := 0
 	for event := range sub.Ch {
+		eventCount++
 		if err := conn.WriteJSON(event); err != nil {
+			log.Printf("[ws/watch] WriteJSON failed after %d events: %v", eventCount, err)
 			return
 		}
+		if eventCount <= 5 || eventCount%50 == 0 {
+			log.Printf("[ws/watch] Sent event #%d: type=%s name=%s path=%s", eventCount, event.Type, event.Name, event.Path)
+		}
 	}
+	log.Printf("[ws/watch] Channel closed, sent %d total events", eventCount)
 }
