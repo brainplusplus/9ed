@@ -17,6 +17,12 @@ export type SessionTab = {
   errorMessage?: string;
 };
 
+export type TerminalAction = {
+  targetTabId: string;
+  kind: 'clear-view' | 'send-clear-command';
+  nonce: number;
+};
+
 export type WebSocketIncomingMessage =
   | { type: 'output'; data: string }
   | { type: 'error'; data: string };

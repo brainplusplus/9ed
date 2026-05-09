@@ -40,16 +40,17 @@ export function AgentPicker() {
     : currentAgent?.label ?? 'Select agent';
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div className="chat-picker-wrap">
       <button
         className="agent-picker"
         onClick={() => setAgentOpen(!agentOpen)}
         type="button"
         disabled={connecting}
-        style={connecting ? { opacity: 0.7 } : undefined}
+        data-connecting={connecting ? 'true' : 'false'}
       >
-        {connecting && <span className="chat-connecting-spinner" style={{ width: 10, height: 10, marginRight: 6, display: 'inline-block', verticalAlign: 'middle' }} />}
-        {buttonLabel} ▾
+        {connecting && <span className="chat-connecting-spinner chat-inline-spinner" />}
+        <span className="agent-picker-label">{buttonLabel}</span>
+        <span className="agent-picker-caret" aria-hidden="true">▾</span>
       </button>
       {agentOpen && !connecting && (
         <div className="picker-dropdown">
@@ -144,15 +145,16 @@ function ConfigDropdown({ option, isOpen, onToggle, onChange }: {
   const label = currentOption?.name ?? option.currentValue;
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div className="chat-picker-wrap chat-picker-wrap-compact">
       <button
         className="agent-picker"
         onClick={onToggle}
         type="button"
-        style={{ fontSize: '0.72rem', padding: '2px 6px' }}
+        data-compact="true"
         title={option.name}
       >
-        {label} ▾
+        <span className="agent-picker-label">{label}</span>
+        <span className="agent-picker-caret" aria-hidden="true">▾</span>
       </button>
       {isOpen && (
         <div className="picker-dropdown picker-dropdown-up">

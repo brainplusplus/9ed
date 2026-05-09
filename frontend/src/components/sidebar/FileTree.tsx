@@ -7,6 +7,94 @@ import { ContextMenu, type ContextMenuItem } from '../shared/ContextMenu';
 
 type TreeNode = DirEntry & { fullPath: string; children?: TreeNode[]; expanded?: boolean; ignored?: boolean };
 
+const FILE_COLORS: Record<string, string> = {
+  ts: '#3178c6', tsx: '#3178c6',
+  js: '#f0db4f', jsx: '#f0db4f', mjs: '#f0db4f',
+  go: '#00add8',
+  py: '#3572a5',
+  rs: '#dea584',
+  md: '#cdd6f4',
+  json: '#f0db4f',
+  yaml: '#e44d26', yml: '#e44d26',
+  css: '#a855f7', scss: '#a855f7', less: '#a855f7',
+  html: '#e44d26',
+  vue: '#42b883',
+  svelte: '#ff3e00',
+  sh: '#89e051', bash: '#89e051',
+  sql: '#e38c00',
+  toml: '#9c4221',
+  xml: '#e44d26',
+  svg: '#f9e2af',
+  java: '#b07219',
+  c: '#555555', h: '#555555',
+  cpp: '#f34b7d', hpp: '#f34b7d',
+  rb: '#701516',
+  php: '#4f5d95',
+  cs: '#178600',
+  env: '#89e051',
+  lock: '#6c7086',
+  mod: '#00add8', sum: '#00add8',
+};
+
+function getFileColor(name: string): string {
+  const dotIdx = name.lastIndexOf('.');
+  if (dotIdx < 0) return '#6c7086';
+  const ext = name.slice(dotIdx + 1).toLowerCase();
+  if (FILE_COLORS[ext]) return FILE_COLORS[ext];
+  if (name === '.gitignore') return '#f14e32';
+  if (name.startsWith('.env')) return '#89e051';
+  if (name === 'dockerfile' || name === 'Dockerfile') return '#2496ed';
+  if (name === 'Makefile') return '#6c7086';
+  return '#6c7086';
+}
+
+function getFileExt(name: string): string {
+  if (name === '.gitignore') return 'gi';
+  if (name.startsWith('.env')) return 'env';
+  const dotIdx = name.lastIndexOf('.');
+  if (dotIdx < 0) return name.slice(0, 2);
+  const ext = name.slice(dotIdx + 1).toLowerCase();
+  if (ext.length > 3) return ext.slice(0, 3);
+  return ext;
+}
+
+function FileIcon({ name }: { name: string }) {
+  const color = getFileColor(name);
+  const ext = getFileExt(name);
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="tree-file-icon">
+      <path d="M2 1.5 a1 1 0 0 1 1 -1 h6 l4 4 v9.5 a1 1 0 0 1 -1 1 h-9 a1 1 0 0 1 -1 -1z" fill={color} opacity="0.2" stroke={color} strokeWidth="0.8" />
+      <path d="M9 0.5 v3.5 a0.5 0.5 0 0 0 0.5 0.5 h3.5" stroke={color} strokeWidth="0.7" fill="none" />
+      <text x="8" y="12" textAnchor="middle" fill={color} fontSize="5.5" fontFamily="IBM Plex Sans, Segoe UI, sans-serif" fontWeight="700">{ext}</text>
+    </svg>
+  );
+}
+
+function FolderOpenIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="tree-folder-icon">
+      <path d="M1.5 3.5 a1 1 0 0 1 1 -1 h3 l1.5 1.5 h5.5 a1 1 0 0 1 1 1 v1 h-12z" fill="#eab308" opacity="0.25" stroke="#eab308" strokeWidth="0.7" />
+      <path d="M1 6.5 h13 l-1.5 6.5 a0.8 0.8 0 0 1 -0.8 0.5 h-8.4 a0.8 0.8 0 0 1 -0.8 -0.5z" fill="#eab308" opacity="0.2" stroke="#eab308" strokeWidth="0.7" />
+    </svg>
+  );
+}
+
+function FolderClosedIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="tree-folder-icon">
+      <path d="M1.5 3.5 a1 1 0 0 1 1 -1 h3 l1.5 1.5 h5.5 a1 1 0 0 1 1 1 v8 a1 1 0 0 1 -1 1 h-10 a1 1 0 0 1 -1 -1z" fill="#eab308" opacity="0.2" stroke="#eab308" strokeWidth="0.7" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg" className="tree-chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>
+      <path d="M3 1.5 L7.5 5 L3 8.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 type FileTreeProps = {
   rootPath: string;
   onFileSelect: (filePath: string, fileName: string) => void;
@@ -369,8 +457,10 @@ function FileTreeNode({ node, path, depth, onToggle, rootPath, gitStatus, onCont
         onContextMenu={(e) => onContextMenu(e, node)}
         type="button"
       >
-        {isDir && <span className="tree-arrow">{node.expanded ? '▼' : '▶'}</span>}
-        <span className="tree-icon" style={isIgnored ? { opacity: 0.45 } : undefined}>{isDir ? '📁' : '📄'}</span>
+        {isDir && <span className="tree-arrow"><ChevronIcon open={!!node.expanded} /></span>}
+        <span className="tree-icon" style={isIgnored ? { opacity: 0.45 } : undefined}>
+          {isDir ? (node.expanded ? <FolderOpenIcon /> : <FolderClosedIcon />) : <FileIcon name={node.name} />}
+        </span>
         {isRenaming ? (
           <InlineInput
             depth={0}

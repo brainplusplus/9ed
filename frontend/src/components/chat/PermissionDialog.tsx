@@ -10,8 +10,8 @@ function kindToIcon(kind: string): string {
   switch (kind) {
     case 'allow_once': return '✓';
     case 'allow_always': return '✓✓';
-    case 'reject_once': return '✕';
-    case 'reject_always': return '✕✕';
+    case 'reject_once': return '×';
+    case 'reject_always': return '××';
     default: return '•';
   }
 }
@@ -30,7 +30,7 @@ export function PermissionDialog({ permission, onRespond, onReject }: Permission
   return (
     <div className="permission-dialog">
       <div className="permission-header">
-        <span className="permission-icon">🔐</span>
+        <span className="permission-icon">◆</span>
         <span className="permission-label">Awaiting Confirmation</span>
       </div>
       <div className="permission-tool">{toolLabel}</div>

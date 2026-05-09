@@ -21,6 +21,7 @@ export function ChatPanel() {
 
   const isStreaming = activeSession?.status === 'streaming';
   const isConnecting = activeSession?.status === 'connecting' || creating;
+  const activeAgent = agents.find((agent) => agent.id === activeSession?.agentId);
 
   useEffect(() => {
     getChatAgents()
@@ -75,6 +76,13 @@ export function ChatPanel() {
     <div className="chat-panel">
       <div className="chat-header">
         <div className="chat-header-left">
+          <div className="chat-title-block">
+            <div className="chat-title-eyebrow">Assistant</div>
+            <div className="chat-title-row">
+              <span className="chat-title-main">{activeSession?.title || activeAgent?.label || 'New Chat'}</span>
+              {activeAgent && <span className="chat-title-subtle">{activeAgent.label}</span>}
+            </div>
+          </div>
           <AgentPicker />
         </div>
         <div className="chat-header-right">

@@ -53,59 +53,31 @@ export function ChatSessionList() {
   if (!hasItems) return null;
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div className="chat-picker-wrap chat-session-wrap">
       <button
         className="chat-new-btn"
         onClick={() => setOpen(!open)}
         type="button"
         title="Switch session"
       >
-        {activeSession ? activeSession.title : 'Sessions'} ▾
+        <span className="chat-session-trigger-label">{activeSession ? activeSession.title : 'Sessions'}</span>
+        <span className="agent-picker-caret" aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            right: 0,
-            background: 'var(--sidebar-bg)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '4px',
-            zIndex: 100,
-            minWidth: '220px',
-            maxHeight: '320px',
-            overflowY: 'auto',
-          }}
-        >
+        <div className="chat-session-dropdown">
           {sessions.length > 0 && (
-            <div style={{ padding: '4px 8px', fontSize: '0.7rem', color: 'var(--activity-fg)', borderBottom: '1px solid var(--border-color)' }}>
+            <div className="chat-session-section-label">
               Active
             </div>
           )}
           {sessions.map((session) => (
             <div
               key={session.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                padding: '6px 8px',
-                background: session.id === activeSessionId ? 'var(--sidebar-hover)' : 'transparent',
-                cursor: 'pointer',
-                fontSize: '0.82rem',
-              }}
+              className={`chat-session-row${session.id === activeSessionId ? ' active' : ''}`}
             >
               <SessionStatusIcon status={session.status} />
               <button
-                style={{
-                  flex: 1,
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--sidebar-fg)',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  padding: '2px 4px',
-                  fontSize: '0.82rem',
-                }}
+                className="chat-session-row-btn"
                 onClick={() => {
                   setActiveSession(session.id);
                   setOpen(false);
@@ -113,19 +85,12 @@ export function ChatSessionList() {
                 type="button"
               >
                 <div>{formatSessionTitle(session.agentId, session.title)}</div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--activity-fg)' }}>
+                <div className="chat-session-row-meta">
                   {new Date(session.createdAt).toLocaleTimeString()}
                 </div>
               </button>
               <button
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--activity-fg)',
-                  cursor: 'pointer',
-                  padding: '2px 6px',
-                  fontSize: '0.85rem',
-                }}
+                className="chat-session-row-close"
                 onClick={(e) => {
                   e.stopPropagation();
                   deleteChatSession(session.id).catch(() => {});
@@ -140,33 +105,14 @@ export function ChatSessionList() {
           ))}
 
           {pastSessions.length > 0 && (
-            <div style={{ padding: '4px 8px', fontSize: '0.7rem', color: 'var(--activity-fg)', borderBottom: '1px solid var(--border-color)', borderTop: '1px solid var(--border-color)' }}>
+            <div className="chat-session-section-label chat-session-section-label-history">
               History
             </div>
           )}
           {pastSessions.map((hist) => (
-            <div
-              key={hist.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                padding: '6px 8px',
-                cursor: 'pointer',
-                fontSize: '0.82rem',
-              }}
-            >
+            <div key={hist.id} className="chat-session-row chat-session-row-history">
               <button
-                style={{
-                  flex: 1,
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--sidebar-fg)',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  padding: '2px 4px',
-                  fontSize: '0.82rem',
-                  opacity: 0.8,
-                }}
+                className="chat-session-row-btn chat-session-row-btn-history"
                 onClick={() => {
                   loadHistorySession(hist.id);
                   setOpen(false);
@@ -174,19 +120,12 @@ export function ChatSessionList() {
                 type="button"
               >
                 <div>{formatSessionTitle(hist.agentId, hist.title)}</div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--activity-fg)' }}>
+                <div className="chat-session-row-meta">
                   {new Date(hist.updatedAt).toLocaleDateString()}
                 </div>
               </button>
               <button
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--activity-fg)',
-                  cursor: 'pointer',
-                  padding: '2px 6px',
-                  fontSize: '0.85rem',
-                }}
+                className="chat-session-row-close"
                 onClick={(e) => {
                   e.stopPropagation();
                   deleteHistorySession(hist.id);

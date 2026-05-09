@@ -44,7 +44,17 @@ export function GitPanel({ projectPath, onOpenDiff }: GitPanelProps) {
     return (
       <div className="git-panel">
         <div className="git-empty-state" style={{ padding: '24px 16px', textAlign: 'center' }}>
-          <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.5 }}>📭</div>
+          <div style={{ marginBottom: '8px', opacity: 0.5 }}>
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="10" cy="8" r="3" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="10" cy="24" r="3" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="22" cy="16" r="3" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="10" y1="11" x2="10" y2="21" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M10 11 C10 14, 20 13, 20 16" stroke="currentColor" strokeWidth="1.3" fill="none" />
+              <line x1="22" y1="13" x2="22" y2="6" stroke="currentColor" strokeWidth="1.3" />
+              <line x1="3" y1="6" x2="29" y2="26" stroke="currentColor" strokeWidth="1.5" opacity="0.4" />
+            </svg>
+          </div>
           <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Not a Git repository</div>
           <div style={{ color: 'var(--text-faint)', fontSize: '11px', marginTop: '4px' }}>
             Initialize with <code style={{ background: 'var(--bg-hover)', padding: '1px 4px', borderRadius: '3px' }}>git init</code> to enable source control

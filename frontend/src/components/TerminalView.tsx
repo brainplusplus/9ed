@@ -4,16 +4,17 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
 import { createSessionWebSocket } from '../api';
-import type { SessionTab, WebSocketIncomingMessage, WebSocketOutgoingMessage } from '../types';
+import type { SessionTab, TerminalAction, WebSocketIncomingMessage, WebSocketOutgoingMessage } from '../types';
 
 type TerminalViewProps = {
   tab: SessionTab;
   active: boolean;
+  action?: TerminalAction | null;
   onStatusChange: (sessionId: string, status: SessionTab['status'], errorMessage?: string) => void;
 };
 
 export function TerminalView(props: TerminalViewProps) {
-  const { tab, active, onStatusChange } = props;
+  const { tab, active, action, onStatusChange } = props;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -128,6 +129,35 @@ export function TerminalView(props: TerminalViewProps) {
       );
     }
   }, [active]);
+
+  useEffect(() => {
+    if (!action || action.targetTabId !== tab.id) {
+      return;
+    }
+
+    const terminal = terminalRef.current;
+    const socket = socketRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    if (action.kind === 'clear-view') {
+      terminal.clear();
+      terminal.write('\u001b[2J\u001b[3J\u001b[H');
+      return;
+    }
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const shellName = `${tab.profile.label} ${tab.profile.command}`.toLowerCase();
+    const clearCommand = shellName.includes('powershell') || shellName.includes('pwsh') || shellName.includes('cmd')
+      ? 'cls\r'
+      : 'clear\r';
+
+    socket.send(JSON.stringify({ type: 'input', data: clearCommand } satisfies WebSocketOutgoingMessage));
+  }, [action, tab.id, tab.profile.command, tab.profile.label]);
 
   return (
     <section className={`terminal-panel${active ? ' visible' : ''}`} aria-hidden={!active}>

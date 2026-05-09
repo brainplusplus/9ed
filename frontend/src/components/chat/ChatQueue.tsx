@@ -72,7 +72,7 @@ export function ChatQueue({ sessionId, onSendNow }: ChatQueueProps) {
                   }}
                   autoFocus
                 />
-                <button className="chat-queue-action" onClick={handleEditSave} type="button">✓</button>
+                <button className="chat-queue-action" onClick={handleEditSave} type="button">Save</button>
               </div>
             ) : (
               <>
@@ -82,9 +82,9 @@ export function ChatQueue({ sessionId, onSendNow }: ChatQueueProps) {
                 <div className="chat-queue-actions">
                   <button className="chat-queue-action" onClick={() => handleMoveUp(idx)} disabled={idx === 0} type="button" title="Move up">↑</button>
                   <button className="chat-queue-action" onClick={() => handleMoveDown(idx)} disabled={idx === queue.length - 1} type="button" title="Move down">↓</button>
-                  <button className="chat-queue-action" onClick={() => handleEdit(msg.id, msg.content)} type="button" title="Edit">✎</button>
-                  <button className="chat-queue-action" onClick={() => handleSendNow(msg.id)} type="button" title="Send now">▶</button>
-                  <button className="chat-queue-action" onClick={() => removeQueuedMessage(sessionId, msg.id)} type="button" title="Remove">✕</button>
+                  <button className="chat-queue-action" onClick={() => handleEdit(msg.id, msg.content)} type="button" title="Edit">Edit</button>
+                  <button className="chat-queue-action" onClick={() => handleSendNow(msg.id)} type="button" title="Send now">Send</button>
+                  <button className="chat-queue-action" onClick={() => removeQueuedMessage(sessionId, msg.id)} type="button" title="Remove">×</button>
                 </div>
               </>
             )}

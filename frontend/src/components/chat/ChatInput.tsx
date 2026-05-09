@@ -218,7 +218,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
   );
 
   return (
-    <div className="chat-input-area" style={{ position: 'relative' }}>
+    <div className="chat-input-area">
       {mentionResults.length > 0 && mentionQuery !== null && (
         <div className="chat-commands-popup">
           {mentionResults.map((entry, i) => {
@@ -232,7 +232,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
                 className={`chat-command-item ${i === mentionIdx ? 'active' : ''}${entry.ignored ? ' mention-ignored' : ''}`}
                 onClick={() => selectMention(entry)}
               >
-                <span style={{ marginRight: 6 }}>📄</span>
+                <span className="chat-command-file-icon" aria-hidden="true">⌘</span>
                 <span className="chat-mention-filename">{fileName}</span>
                 {dirPath && <span className="chat-mention-dir">{dirPath}</span>}
               </div>
@@ -257,28 +257,60 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
         <div className="chat-attachments">
           {attachments.map((att, i) => (
             <span key={i} className="chat-attachment-chip">
-              {att.type === 'image' ? '🖼️' : '📄'} {att.name}
+              <span className="chat-attachment-icon" aria-hidden="true">{att.type === 'image' ? '◫' : '⌘'}</span>
+              {att.name}
               <button className="chat-attachment-remove" onClick={() => removeAttachment(i)} type="button">×</button>
             </span>
           ))}
         </div>
       )}
-      <textarea
-        ref={textareaRef}
-        className="chat-textarea"
-        placeholder="Ask something..."
-        value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
-          setSelectedIdx(0);
-          handleMentionDetect(e.target.value);
-          adjustHeight();
-        }}
-        onPaste={handlePaste}
-        onKeyDown={handleKeyDown}
-        rows={1}
-        disabled={disabled}
-      />
+      <div className="chat-composer-shell">
+        <textarea
+          ref={textareaRef}
+          className="chat-textarea"
+          placeholder="Ask something..."
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSelectedIdx(0);
+            handleMentionDetect(e.target.value);
+            adjustHeight();
+          }}
+          onPaste={handlePaste}
+          onKeyDown={handleKeyDown}
+          rows={1}
+          disabled={disabled}
+        />
+        <div className="chat-composer-actions">
+          <button
+            className="chat-attach-btn"
+            onClick={() => fileInputRef.current?.click()}
+            type="button"
+            title="Attach file (or type @ to mention)"
+            disabled={disabled}
+          >
+            <span aria-hidden="true">+</span>
+            <span className="chat-action-label">Attach</span>
+          </button>
+          {streaming ? (
+            <button className="chat-send-btn stop" onClick={onCancel} type="button" title="Stop response">
+              <span aria-hidden="true">■</span>
+              <span className="chat-action-label">Stop</span>
+            </button>
+          ) : (
+            <button
+              className="chat-send-btn"
+              onClick={handleSend}
+              disabled={(!value.trim() && attachments.length === 0) || disabled}
+              type="button"
+              title="Send message"
+            >
+              <span aria-hidden="true">↵</span>
+              <span className="chat-action-label">Send</span>
+            </button>
+          )}
+        </div>
+      </div>
       <input
         ref={fileInputRef}
         type="file"
@@ -297,29 +329,6 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
           e.target.value = '';
         }}
       />
-      <button
-        className="chat-attach-btn"
-        onClick={() => fileInputRef.current?.click()}
-        type="button"
-        title="Attach file (or type @ to mention)"
-        disabled={disabled}
-      >
-        +
-      </button>
-      {streaming ? (
-        <button className="chat-send-btn stop" onClick={onCancel} type="button">
-          ■
-        </button>
-      ) : (
-        <button
-          className="chat-send-btn"
-          onClick={handleSend}
-          disabled={(!value.trim() && attachments.length === 0) || disabled}
-          type="button"
-        >
-          ⏎
-        </button>
-      )}
     </div>
   );
 }
