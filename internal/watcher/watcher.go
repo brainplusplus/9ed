@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,11 +28,13 @@ func (s *Subscriber) Send(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
+		log.Printf("[watcher] Send skipped: subscriber closed, event=%s name=%s", e.Type, e.Name)
 		return
 	}
 	select {
 	case s.Ch <- e:
 	default:
+		log.Printf("[watcher] Send DROPPED: channel full (len=%d), event=%s name=%s", len(s.Ch), e.Type, e.Name)
 	}
 }
 
@@ -140,9 +143,16 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 
 	path := fsEvent.Name
 
+	if shouldSkipEventPath(path) {
+		return
+	}
+
+	log.Printf("[watcher] fsnotify event: op=%s type=%s path=%s", fsEvent.Op, eventType, path)
+
 	if fsEvent.Op.Has(fsnotify.Create) {
 		if info, err := os.Stat(path); err == nil && info.IsDir() && !shouldSkipDir(info.Name()) {
 			_ = fw.fsw.Add(path)
+			log.Printf("[watcher] Auto-watching new dir: %s", path)
 		}
 	}
 
@@ -162,14 +172,18 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 		}
 
 		fw.mu.RLock()
+		subCount := len(fw.subscribers)
+		sent := 0
 		for sub := range fw.subscribers {
 			normalizedPath := filepath.ToSlash(path)
 			normalizedRoot := filepath.ToSlash(sub.Root)
 			if strings.HasPrefix(normalizedPath, normalizedRoot) {
 				sub.Send(event)
+				sent++
 			}
 		}
 		fw.mu.RUnlock()
+		log.Printf("[watcher] Dispatched event: type=%s name=%s subscribers=%d sent=%d", eventType, filepath.Base(path), subCount, sent)
 	})
 	fw.debounceMu.Unlock()
 }
@@ -196,4 +210,14 @@ func shouldSkipDir(name string) bool {
 		".idea": true, ".vscode": true,
 	}
 	return skip[name]
+}
+
+func shouldSkipEventPath(path string) bool {
+	normalized := filepath.ToSlash(path)
+	for _, seg := range strings.Split(normalized, "/") {
+		if shouldSkipDir(seg) {
+			return true
+		}
+	}
+	return false
 }
