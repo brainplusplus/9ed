@@ -1,0 +1,81 @@
+.activity-bar {
+  display: flex;
+  flex-direction: column;
+  width: 52px;
+  min-width: 52px;
+  background: var(--activity-bg);
+  border-right: 1px solid var(--border-color);
+  padding-top: 6px;
+  gap: 0;
+}
+
+.activity-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 42px;
+  margin-bottom: 4px;
+}
+
+.activity-brand-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.activity-bar-divider {
+  width: 24px;
+  height: 1px;
+  margin: 0 auto 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.activity-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 44px;
+  border: none;
+  background: transparent;
+  color: var(--activity-fg);
+  cursor: pointer;
+  font-size: 1.2rem;
+  border-left: 2px solid transparent;
+  transition: color 0.15s ease, border-left-color 0.15s ease, background 0.15s ease;
+}
+.activity-badge {
+  position: absolute;
+  top: 6px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #eab308;
+  color: #000;
+  font-size: 0.62rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.activity-btn.active {
+  color: var(--activity-active);
+  border-left-color: var(--accent-blue-light);
+  background: rgba(14, 99, 156, 0.08);
+}
+
+.activity-btn:hover {
+  color: var(--activity-active);
+  background: rgba(255, 255, 255, 0.04);
+}

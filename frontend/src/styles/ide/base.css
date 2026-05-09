@@ -1,0 +1,38 @@
+:root {
+  --sidebar-bg: #1e1e2e;
+  --sidebar-fg: #cdd6f4;
+  --sidebar-hover: #313244;
+  --sidebar-active: #45475a;
+  --activity-bg: #181825;
+  --activity-fg: #6c7086;
+  --activity-active: #cdd6f4;
+  --editor-bg: #1e1e1e;
+  --border-color: #313244;
+  --tab-bg: #181825;
+  --tab-active-bg: #1e1e1e;
+  --tab-fg: #a6adc8;
+  --tab-active-fg: #cdd6f4;
+  --accent-blue: #0e639c;
+  --accent-blue-light: #1177bb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--editor-bg);
+  color: var(--sidebar-fg);
+  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+}
+
+#root {
+  height: 100vh;
+}
+
+.ide-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}

@@ -1,0 +1,64 @@
+.file-tree {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 100px;
+  padding-bottom: 40px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.tree-row:hover {
+  background: var(--sidebar-hover);
+}
+
+.tree-arrow {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tree-chevron {
+  transition: transform 0.15s ease;
+  color: var(--activity-fg);
+}
+
+.tree-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.tree-file-icon, .tree-folder-icon {
+  display: block;
+}
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-loading {
+  padding: 16px;
+  color: var(--activity-fg);
+  font-size: 0.85rem;
+}

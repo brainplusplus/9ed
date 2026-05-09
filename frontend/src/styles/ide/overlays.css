@@ -1,0 +1,109 @@
+/* Tablet overlays */
+.sidebar-overlay {
+  position: fixed;
+  top: 0;
+  left: 52px;
+  bottom: 0;
+  width: 300px;
+  z-index: 100;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border-color);
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-overlay.open {
+  transform: translateX(0);
+}
+
+.chat-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  z-index: 100;
+  background: var(--sidebar-bg);
+  border-left: 1px solid var(--border-color);
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-overlay.open {
+  transform: translateX(0);
+}
+
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 99;
+}
+
+/* Mobile layout */
+.mobile-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.mobile-panel {
+  flex: 1;
+  overflow: hidden;
+}
+
+.bottom-nav {
+  display: flex;
+  height: 56px;
+  min-height: 56px;
+  background: var(--activity-bg);
+  border-top: 1px solid var(--border-color);
+}
+
+.bottom-nav-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--activity-fg);
+  font-size: 0.85rem;
+  gap: 2px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.bottom-nav-btn.active {
+  color: var(--accent-blue-light);
+}
+
+.bottom-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.bottom-nav-label {
+  font-size: 0.65rem;
+}
+
+/* Tablet layout */
+.tablet-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.tablet-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

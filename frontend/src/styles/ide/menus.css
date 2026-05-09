@@ -1,0 +1,15 @@
+/* Shortcuts Help */
+.shortcuts-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: flex; align-items: center; justify-content: center; }
+.shortcuts-modal { background: var(--sidebar-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 24px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.shortcuts-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 16px; color: var(--sidebar-fg); }
+.shortcuts-group { margin-bottom: 16px; }
+.shortcuts-group-title { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--activity-fg); margin-bottom: 8px; }
+.shortcut-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 0.85rem; color: var(--sidebar-fg); }
+.shortcut-key { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; background: var(--activity-bg); border: 1px solid var(--border-color); border-radius: 4px; padding: 2px 8px; color: var(--sidebar-fg); }
+
+.context-menu { position: fixed; z-index: 1000; background: var(--sidebar-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 0; min-width: 200px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); font-size: 0.82rem; }
+.context-menu-item { display: flex; align-items: center; justify-content: space-between; padding: 5px 12px; cursor: pointer; color: var(--sidebar-fg); border-radius: 4px; margin: 0 4px; }
+.context-menu-item:hover { background: var(--list-active-bg, rgba(255,255,255,0.08)); border-radius: 4px; }
+.context-menu-item.disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+.context-menu-shortcut { font-size: 0.72rem; opacity: 0.5; margin-left: 24px; }
+.context-menu-separator { height: 1px; background: var(--border-color); margin: 4px 0; }
