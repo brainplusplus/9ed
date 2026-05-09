@@ -35,6 +35,13 @@ func (a *API) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		w.Header().Set("X-Git-Repo", "false")
+		writeJSON(w, http.StatusOK, []git.FileStatus{})
+		return
+	}
+
+	w.Header().Set("X-Git-Repo", "true")
 	status, err := repo.Status()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -64,6 +71,11 @@ func (a *API) handleGitLog(w http.ResponseWriter, r *http.Request) {
 	offset := queryInt(r, "offset", 0)
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, []git.Commit{})
+		return
+	}
+
 	commits, err := repo.Log(limit, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -90,6 +102,11 @@ func (a *API) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, []git.Branch{})
+		return
+	}
+
 	branches, err := repo.Branches()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -125,6 +142,10 @@ func (a *API) handleGitStage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	if err := repo.Stage(req.Paths); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -156,6 +177,10 @@ func (a *API) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	if err := repo.Unstage(req.Paths); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -188,6 +213,10 @@ func (a *API) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	if err := repo.Commit(req.Message, req.Amend); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -220,6 +249,10 @@ func (a *API) handleGitPush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output": ""})
+		return
+	}
 	output, err := repo.Push(req.Remote, req.Branch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -253,6 +286,10 @@ func (a *API) handleGitPull(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "output": ""})
+		return
+	}
 	output, err := repo.Pull(req.Remote, req.Branch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -286,6 +323,10 @@ func (a *API) handleGitBranch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	var err error
 	switch req.Action {
 	case "create":
@@ -330,6 +371,10 @@ func (a *API) handleGitMerge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	if err := repo.Merge(req.Branch); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -363,6 +408,14 @@ func (a *API) handleGitStash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		if req.Action == "list" {
+			writeJSON(w, http.StatusOK, []git.Stash{})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		}
+		return
+	}
 	var err error
 	switch req.Action {
 	case "list":
@@ -416,6 +469,10 @@ func (a *API) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"diff": ""})
+		return
+	}
 	diff, err := repo.Diff(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -444,6 +501,10 @@ func (a *API) handleGitDiffLines(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, []git.GutterChange{})
+		return
+	}
 	changes, err := repo.DiffLines(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -475,6 +536,10 @@ func (a *API) handleGitBlame(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, []git.BlameLine{})
+		return
+	}
 	blame, err := repo.Blame(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -510,6 +575,10 @@ func (a *API) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	if err := repo.Discard(req.Paths); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -533,6 +602,10 @@ func (a *API) handleGitFiles(w http.ResponseWriter, r *http.Request) {
 	includeIgnored := r.URL.Query().Get("includeIgnored") == "true"
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, []git.RepoFile{})
+		return
+	}
 	files, err := repo.ListFiles(includeIgnored)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -564,6 +637,10 @@ func (a *API) handleGitFileAtHEAD(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := git.New(project)
+	if !repo.IsRepo() {
+		writeJSON(w, http.StatusOK, map[string]string{"content": ""})
+		return
+	}
 	content, err := repo.FileAtHEAD(path)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]string{"content": ""})
