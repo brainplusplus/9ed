@@ -1,6 +1,6 @@
-# Web IDE Terminal
+# 9ed
 
-Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and responsive layout.
+Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), tunnel support, and responsive layout.
 
 ![Desktop - Explorer & Editor](docs/screenshots/desktop-explorer.png)
 ![Desktop - Git Diff View](docs/screenshots/desktop-git-diff.png)
@@ -73,6 +73,13 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), and re
 - Session cookie bridge for WebSocket authentication
 - Path traversal protection for filesystem operations
 
+### Tunnel
+- Auto-start tunnel for public access — no manual setup needed
+- **Bore** (default): Fixed port tunnel via `bore.pub`, auto-installs binary
+- **Cloudflare**: Quick tunnel via `cloudflared`, generates random public URL
+- Toggle with `TUNNEL=true/false`, select engine with `TUNNEL_ENGINE=bore|cloudflare`
+- Auto-shutdown on server exit
+
 ## Requirements
 
 - Go 1.24+
@@ -113,7 +120,7 @@ npm run start
 | `MODE` | `simple` (terminal only) or `full` (IDE) | `simple` |
 | `WORKSPACE_ROOT` | Default workspace directory | cwd |
 | `AUTOKILL_PORT` | Kill existing process on port before start | `true` |
-| `TUNNEL` | Auto-start cloudflared tunnel for public access | `true` |
+| `TUNNEL` | Auto-start tunnel for public access | `true` |
 | `TUNNEL_ENGINE` | Tunnel engine: `bore` (fixed port) or `cloudflare` (random URL) | `bore` |
 | `DEBUG` | Enable verbose debug logging | `false` |
 
@@ -170,6 +177,7 @@ internal/
     store.go           — SQLite persistence (chat history, workspace state, recent projects)
   httpapi/             — REST API + WebSocket handlers
   server/              — HTTP assembly and static serving
+  tunnel/              — Tunnel subprocess lifecycle (bore, cloudflare)
 frontend/src/
   apps/ide/            — IDE mode entry (workspace, project picker)
   apps/terminal/       — Simple terminal mode
