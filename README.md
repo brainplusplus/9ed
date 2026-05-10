@@ -121,7 +121,7 @@ npm run start
 | `WORKSPACE_ROOT` | Default workspace directory | cwd |
 | `AUTOKILL_PORT` | Kill existing process on port before start | `true` |
 | `TUNNEL` | Auto-start tunnel for public access | `true` |
-| `TUNNEL_ENGINE` | Tunnel engine: `bore` (fixed port) or `cloudflare` (random URL) | `bore` |
+| `TUNNEL_ENGINE` | `bore` (fixed port via bore.pub) or `cloudflare` (random URL via cloudflared) | `bore` |
 | `DEBUG` | Enable verbose debug logging | `false` |
 
 ## AI Agent Support
