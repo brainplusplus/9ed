@@ -82,7 +82,7 @@ func DefaultDBPath() string {
 	if home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".go-webttyd", "ide.db")
+	return filepath.Join(home, ".9ed", "ide.db")
 }
 
 func NewChatStore(dbPath string) (*ChatStore, error) {

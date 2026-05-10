@@ -1313,7 +1313,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"go-webttyd/internal/git"
+	"9ed/internal/git"
 )
 
 func (a *API) handleGitStatus(w http.ResponseWriter, r *http.Request) {

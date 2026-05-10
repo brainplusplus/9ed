@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createSession, deleteSession, getShells } from '../../api';
 import { useWorkspaceStore } from '../../stores/workspace';
 import { TerminalTabs } from '../TerminalTabs';
@@ -19,8 +19,6 @@ export function TerminalPanel() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [terminalAction, setTerminalAction] = useState<TerminalAction | null>(null);
-  const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,21 +80,7 @@ export function TerminalPanel() {
   const dispatchTerminalAction = useCallback((kind: TerminalAction['kind']) => {
     if (!activeTabId) return;
     setTerminalAction({ targetTabId: activeTabId, kind, nonce: Date.now() });
-    setActionMenuOpen(false);
   }, [activeTabId]);
-
-  useEffect(() => {
-    if (!actionMenuOpen) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!actionMenuRef.current?.contains(event.target as Node)) {
-        setActionMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [actionMenuOpen]);
 
   return (
     <div className="terminal-panel-ide">
@@ -108,43 +92,16 @@ export function TerminalPanel() {
           <select value={selectedShellId} onChange={(e) => setSelectedShellId(e.target.value)} className="terminal-shell-select">
             {shells.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
           </select>
-          <div className="terminal-action-group">
-            <button
-              className="terminal-clear-btn"
-              onClick={() => dispatchTerminalAction('clear-view')}
-              type="button"
-              title="Clear View — clear visible terminal output only"
-              disabled={!activeTabId}
-            >
-              <span className="terminal-clear-btn-icon" aria-hidden="true">⌫</span>
-              <span>Clear View</span>
-            </button>
-            <div className="terminal-action-menu-wrap" ref={actionMenuRef}>
-              <button
-                className="terminal-menu-btn"
-                onClick={() => setActionMenuOpen((open) => !open)}
-                type="button"
-                title="More terminal actions"
-                disabled={!activeTabId}
-                aria-expanded={actionMenuOpen}
-              >
-                <span aria-hidden="true">▾</span>
-              </button>
-              {actionMenuOpen && (
-                <div className="terminal-action-menu">
-                  <button
-                    className="terminal-action-menu-item"
-                    onClick={() => dispatchTerminalAction('send-clear-command')}
-                    type="button"
-                    title="Send Clear Command — run clear or cls in active shell"
-                  >
-                    <span className="terminal-action-menu-icon" aria-hidden="true">›_</span>
-                    <span>Send Clear Command</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+          <button
+            className="terminal-clear-btn"
+            onClick={() => dispatchTerminalAction('clear-terminal')}
+            type="button"
+            title="Clear Terminal — clear terminal output, keep active prompt"
+            disabled={!activeTabId}
+          >
+            <span className="terminal-clear-btn-icon" aria-hidden="true">⌫</span>
+            <span>Clear Terminal</span>
+          </button>
           <button className="terminal-new-btn" onClick={() => void handleCreateTab()} disabled={creating} type="button">+</button>
         </div>
       </div>

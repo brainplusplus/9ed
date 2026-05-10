@@ -19,7 +19,7 @@ export type SessionTab = {
 
 export type TerminalAction = {
   targetTabId: string;
-  kind: 'clear-view' | 'send-clear-command';
+  kind: 'clear-terminal';
   nonce: number;
 };
 

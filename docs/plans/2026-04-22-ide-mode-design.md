@@ -1,4 +1,4 @@
-# IDE Mode Design — go-webttyd
+# IDE Mode Design — 9ed
 
 **Date**: 2026-04-22
 **Status**: Approved
@@ -8,7 +8,7 @@
 
 ## Overview
 
-Extend go-webttyd from a browser-based terminal into a full web IDE with file management, Monaco code editor, and multi-project support. A `MODE` environment variable controls whether the app runs as a lightweight terminal (`simple`) or a full IDE (`full`).
+Extend 9ed from a browser-based terminal into a full web IDE with file management, Monaco code editor, and multi-project support. A `MODE` environment variable controls whether the app runs as a lightweight terminal (`simple`) or a full IDE (`full`).
 
 ## Requirements
 

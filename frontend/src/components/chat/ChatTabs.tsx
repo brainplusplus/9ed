@@ -1,26 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ChatSessionInfo, ChatAgent } from '../../types';
 
-import type { SessionTab } from '../types';
-
-type TerminalTabsProps = {
-  tabs: SessionTab[];
+type ChatTabsProps = {
+  tabs: ChatSessionInfo[];
   activeTabId: string | null;
+  agents: ChatAgent[];
   onSelectTab: (sessionId: string) => void;
   onCloseTab: (sessionId: string) => void;
 };
 
-export function TerminalTabs(props: TerminalTabsProps) {
-  const { tabs, activeTabId, onSelectTab, onCloseTab } = props;
+const statusLabel: Record<ChatSessionInfo['status'], string> = {
+  connecting: 'Connecting',
+  idle: 'Ready',
+  streaming: 'Working',
+  error: 'Error',
+};
+
+function agentIcon(agentId: string): string {
+  const icons: Record<string, string> = {
+    opencode: '⚡',
+    claude: '🤖',
+    codex: '🔷',
+    gemini: '✦',
+    pi: 'π',
+    amp: '⚡',
+    copilot: '✈',
+  };
+  return icons[agentId] ?? '💬';
+}
+
+function tabTitle(tab: ChatSessionInfo): string {
+  if (tab.title && tab.title !== tab.agentId) return tab.title;
+  return 'New Chat';
+}
+
+export function ChatTabs({ tabs, activeTabId, agents, onSelectTab, onCloseTab }: ChatTabsProps) {
   const stripRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
-
-  const statusLabel: Record<SessionTab['status'], string> = {
-    connecting: 'Connecting',
-    ready: 'Ready',
-    disconnected: 'Disconnected',
-    error: 'Error',
-  };
 
   const updateScrollState = useCallback(() => {
     const el = stripRef.current;
@@ -49,7 +66,7 @@ export function TerminalTabs(props: TerminalTabsProps) {
 
   useEffect(() => {
     if (!activeTabId || !stripRef.current) return;
-    const activeTab = stripRef.current.querySelector('.tab-chip.active');
+    const activeTab = stripRef.current.querySelector('.chat-tab-chip.active');
     if (activeTab) {
       activeTab.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
     }
@@ -63,33 +80,36 @@ export function TerminalTabs(props: TerminalTabsProps) {
     stripRef.current?.scrollBy({ left: 200, behavior: 'smooth' });
   }, []);
 
+  if (tabs.length === 0) return null;
+
   return (
-    <div className="tab-strip-container">
+    <div className="chat-tab-strip-container">
       {canScrollLeft && (
-        <button className="tab-nav-btn tab-nav-prev" onClick={scrollPrev} type="button" aria-label="Previous tabs">
+        <button className="chat-tab-nav-btn chat-tab-nav-prev" onClick={scrollPrev} type="button" aria-label="Previous tabs">
           <span aria-hidden="true">‹</span>
         </button>
       )}
-      <div className="tab-strip" ref={stripRef} role="tablist" aria-label="Terminal sessions">
+      <div className="chat-tab-strip" ref={stripRef} role="tablist" aria-label="Chat sessions">
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
+          const agent = agents.find((a) => a.id === tab.agentId);
 
           return (
-            <div key={tab.id} className={`tab-chip tab-chip-${tab.status}${isActive ? ' active' : ''}`}>
+            <div key={tab.id} className={`chat-tab-chip chat-tab-chip-${tab.status}${isActive ? ' active' : ''}${tab.kind === 'archived' ? ' chat-tab-chip-archived' : ''}`}>
               <button
                 aria-selected={isActive}
-                className="tab-button"
+                className="chat-tab-button"
                 onClick={() => onSelectTab(tab.id)}
                 role="tab"
                 type="button"
               >
-                <span className="tab-chip-icon" aria-hidden="true">›_</span>
-                <span className="tab-chip-copy">
-                  <span className="tab-chip-title">{tab.profile.label}</span>
-                  <small>{statusLabel[tab.status]}</small>
+                <span className="chat-tab-chip-icon" aria-hidden="true">{agentIcon(tab.agentId)}</span>
+                <span className="chat-tab-chip-copy">
+                  <span className="chat-tab-chip-title">{tabTitle(tab)}</span>
+                  <small>{agent?.label ?? tab.agentId} · {statusLabel[tab.status]}</small>
                 </span>
               </button>
-              <button className="tab-close" onClick={() => onCloseTab(tab.id)} type="button" aria-label={`Close ${tab.profile.label}`}>
+              <button className="chat-tab-close" onClick={() => onCloseTab(tab.id)} type="button" aria-label={`Close ${tabTitle(tab)}`}>
                 ×
               </button>
             </div>
@@ -97,7 +117,7 @@ export function TerminalTabs(props: TerminalTabsProps) {
         })}
       </div>
       {canScrollRight && (
-        <button className="tab-nav-btn tab-nav-next" onClick={scrollNext} type="button" aria-label="Next tabs">
+        <button className="chat-tab-nav-btn chat-tab-nav-next" onClick={scrollNext} type="button" aria-label="Next tabs">
           <span aria-hidden="true">›</span>
         </button>
       )}

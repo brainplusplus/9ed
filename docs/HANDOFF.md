@@ -1,4 +1,4 @@
-# Handoff Document — go-webttyd Next Phase
+# Handoff Document — 9ed Next Phase
 
 **Date**: 2026-05-05
 **Previous Session**: Implemented git panel, chat UI, responsive layout, SQLite persistence, bug fixes
@@ -207,7 +207,7 @@ frontend/src/
   - OpenCode: `C:\Users\brainplusplus\.config\opencode\opencode.json`
   - Claude: `C:\Users\brainplusplus\.claude\settings.json`
   - Codex: `C:\Users\brainplusplus\.codex\config.toml`
-- **SQLite DB**: `~/.go-webttyd/ide.db`
+- **SQLite DB**: `~/.9ed/ide.db`
 
 ---
 

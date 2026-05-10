@@ -4,15 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentPicker } from './AgentPicker';
 import { useChatStore } from '../../stores/chat';
-import { useWorkspaceStore } from '../../stores/workspace';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
-const createChatSession = vi.fn();
-
-vi.mock('../../api', () => ({
-  createChatSession: (...args: unknown[]) => createChatSession(...args),
-}));
 
 function resetChatStore() {
   useChatStore.setState({
@@ -22,6 +15,7 @@ function resetChatStore() {
       { id: 'opencode', label: 'OpenCode', available: true, configFound: true, activeModel: '', models: [], providers: [] },
       { id: 'claude', label: 'Claude Code', available: true, configFound: true, activeModel: '', models: [], providers: [] },
     ],
+    selectedAgentId: null,
     chatVisible: false,
     historySessions: [],
     historyLoaded: false,
@@ -33,25 +27,6 @@ function resetChatStore() {
   });
 }
 
-function resetWorkspaceStore() {
-  useWorkspaceStore.setState({
-    projects: [{
-      id: 'project-1',
-      path: '/repo',
-      name: 'repo',
-      openFiles: [],
-      activeFileId: null,
-      terminalSessions: [],
-    }],
-    activeProjectId: 'project-1',
-    activePanel: 'explorer',
-    sidebarVisible: true,
-    terminalVisible: true,
-    chatVisible: true,
-    showPicker: false,
-  });
-}
-
 describe('AgentPicker', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -59,7 +34,6 @@ describe('AgentPicker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetChatStore();
-    resetWorkspaceStore();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -91,9 +65,7 @@ describe('AgentPicker', () => {
     expect(overlay?.getAttribute('data-overlay')).toBe('true');
   });
 
-  it('passes active project path when creating new agent session', async () => {
-    createChatSession.mockResolvedValue({ id: 'live-88' });
-
+  it('sets selectedAgentId in store when agent is picked', async () => {
     act(() => {
       root.render(<AgentPicker />);
     });
@@ -112,6 +84,6 @@ describe('AgentPicker', () => {
       option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo');
+    expect(useChatStore.getState().selectedAgentId).toBe('opencode');
   });
 });

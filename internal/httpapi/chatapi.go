@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"go-webttyd/internal/chat"
-	"go-webttyd/internal/chat/agentconfig"
+	"github.com/brainplusplus/9ed/internal/chat"
+	"github.com/brainplusplus/9ed/internal/chat/agentconfig"
 )
 
 type chatCreateRequest struct {
@@ -277,6 +277,9 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		persistSeq++
 		_ = a.chatStore.AppendEvent(record)
+		if evt.Type == "title" && evt.Title != "" {
+			_ = a.chatStore.UpdateSessionTitle(persistRecordID, evt.Title)
+		}
 	}
 
 	sendEvent := func(evt chat.ChatEvent) {
@@ -301,7 +304,6 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 				if !ok {
 					return
 				}
-				a.persistChatEvent(session.ID(), evt)
 				sendEvent(evt)
 			}
 		}
@@ -353,54 +355,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *API) persistChatEvent(sessionID string, evt chat.ChatEvent) {
-	if a.chatStore == nil {
-		return
-	}
-	payload, err := json.Marshal(evt)
-	if err != nil {
-		return
-	}
-	seq, err := a.chatStore.NextEventSeq(sessionID)
-	if err != nil {
-		return
-	}
-	now := time.Now().UnixMilli()
-	_ = a.chatStore.AppendEvent(chat.EventRecord{
-		ID:          fmt.Sprintf("%s-evt-%d", sessionID, seq),
-		SessionID:   sessionID,
-		Kind:        evt.Type,
-		PayloadJSON: string(payload),
-		Seq:         seq,
-		Timestamp:   now,
-	})
-	if evt.Type == "commands" || evt.Type == "config_options" {
-		snapshot, _ := a.chatStore.GetSnapshot(sessionID)
-		commandsJSON := ""
-		configJSON := ""
-		if snapshot != nil {
-			commandsJSON = snapshot.CommandsJSON
-			configJSON = snapshot.ConfigOptsJSON
-		}
-		if evt.Type == "commands" {
-			commandsPayload, _ := json.Marshal(evt.Commands)
-			commandsJSON = string(commandsPayload)
-		}
-		if evt.Type == "config_options" {
-			configPayload, _ := json.Marshal(evt.ConfigOptions)
-			configJSON = string(configPayload)
-		}
-		_ = a.chatStore.SaveSnapshot(chat.SessionSnapshot{
-			SessionID:      sessionID,
-			CommandsJSON:   commandsJSON,
-			ConfigOptsJSON: configJSON,
-			UpdatedAt:      now,
-		})
-	}
-	if evt.Type == "title" && evt.Title != "" {
-		_ = a.chatStore.UpdateSessionTitle(sessionID, evt.Title)
-	}
-}
+
 
 func (a *API) handleChatRestore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

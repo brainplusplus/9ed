@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"go-webttyd/internal/git"
+	"github.com/brainplusplus/9ed/internal/git"
 )
 
 func queryInt(r *http.Request, key string, defaultVal int) int {

@@ -1,4 +1,4 @@
-module go-webttyd
+module github.com/brainplusplus/9ed
 
 go 1.25.0
 

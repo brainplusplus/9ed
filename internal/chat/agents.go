@@ -3,7 +3,7 @@ package chat
 import (
 	"os/exec"
 
-	"go-webttyd/internal/chat/acpinstall"
+	"github.com/brainplusplus/9ed/internal/chat/acpinstall"
 )
 
 // Agent represents a CLI agent that can be spawned as a chat backend (legacy PTY).

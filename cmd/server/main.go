@@ -6,12 +6,16 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
-	"go-webttyd/internal/config"
-	"go-webttyd/internal/server"
+	"github.com/brainplusplus/9ed/internal/config"
+	"github.com/brainplusplus/9ed/internal/debug"
+	"github.com/brainplusplus/9ed/internal/server"
+	"github.com/brainplusplus/9ed/internal/tunnel"
 )
 
 func main() {
@@ -20,15 +24,62 @@ func main() {
 		log.Fatal(err)
 	}
 
+	debug.Enable(cfg.Debug)
+
 	if cfg.AutokillPort {
 		killProcessOnPort(cfg.Port)
 	}
 
+	var tn *tunnel.Tunnel
+	if cfg.Tunnel {
+		var err error
+		tn, err = tunnel.Start(cfg.TunnelEngine, cfg.Port)
+		if err != nil {
+			log.Printf("tunnel: %v (continuing without tunnel)", err)
+		}
+	}
+
 	srv := server.New(cfg)
-	log.Printf("listening on http://localhost:%s", cfg.Port)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("shutting down...")
+		if tn != nil {
+			tn.Stop()
+		}
+		srv.Shutdown()
+		os.Exit(0)
+	}()
+
+	printStartupInfo(cfg, tn)
 	if err := srv.ListenAndServe(); err != nil {
+		if tn != nil {
+			tn.Stop()
+		}
 		log.Fatal(err)
 	}
+}
+
+func printStartupInfo(cfg config.Config, tn *tunnel.Tunnel) {
+	mode := "terminal"
+	if cfg.Mode == "full" {
+		mode = "IDE"
+	}
+
+	fmt.Println("─────────────────────────────────────────────")
+	fmt.Printf("  9ed  [%s mode]\n", mode)
+	fmt.Println("─────────────────────────────────────────────")
+	fmt.Printf("  Local:   http://localhost:%s\n", cfg.Port)
+	if tn != nil {
+		fmt.Printf("  Tunnel:  %s (%s)\n", tn.URL(), tn.Engine())
+	}
+	fmt.Printf("  Auth:    %s:***\n", cfg.BasicAuthUsername)
+	if cfg.Debug {
+		fmt.Printf("  Debug:   ON\n")
+	}
+	fmt.Println("─────────────────────────────────────────────")
 }
 
 func killProcessOnPort(port string) {
@@ -47,7 +98,7 @@ func killProcessOnPort(port string) {
 		return
 	}
 
-	log.Printf("killing existing process %d on port %s", pid, port)
+	debug.Printf("killing existing process %d on port %s", pid, port)
 
 	proc, err := os.FindProcess(pid)
 	if err != nil {

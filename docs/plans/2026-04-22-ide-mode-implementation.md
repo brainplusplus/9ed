@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add a full web IDE mode (`MODE=full`) to go-webttyd with Monaco editor, file tree, multi-project support, and activity bar — while keeping the existing terminal-only mode (`MODE=simple`) untouched.
+**Goal:** Add a full web IDE mode (`MODE=full`) to 9ed with Monaco editor, file tree, multi-project support, and activity bar — while keeping the existing terminal-only mode (`MODE=simple`) untouched.
 
 **Architecture:** Monolithic extension. Two Vite entry points (terminal vs IDE) with conditional backend routing. New `internal/filesystem` package for file operations. Frontend uses Zustand for state, Monaco for editing, react-resizable-panels for layout. Existing terminal components reused as-is inside the IDE shell.
 
@@ -855,7 +855,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-webttyd/internal/filesystem"
+	"9ed/internal/filesystem"
 )
 
 func TestFileTreeEndpoint(t *testing.T) {

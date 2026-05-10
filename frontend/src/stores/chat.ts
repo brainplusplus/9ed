@@ -18,6 +18,7 @@ type ChatState = {
   sessions: ChatSessionInfo[];
   activeSessionId: string | null;
   agents: ChatAgent[];
+  selectedAgentId: string | null;
   chatVisible: boolean;
   historySessions: HistorySessionRecord[];
   historyLoaded: boolean;
@@ -28,6 +29,7 @@ type ChatState = {
   lastRestoreError: ChatRestoreError | null;
 
   loadAgents: (agents: ChatAgent[]) => void;
+  setSelectedAgent: (id: string) => void;
   createSession: (session: ChatSessionInfo) => void;
   setActiveSession: (id: string | null) => void;
   addMessage: (sessionId: string, message: ChatMessage) => void;
@@ -202,6 +204,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   agents: [],
+  selectedAgentId: null,
   chatVisible: false,
   historySessions: [],
   historyLoaded: false,
@@ -211,7 +214,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   restoring: false,
   lastRestoreError: null,
 
-  loadAgents: (agents) => set({ agents }),
+  loadAgents: (agents) => set({ agents, selectedAgentId: agents.find((a) => a.available)?.id ?? null }),
+
+  setSelectedAgent: (id) => set({ selectedAgentId: id }),
 
   createSession: (session) => {
     const normalized = { ...session, recordId: session.recordId ?? session.id, kind: session.kind ?? 'live' };
@@ -436,7 +441,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             kind: 'resumable',
             acpSessionId: historyEntry.acpSessionId,
           }],
-          activeSessionId: sessionId,
         }));
         try {
           const resumed = await resumeChatSession(sessionId, historyEntry.agentId, historyEntry.workDir, historyEntry.acpSessionId);
@@ -546,7 +550,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             kind: 'resumable',
             acpSessionId: restore.acpSessionId,
           }],
-          activeSessionId: targetSessionId,
         }));
         try {
           const resumed = await resumeChatSession(targetSessionId, restoreAgentId, restore.workDir ?? projectPath, restore.acpSessionId);

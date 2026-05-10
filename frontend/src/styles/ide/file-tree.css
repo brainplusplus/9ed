@@ -13,9 +13,9 @@
   padding: 3px 8px;
   border: none;
   background: transparent;
-  color: var(--sidebar-fg);
+  color: #dde4f0;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   text-align: left;
   transition: background 0.12s ease;
 }
@@ -49,6 +49,10 @@
 
 .tree-file-icon, .tree-folder-icon {
   display: block;
+}
+
+.tree-ignored .tree-icon {
+  opacity: 0.4;
 }
 
 .tree-name {

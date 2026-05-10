@@ -79,7 +79,7 @@ func (a *Adapter) initialize(ctx context.Context) error {
 			Terminal: true,
 		},
 		ClientInfo: &ImplementationInfo{
-			Name:    "go-webttyd",
+			Name:    "9ed",
 			Title:   "Web IDE Terminal",
 			Version: "1.0.0",
 		},

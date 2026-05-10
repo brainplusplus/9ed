@@ -3,12 +3,12 @@ package chat
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
-	"go-webttyd/internal/chat/acp"
-	"go-webttyd/internal/chat/acpinstall"
+	"github.com/brainplusplus/9ed/internal/chat/acp"
+	"github.com/brainplusplus/9ed/internal/chat/acpinstall"
+	"github.com/brainplusplus/9ed/internal/debug"
 )
 
 // ChatEvent represents a streaming event from an agent session.
@@ -392,7 +392,7 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 		return
 	}
 
-	log.Printf("[ACP] session_update: %s", base.SessionUpdate)
+	debug.Printf("[ACP] session_update: %s", base.SessionUpdate)
 
 	if base.SessionUpdate != acp.UpdateAgentMessageChunk {
 		s.flushText()

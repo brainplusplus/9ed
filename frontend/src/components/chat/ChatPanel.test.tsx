@@ -8,6 +8,12 @@ import { useWorkspaceStore } from '../../stores/workspace';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
+globalThis.ResizeObserver = class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof globalThis.ResizeObserver;
+
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
   value: vi.fn(),
   configurable: true,
@@ -48,6 +54,7 @@ function resetStores() {
     sessions: [],
     activeSessionId: null,
     agents: [{ id: 'opencode', label: 'OpenCode', available: true, configFound: true, activeModel: '', models: [], providers: [] }],
+    selectedAgentId: 'opencode',
     chatVisible: false,
     historySessions: [],
     historyLoaded: false,

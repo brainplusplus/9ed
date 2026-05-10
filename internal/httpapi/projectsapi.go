@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"go-webttyd/internal/chat"
+	"github.com/brainplusplus/9ed/internal/chat"
 )
 
 type recentProjectRequest struct {

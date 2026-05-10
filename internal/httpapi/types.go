@@ -1,6 +1,6 @@
 package httpapi
 
-import "go-webttyd/internal/terminal"
+import "github.com/brainplusplus/9ed/internal/terminal"
 
 type createSessionRequest struct {
 	ShellID string `json:"shellId"`

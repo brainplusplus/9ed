@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"go-webttyd/internal/chat"
-	"go-webttyd/internal/shells"
-	"go-webttyd/internal/terminal"
-	"go-webttyd/internal/watcher"
+	"github.com/brainplusplus/9ed/internal/chat"
+	"github.com/brainplusplus/9ed/internal/shells"
+	"github.com/brainplusplus/9ed/internal/terminal"
+	"github.com/brainplusplus/9ed/internal/watcher"
 
 	"github.com/gorilla/websocket"
 )

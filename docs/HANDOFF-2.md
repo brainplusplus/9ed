@@ -1,4 +1,4 @@
-# Handoff Document — go-webttyd Session 2
+# Handoff Document — 9ed Session 2
 
 **Date**: 2026-05-05
 **Previous Session**: ACP implementation complete, all agents supported, UI improvements

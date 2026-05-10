@@ -202,15 +202,13 @@ export function ChatSessionList() {
     <div className="chat-picker-wrap chat-session-wrap">
       <button
         ref={triggerRef}
-        className="chat-new-btn"
+        className="chat-history-btn"
         onClick={() => !loadingHistorySessionId && setOpen(!open)}
         type="button"
-        title="Switch session"
+        title="Chat history"
         disabled={loadingHistorySessionId !== null}
       >
-        <span className="chat-session-trigger-label">{loadingHistorySessionId ? 'Connecting...' : 'Sessions'}</span>
-        <span className="chat-session-trigger-count">{sessions.length + pastSessions.length}</span>
-        <span className="agent-picker-caret" aria-hidden="true">▾</span>
+        {loadingHistorySessionId ? <span className="chat-connecting-spinner chat-inline-spinner" /> : '📋'}
       </button>
       {open ? createPortal(dropdownContent, document.body) : null}
     </div>

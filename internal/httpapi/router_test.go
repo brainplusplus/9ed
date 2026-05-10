@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"go-webttyd/internal/chat"
-	"go-webttyd/internal/shells"
-	"go-webttyd/internal/terminal"
+	"github.com/brainplusplus/9ed/internal/chat"
+	"github.com/brainplusplus/9ed/internal/shells"
+	"github.com/brainplusplus/9ed/internal/terminal"
 
 	"github.com/gorilla/websocket"
 )

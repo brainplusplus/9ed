@@ -73,8 +73,8 @@ function FileIcon({ name }: { name: string }) {
 function FolderOpenIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="tree-folder-icon">
-      <path d="M1.5 3.5 a1 1 0 0 1 1 -1 h3 l1.5 1.5 h5.5 a1 1 0 0 1 1 1 v1 h-12z" fill="#eab308" opacity="0.25" stroke="#eab308" strokeWidth="0.7" />
-      <path d="M1 6.5 h13 l-1.5 6.5 a0.8 0.8 0 0 1 -0.8 0.5 h-8.4 a0.8 0.8 0 0 1 -0.8 -0.5z" fill="#eab308" opacity="0.2" stroke="#eab308" strokeWidth="0.7" />
+      <path d="M1.5 3.5 a1 1 0 0 1 1 -1 h3 l1.5 1.5 h5.5 a1 1 0 0 1 1 1 v1 h-12z" fill="#eab308" opacity="0.65" stroke="#eab308" strokeWidth="0.7" />
+      <path d="M1 6.5 h13 l-1.5 6.5 a0.8 0.8 0 0 1 -0.8 0.5 h-8.4 a0.8 0.8 0 0 1 -0.8 -0.5z" fill="#eab308" opacity="0.55" stroke="#eab308" strokeWidth="0.7" />
     </svg>
   );
 }
@@ -82,7 +82,7 @@ function FolderOpenIcon() {
 function FolderClosedIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="tree-folder-icon">
-      <path d="M1.5 3.5 a1 1 0 0 1 1 -1 h3 l1.5 1.5 h5.5 a1 1 0 0 1 1 1 v8 a1 1 0 0 1 -1 1 h-10 a1 1 0 0 1 -1 -1z" fill="#eab308" opacity="0.2" stroke="#eab308" strokeWidth="0.7" />
+      <path d="M1.5 3.5 a1 1 0 0 1 1 -1 h3 l1.5 1.5 h5.5 a1 1 0 0 1 1 1 v8 a1 1 0 0 1 -1 1 h-10 a1 1 0 0 1 -1 -1z" fill="#eab308" opacity="0.65" stroke="#eab308" strokeWidth="0.7" />
     </svg>
   );
 }
@@ -458,7 +458,7 @@ function FileTreeNode({ node, path, depth, onToggle, rootPath, gitStatus, onCont
         type="button"
       >
         {isDir && <span className="tree-arrow"><ChevronIcon open={!!node.expanded} /></span>}
-        <span className="tree-icon" style={isIgnored ? { opacity: 0.45 } : undefined}>
+        <span className="tree-icon">
           {isDir ? (node.expanded ? <FolderOpenIcon /> : <FolderClosedIcon />) : <FileIcon name={node.name} />}
         </span>
         {isRenaming ? (

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"os"
 
-	"go-webttyd/internal/chat/acp"
-	"go-webttyd/internal/chat/acpinstall"
+	"github.com/brainplusplus/9ed/internal/chat/acp"
+	"github.com/brainplusplus/9ed/internal/chat/acpinstall"
 )
 
 func jsonUnmarshal(data json.RawMessage, v any) error {

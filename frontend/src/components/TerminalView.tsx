@@ -136,28 +136,51 @@ export function TerminalView(props: TerminalViewProps) {
     }
 
     const terminal = terminalRef.current;
-    const socket = socketRef.current;
     if (!terminal) {
       return;
     }
 
-    if (action.kind === 'clear-view') {
-      terminal.clear();
-      terminal.write('\u001b[2J\u001b[3J\u001b[H');
+    if (action.kind === 'clear-terminal') {
+      const buf = terminal.buffer.active;
+
+      // Alternate buffer (vim, nano, less) — full clear, no smart behavior
+      if (buf.type === 'alternate') {
+        terminal.clear();
+        terminal.write('\x1b[2J\x1b[3J\x1b[H');
+        return;
+      }
+
+      // Read the line where the cursor sits
+      const cursorLineIdx = buf.baseY + buf.cursorY;
+      const cursorLine = buf.getLine(cursorLineIdx);
+      const lineText = cursorLine?.translateToString(true) ?? '';
+
+      // Detect prompt: non-empty line ending with common prompt characters
+      // AND cursor is at or near end of line (shell waiting for input)
+      const trimmed = lineText.trimEnd();
+      const endsWithPromptChar = trimmed.length > 0 && (
+        trimmed.endsWith('>') ||
+        trimmed.endsWith('$') ||
+        trimmed.endsWith('#') ||
+        trimmed.endsWith('%')
+      );
+      const cursorAtEnd = buf.cursorX >= trimmed.length - 1;
+
+      if (endsWithPromptChar && cursorAtEnd) {
+        // Prompt visible — clear everything then rewrite prompt
+        terminal.clear();
+        terminal.write('\x1b[2J\x1b[3J\x1b[H');
+        terminal.write(lineText);
+        // Position cursor at end of prompt line
+        terminal.write(`\x1b[${lineText.length + 1}G`);
+      } else {
+        // No prompt (process running or ambiguous) — clear everything
+        terminal.clear();
+        terminal.write('\x1b[2J\x1b[3J\x1b[H');
+      }
       return;
     }
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    const shellName = `${tab.profile.label} ${tab.profile.command}`.toLowerCase();
-    const clearCommand = shellName.includes('powershell') || shellName.includes('pwsh') || shellName.includes('cmd')
-      ? 'cls\r'
-      : 'clear\r';
-
-    socket.send(JSON.stringify({ type: 'input', data: clearCommand } satisfies WebSocketOutgoingMessage));
-  }, [action, tab.id, tab.profile.command, tab.profile.label]);
+  }, [action, tab.id]);
 
   return (
     <section className={`terminal-panel${active ? ' visible' : ''}`} aria-hidden={!active}>

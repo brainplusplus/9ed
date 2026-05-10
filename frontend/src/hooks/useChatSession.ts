@@ -50,6 +50,7 @@ export function useChatSession(): UseChatSessionResult {
       return;
     }
 
+    let closedIntentionally = false;
     const ws = createChatWebSocket(activeSessionId);
     wsRef.current = ws;
 
@@ -81,6 +82,7 @@ export function useChatSession(): UseChatSessionResult {
 
     ws.onclose = () => {
       setConnected(false);
+      if (closedIntentionally) return;
       if (activeSessionId) {
         const session = useChatStore.getState().sessions.find((s) => s.id === activeSessionId);
         if (session && session.kind !== 'archived') {
@@ -95,6 +97,7 @@ export function useChatSession(): UseChatSessionResult {
     ws.onerror = () => setConnected(false);
 
     return () => {
+      closedIntentionally = true;
       ws.close();
       wsRef.current = null;
       setConnected(false);

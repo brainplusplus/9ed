@@ -64,13 +64,14 @@ function ChatIcon() {
 function BrandIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="3" y="3" width="16" height="16" rx="4" fill="url(#brand-grad)" />
-      <path d="M8 8.5 L11 11 L8 13.5" stroke="#EAF3FF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M14 8.5 L11 11 L14 13.5" stroke="#EAF3FF" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="2" y="2" width="18" height="18" rx="5" fill="url(#brand-grad)" />
+      <path d="M7 8 L10.5 11 L7 14" stroke="#EAF3FF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="12" y1="14" x2="15.5" y2="14" stroke="#EAF3FF" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="17.5" cy="4.5" r="2.5" fill="#22C55E" stroke="#181825" strokeWidth="1.2" />
       <defs>
-        <linearGradient id="brand-grad" x1="3" y1="3" x2="19" y2="19" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#2D8CFF" />
-          <stop offset="1" stopColor="#155EEF" />
+        <linearGradient id="brand-grad" x1="2" y1="2" x2="20" y2="20" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#6366F1" />
+          <stop offset="1" stopColor="#3B82F6" />
         </linearGradient>
       </defs>
     </svg>
@@ -88,27 +89,39 @@ const panels: { id: ActivePanel; icon: React.ReactNode; label: string }[] = [
 export function ActivityBar() {
   const activePanel = useWorkspaceStore((s) => s.activePanel);
   const setActivePanel = useWorkspaceStore((s) => s.setActivePanel);
+  const sidebarVisible = useWorkspaceStore((s) => s.sidebarVisible);
+  const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
   const gitChangeCount = useGitStore((s) => s.status.length);
 
+  function handlePanelClick(p: (typeof panels)[number]) {
+    if (p.id === 'terminal') {
+      toggleTerminal();
+      return;
+    }
+    if (activePanel === p.id && sidebarVisible) {
+      toggleSidebar();
+      return;
+    }
+    setActivePanel(p.id);
+    if (!sidebarVisible) {
+      toggleSidebar();
+    }
+  }
+
   return (
     <nav className="activity-bar" aria-label="Activity Bar">
-      <div className="activity-brand" title="go-webttyd">
+      <div className="activity-brand" title="9ed">
         <span className="activity-brand-icon"><BrandIcon /></span>
       </div>
       <div className="activity-bar-divider" />
       {panels.map((p) => (
         <button
           key={p.id}
-          className={`activity-btn${activePanel === p.id ? ' active' : ''}`}
-          onClick={() => {
-            if (p.id === 'terminal') {
-              toggleTerminal();
-            }
-            setActivePanel(p.id);
-          }}
+          className={`activity-btn${activePanel === p.id && sidebarVisible ? ' active' : ''}`}
+          onClick={() => handlePanelClick(p)}
           title={p.label}
           type="button"
         >

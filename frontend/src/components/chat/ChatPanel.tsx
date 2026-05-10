@@ -8,15 +8,21 @@ import { ChatInput } from './ChatInput';
 import { ChatQueue } from './ChatQueue';
 import { PermissionDialog } from './PermissionDialog';
 import { AgentPicker, ConfigBar } from './AgentPicker';
+import { ChatTabs } from './ChatTabs';
 import { ChatSessionList } from './ChatSessionList';
 import type { ChatSessionInfo } from '../../types';
 
 export function ChatPanel() {
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
   const activeSession = useChatStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
   const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
   const agents = useChatStore((s) => s.agents);
+  const sessions = useChatStore((s) => s.sessions);
+  const selectedAgentId = useChatStore((s) => s.selectedAgentId);
   const loadAgents = useChatStore((s) => s.loadAgents);
   const createSessionStore = useChatStore((s) => s.createSession);
+  const setActiveSession = useChatStore((s) => s.setActiveSession);
+  const deleteSessionStore = useChatStore((s) => s.deleteSession);
   const restoring = useChatStore((s) => s.restoring);
   const { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected } = useChatSession();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -24,7 +30,6 @@ export function ChatPanel() {
 
   const isStreaming = activeSession?.status === 'streaming';
   const isConnecting = activeSession?.status === 'connecting' || creating;
-  const activeAgent = agents.find((agent) => agent.id === activeSession?.agentId);
   const isArchived = activeSession?.kind === 'archived';
 
   useEffect(() => {
@@ -40,19 +45,19 @@ export function ChatPanel() {
   }, [messages?.length, lastMsgContent]);
 
   const handleNewChat = async () => {
-    const available = agents.filter((a) => a.available);
-    if (available.length === 0) return;
-    const agentId = available[0].id;
+    const agentId = selectedAgentId;
+    if (!agentId) return;
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent?.available) return;
 
     setCreating(true);
     try {
       const { id } = await createChatSession(agentId, activeProject?.path);
-      const agent = agents.find((a) => a.id === agentId);
       const session: ChatSessionInfo = {
         id,
         recordId: id,
         agentId,
-        title: agent?.label ?? 'Chat',
+        title: agent.label ?? 'Chat',
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
@@ -63,6 +68,15 @@ export function ChatPanel() {
     } finally {
       setCreating(false);
     }
+  };
+
+  const handleCloseTab = (sessionId: string) => {
+    const idx = sessions.findIndex((s) => s.id === sessionId);
+    if (activeSessionId === sessionId) {
+      const fallback = sessions[idx + 1] ?? sessions[idx - 1] ?? null;
+      setActiveSession(fallback?.id ?? null);
+    }
+    deleteSessionStore(sessionId);
   };
 
   const handleSend = (content: string, attachments?: import('./ChatInput').Attachment[]) => {
@@ -80,27 +94,26 @@ export function ChatPanel() {
   return (
     <div className="chat-panel">
       <div className="chat-header">
-        <div className="chat-header-top">
-          <div className="chat-title-block">
-            <div className="chat-title-eyebrow">Assistant</div>
-            <div className="chat-title-row">
-              <span className="chat-title-main">{activeSession?.title || 'New Chat'}</span>
-              {activeAgent && <span className="chat-title-subtle">{activeAgent.label}</span>}
-              {isArchived && <span className="chat-title-badge chat-badge-archived">Archived</span>}
-            </div>
-          </div>
+        <div className="chat-tab-session-area">
+          <ChatTabs
+            tabs={sessions}
+            activeTabId={activeSessionId}
+            agents={agents}
+            onSelectTab={setActiveSession}
+            onCloseTab={handleCloseTab}
+          />
         </div>
         <div className="chat-header-actions">
           <AgentPicker />
           <ChatSessionList />
           <button
             className="chat-new-btn chat-new-btn-icon"
-            onClick={handleNewChat}
+            onClick={() => void handleNewChat()}
             type="button"
-            title="New chat"
-            disabled={creating}
+            title={creating ? 'Creating new chat...' : 'New chat'}
+            disabled={creating || !selectedAgentId}
           >
-            {creating ? '...' : '✎'}
+            {creating ? 'Creating...' : '+'}
           </button>
         </div>
       </div>
@@ -120,7 +133,7 @@ export function ChatPanel() {
           </div>
         </div>
       ) : !activeSession ? (
-        <div className="chat-empty">Select an agent to start</div>
+        <div className="chat-empty">Select an agent and press + to start</div>
       ) : (
         <>
           <div className="chat-messages">

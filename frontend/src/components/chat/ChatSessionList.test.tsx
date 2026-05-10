@@ -45,6 +45,7 @@ function resetStores() {
     }],
     activeSessionId: 'live-1',
     agents: [],
+    selectedAgentId: null,
     chatVisible: false,
     historySessions: [{
       id: 'record-2',
@@ -88,7 +89,7 @@ describe('ChatSessionList', () => {
       root.render(<ChatSessionList />);
     });
 
-    const trigger = container.querySelector('.chat-new-btn');
+    const trigger = container.querySelector('.chat-history-btn');
     expect(trigger).not.toBeNull();
 
     act(() => {
@@ -101,7 +102,7 @@ describe('ChatSessionList', () => {
     expect(overlay?.getAttribute('data-overlay')).toBe('true');
   });
 
-  it('shows connecting state in trigger while history session is loading', async () => {
+  it('shows connecting state while history session is loading', async () => {
     let releaseLoad: (() => void) | null = null;
     const pendingLoadHistorySession = ((_: string) => new Promise<void>((resolve) => {
       loadHistorySessionSpy();
@@ -115,8 +116,8 @@ describe('ChatSessionList', () => {
       root.render(<ChatSessionList />);
     });
 
-    const trigger = container.querySelector('.chat-new-btn');
-    expect(trigger?.textContent).toContain('Sessions');
+    const trigger = container.querySelector('.chat-history-btn');
+    expect(trigger).not.toBeNull();
 
     act(() => {
       trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -131,7 +132,7 @@ describe('ChatSessionList', () => {
     });
 
     expect(loadHistorySessionSpy).toHaveBeenCalled();
-    expect(container.querySelector('.chat-new-btn')?.textContent).toContain('Connecting');
+    expect(container.querySelector('.chat-connecting-spinner')).not.toBeNull();
 
     await act(async () => {
       releaseLoad?.();

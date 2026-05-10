@@ -1,26 +1,29 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"log"
 
-	"go-webttyd/internal/auth"
-	"go-webttyd/internal/chat"
-	"go-webttyd/internal/config"
-	"go-webttyd/internal/httpapi"
-	"go-webttyd/internal/shells"
-	"go-webttyd/internal/terminal"
-	"go-webttyd/internal/watcher"
+	"github.com/brainplusplus/9ed/internal/auth"
+	"github.com/brainplusplus/9ed/internal/chat"
+	"github.com/brainplusplus/9ed/internal/config"
+	"github.com/brainplusplus/9ed/internal/httpapi"
+	"github.com/brainplusplus/9ed/internal/shells"
+	"github.com/brainplusplus/9ed/internal/terminal"
+	"github.com/brainplusplus/9ed/internal/watcher"
 )
 
 type Server struct {
 	Config config.Config
 	api    *httpapi.API
+	hs     *http.Server
 }
 
 func New(cfg config.Config) *Server {
@@ -80,7 +83,19 @@ func (s *Server) Addr() string {
 }
 
 func (s *Server) ListenAndServe() error {
-	return http.ListenAndServe(s.Addr(), s.Handler())
+	s.hs = &http.Server{
+		Addr:    s.Addr(),
+		Handler: s.Handler(),
+	}
+	return s.hs.ListenAndServe()
+}
+
+func (s *Server) Shutdown() {
+	if s.hs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.hs.Shutdown(ctx)
+	}
 }
 
 func distDir() string {

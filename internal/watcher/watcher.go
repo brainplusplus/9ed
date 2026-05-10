@@ -1,7 +1,6 @@
 package watcher
 
 import (
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/brainplusplus/9ed/internal/debug"
 )
 
 type Event struct {
@@ -28,13 +28,13 @@ func (s *Subscriber) Send(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		log.Printf("[watcher] Send skipped: subscriber closed, event=%s name=%s", e.Type, e.Name)
+		debug.Printf("[watcher] Send skipped: subscriber closed, event=%s name=%s", e.Type, e.Name)
 		return
 	}
 	select {
 	case s.Ch <- e:
 	default:
-		log.Printf("[watcher] Send DROPPED: channel full (len=%d), event=%s name=%s", len(s.Ch), e.Type, e.Name)
+		debug.Printf("[watcher] Send DROPPED: channel full (len=%d), event=%s name=%s", len(s.Ch), e.Type, e.Name)
 	}
 }
 
@@ -147,12 +147,12 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 		return
 	}
 
-	log.Printf("[watcher] fsnotify event: op=%s type=%s path=%s", fsEvent.Op, eventType, path)
+	debug.Printf("[watcher] fsnotify event: op=%s type=%s path=%s", fsEvent.Op, eventType, path)
 
 	if fsEvent.Op.Has(fsnotify.Create) {
 		if info, err := os.Stat(path); err == nil && info.IsDir() && !shouldSkipDir(info.Name()) {
 			_ = fw.fsw.Add(path)
-			log.Printf("[watcher] Auto-watching new dir: %s", path)
+			debug.Printf("[watcher] Auto-watching new dir: %s", path)
 		}
 	}
 
@@ -183,7 +183,7 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 			}
 		}
 		fw.mu.RUnlock()
-		log.Printf("[watcher] Dispatched event: type=%s name=%s subscribers=%d sent=%d", eventType, filepath.Base(path), subCount, sent)
+		debug.Printf("[watcher] Dispatched event: type=%s name=%s subscribers=%d sent=%d", eventType, filepath.Base(path), subCount, sent)
 	})
 	fw.debounceMu.Unlock()
 }

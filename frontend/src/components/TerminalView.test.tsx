@@ -13,6 +13,7 @@ const terminalOpen = vi.fn();
 const terminalWrite = vi.fn();
 const terminalLoadAddon = vi.fn();
 const terminalOnDataDispose = vi.fn();
+const terminalClear = vi.fn();
 const fitAddonFit = vi.fn();
 
 vi.mock('../api', () => ({
@@ -37,6 +38,23 @@ vi.mock('@xterm/xterm', () => ({
     write(data: string) {
       terminalWrite(data);
     }
+
+    clear() {
+      terminalClear();
+    }
+
+    buffer = {
+      active: {
+        type: 'normal' as const,
+        baseY: 0,
+        cursorX: 20,
+        cursorY: 0,
+        getLine: vi.fn(() => ({
+          translateToString: vi.fn((_trimRight?: boolean) => 'PS D:\\golang\\9ed> '),
+          isWrapped: false,
+        })),
+      },
+    };
 
     onData() {
       return {
@@ -88,6 +106,7 @@ describe('TerminalView', () => {
     terminalWrite.mockReset();
     terminalLoadAddon.mockReset();
     terminalOnDataDispose.mockReset();
+    terminalClear.mockReset();
     fitAddonFit.mockReset();
   });
 
@@ -123,5 +142,38 @@ describe('TerminalView', () => {
     });
 
     expect(createSessionWebSocket).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls clear and write when clear-terminal action is dispatched', () => {
+    createSessionWebSocket.mockReturnValue(new FakeWebSocket());
+
+    const tab: SessionTab = {
+      id: 'session-1',
+      profile: {
+        id: 'pwsh',
+        label: 'PowerShell 7',
+        command: 'pwsh.exe',
+        args: [],
+      },
+      status: 'ready',
+    };
+
+    act(() => {
+      root.render(<TerminalView tab={tab} active onStatusChange={() => undefined} />);
+    });
+
+    act(() => {
+      root.render(
+        <TerminalView
+          tab={tab}
+          active
+          onStatusChange={() => undefined}
+          action={{ targetTabId: 'session-1', kind: 'clear-terminal', nonce: Date.now() }}
+        />
+      );
+    });
+
+    expect(terminalClear).toHaveBeenCalled();
+    expect(terminalWrite).toHaveBeenCalled();
   });
 });

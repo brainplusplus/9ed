@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"go-webttyd/internal/config"
+	"github.com/brainplusplus/9ed/internal/config"
 )
 
 func TestServerHandlerRequiresBasicAuthForSPA(t *testing.T) {

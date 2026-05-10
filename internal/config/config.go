@@ -16,12 +16,18 @@ type Config struct {
 	Mode              string
 	WorkspaceRoot     string
 	AutokillPort      bool
+	Tunnel            bool
+	TunnelEngine      string
+	Debug             bool
 }
 
 func LoadFromEnv() (Config, error) {
 	_ = godotenv.Load()
 
 	autokill := strings.TrimSpace(strings.ToLower(os.Getenv("AUTOKILL_PORT")))
+	tunnel := strings.TrimSpace(strings.ToLower(os.Getenv("TUNNEL")))
+	tunnelEngine := strings.TrimSpace(strings.ToLower(os.Getenv("TUNNEL_ENGINE")))
+	dbg := strings.TrimSpace(strings.ToLower(os.Getenv("DEBUG")))
 
 	cfg := Config{
 		Port:              strings.TrimSpace(os.Getenv("PORT")),
@@ -30,6 +36,9 @@ func LoadFromEnv() (Config, error) {
 		Mode:              strings.TrimSpace(strings.ToLower(os.Getenv("MODE"))),
 		WorkspaceRoot:     strings.TrimSpace(os.Getenv("WORKSPACE_ROOT")),
 		AutokillPort:      autokill == "" || autokill == "true" || autokill == "1",
+		Tunnel:            tunnel == "" || tunnel == "true" || tunnel == "1",
+		TunnelEngine:      tunnelEngine,
+		Debug:             dbg == "true" || dbg == "1",
 	}
 
 	if cfg.Port == "" {
@@ -40,8 +49,16 @@ func LoadFromEnv() (Config, error) {
 		cfg.Mode = "simple"
 	}
 
+	if cfg.TunnelEngine == "" {
+		cfg.TunnelEngine = "bore"
+	}
+
 	if cfg.Mode != "simple" && cfg.Mode != "full" {
 		return Config{}, fmt.Errorf("MODE must be 'simple' or 'full', got %q", cfg.Mode)
+	}
+
+	if cfg.TunnelEngine != "bore" && cfg.TunnelEngine != "cloudflare" {
+		return Config{}, fmt.Errorf("TUNNEL_ENGINE must be 'bore' or 'cloudflare', got %q", cfg.TunnelEngine)
 	}
 
 	if strings.TrimSpace(cfg.BasicAuthUsername) == "" || strings.TrimSpace(cfg.BasicAuthPassword) == "" {
