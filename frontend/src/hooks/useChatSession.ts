@@ -17,9 +17,11 @@ type UseChatSessionResult = {
 
 export function useChatSession(): UseChatSessionResult {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSession = useChatStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId) ?? null);
   const addMessage = useChatStore((s) => s.addMessage);
   const handleChatEvent = useChatStore((s) => s.handleChatEvent);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
+  const setSessionKind = useChatStore((s) => s.setSessionKind);
   const finalizeAssistantMessage = useChatStore((s) => s.finalizeAssistantMessage);
   const dequeueMessage = useChatStore((s) => s.dequeueMessage);
 
@@ -33,6 +35,9 @@ export function useChatSession(): UseChatSessionResult {
   const dequeueRef = useRef(dequeueMessage);
   dequeueRef.current = dequeueMessage;
   const sendQueuedRef = useRef<((queued: QueuedMessage) => void) | null>(null);
+  const setSessionKindRef = useRef(setSessionKind);
+  setSessionKindRef.current = setSessionKind;
+  const upgradedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -40,10 +45,22 @@ export function useChatSession(): UseChatSessionResult {
       return;
     }
 
+    if (activeSession?.kind === 'archived') {
+      setConnected(false);
+      return;
+    }
+
     const ws = createChatWebSocket(activeSessionId);
     wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+      setSessionStatus(activeSessionId, 'idle');
+      if (activeSession?.kind === 'resumable' && !upgradedRef.current.has(activeSessionId)) {
+        setSessionKindRef.current(activeSessionId, 'live');
+        upgradedRef.current.add(activeSessionId);
+      }
+    };
 
     ws.onmessage = (event) => {
       try {
@@ -62,7 +79,19 @@ export function useChatSession(): UseChatSessionResult {
       }
     };
 
-    ws.onclose = () => setConnected(false);
+    ws.onclose = () => {
+      setConnected(false);
+      if (activeSessionId) {
+        const session = useChatStore.getState().sessions.find((s) => s.id === activeSessionId);
+        if (session && session.kind !== 'archived') {
+          useChatStore.setState({
+            sessions: useChatStore.getState().sessions.map((s) =>
+              s.id === activeSessionId ? { ...s, status: 'error' as const } : s
+            ),
+          });
+        }
+      }
+    };
     ws.onerror = () => setConnected(false);
 
     return () => {
@@ -70,7 +99,7 @@ export function useChatSession(): UseChatSessionResult {
       wsRef.current = null;
       setConnected(false);
     };
-  }, [activeSessionId]);
+  }, [activeSessionId, activeSession?.kind]);
 
   const sendMessage = useCallback(
     (content: string, context?: CodeContext, attachments?: Attachment[]) => {

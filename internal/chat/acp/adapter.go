@@ -131,6 +131,46 @@ func (a *Adapter) NewSession(ctx context.Context, cwd string) (*SessionNewResult
 	return &result, nil
 }
 
+// ResumeSession resumes an existing session via session/resume if the agent supports it.
+// Returns the session new result (with config options) or an error if resume is unsupported.
+func (a *Adapter) ResumeSession(ctx context.Context, sessionID, cwd string) (*SessionNewResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.agentCaps.SessionCapabilities == nil || a.agentCaps.SessionCapabilities.Resume == nil {
+		return nil, fmt.Errorf("agent does not support session/resume")
+	}
+
+	if cwd == "" {
+		cwd = a.cfg.WorkDir
+	}
+
+	params := SessionResumeParams{
+		SessionID:  sessionID,
+		CWD:        cwd,
+		MCPServers: []MCPServer{},
+	}
+
+	raw, err := a.client.Call(ctx, MethodSessionResume, params)
+	if err != nil {
+		return nil, fmt.Errorf("session/resume: %w", err)
+	}
+
+	var result SessionNewResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal session/resume result: %w", err)
+	}
+
+	a.sessionID = result.SessionID
+	a.configOptions = result.ConfigOptions
+	return &result, nil
+}
+
+// SupportsResume returns whether the agent declared session/resume capability.
+func (a *Adapter) SupportsResume() bool {
+	return a.agentCaps.SessionCapabilities != nil && a.agentCaps.SessionCapabilities.Resume != nil
+}
+
 // SetConfigOption changes a config option (model, mode, etc) and returns updated state.
 func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, value string) ([]SessionConfigOption, error) {
 	params := SetConfigOptionParams{

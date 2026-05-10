@@ -1,4 +1,4 @@
-import type { AppConfig, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -360,19 +360,84 @@ export async function deleteChatSession(id: string): Promise<void> {
   }
 }
 
+export type LiveChatSession = {
+  id: string;
+  agentId: string;
+  mode: string;
+  workDir?: string;
+  acpSessionId?: string;
+  isResumed?: boolean;
+};
+
+export async function getLiveChatSessions(): Promise<LiveChatSession[]> {
+  const response = await fetch('/api/chat/sessions', { credentials: 'include' });
+  if (!response.ok) return [];
+  return parseResponse<LiveChatSession[]>(response);
+}
+
+export type RestorableChatSession = {
+  found: boolean;
+  sessionId?: string;
+  agentId?: string;
+  workDir?: string;
+  acpSessionId?: string;
+  status?: string;
+  title?: string;
+  isLive: boolean;
+  canResume: boolean;
+  agentSupportsAcp?: boolean;
+  agentAvailable?: boolean;
+  resumeError?: string;
+};
+
+export async function getRestorableChatSession(workDir: string, preferredSessionId?: string): Promise<RestorableChatSession | null> {
+  const params = new URLSearchParams({ workDir });
+  if (preferredSessionId) params.set('sessionId', preferredSessionId);
+  const response = await fetch(`/api/chat/sessions/restore?${params}`, { credentials: 'include' });
+  if (!response.ok) return null;
+  return parseResponse<RestorableChatSession>(response);
+}
+
+export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId: string): Promise<{ id: string; mode: string } | RestorableChatSession> {
+  const response = await fetch('/api/chat/sessions/resume', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, agentId, workDir, acpSessionId }),
+  });
+  return parseResponse<{ id: string; mode: string } | RestorableChatSession>(response);
+}
+
 export function createChatWebSocket(sessionId: string): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return new WebSocket(`${protocol}//${window.location.host}/ws/chat/${sessionId}`);
 }
 
-export async function getChatHistory(): Promise<HistorySessionRecord[]> {
-  const response = await fetch('/api/chat/history', { credentials: 'include' });
-  return parseResponse<HistorySessionRecord[]>(response);
+export async function getChatHistory(workDir?: string): Promise<HistorySessionRecord[]> {
+	const params = new URLSearchParams();
+	if (workDir) {
+		params.set('workDir', workDir);
+	}
+	const query = params.size > 0 ? `?${params.toString()}` : '';
+	const response = await fetch(`/api/chat/history${query}`, { credentials: 'include' });
+	return parseResponse<HistorySessionRecord[]>(response);
 }
 
 export async function getChatSessionMessages(sessionId: string): Promise<HistoryMessageRecord[]> {
   const response = await fetch(`/api/chat/history/${sessionId}`, { credentials: 'include' });
   return parseResponse<HistoryMessageRecord[]>(response);
+}
+
+export type ChatSessionStateResponse = {
+  session: HistorySessionRecord;
+  messages: HistoryMessageRecord[];
+  events: TranscriptEventRecord[];
+  snapshot?: TranscriptSnapshotRecord | null;
+};
+
+export async function getChatSessionState(sessionId: string): Promise<ChatSessionStateResponse> {
+  const response = await fetch(`/api/chat/state/${sessionId}`, { credentials: 'include' });
+  return parseResponse<ChatSessionStateResponse>(response);
 }
 
 export async function saveChatMessage(msg: {
@@ -425,6 +490,7 @@ export type WorkspaceState = {
   activeFilePath: string | null;
   sidebarPanel: string;
   chatVisible: boolean;
+  lastChatSessionId?: string;
 };
 
 export async function getWorkspaceState(projectPath: string): Promise<WorkspaceState | null> {

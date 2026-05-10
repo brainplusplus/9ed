@@ -1,6 +1,11 @@
 import { create } from 'zustand';
-import type { ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, HistorySessionRecord, ToolCallInfo } from '../types';
-import { getChatHistory, getChatSessionMessages, saveChatMessage, deleteChatHistory } from '../api';
+import type { ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
+import { getChatHistory, getChatSessionState, saveChatMessage, deleteChatHistory, getRestorableChatSession, resumeChatSession } from '../api';
+
+export type ChatRestoreError = {
+  sessionId: string;
+  reason: string;
+};
 
 export type QueuedMessage = {
   id: string;
@@ -19,6 +24,8 @@ type ChatState = {
   queuedMessages: Record<string, QueuedMessage[]>;
   includeIgnoredInMentions: boolean;
   autoApprove: boolean;
+  restoring: boolean;
+  lastRestoreError: ChatRestoreError | null;
 
   loadAgents: (agents: ChatAgent[]) => void;
   createSession: (session: ChatSessionInfo) => void;
@@ -28,11 +35,13 @@ type ChatState = {
   handleChatEvent: (sessionId: string, event: ChatEvent) => void;
   finalizeAssistantMessage: (sessionId: string) => void;
   setSessionStatus: (sessionId: string, status: ChatSessionInfo['status']) => void;
+  setSessionKind: (sessionId: string, kind: ChatSessionKind) => void;
   toggleChat: () => void;
   deleteSession: (id: string) => void;
-  loadHistory: () => Promise<void>;
+  loadHistory: (workDir?: string) => Promise<void>;
   loadHistorySession: (sessionId: string) => Promise<void>;
   deleteHistorySession: (sessionId: string) => Promise<void>;
+  restoreSessionForProject: (projectPath: string, preferredSessionId?: string) => Promise<void>;
   enqueueMessage: (sessionId: string, msg: QueuedMessage) => void;
   dequeueMessage: (sessionId: string) => QueuedMessage | undefined;
   removeQueuedMessage: (sessionId: string, msgId: string) => void;
@@ -47,11 +56,146 @@ function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: Cha
   return sessions.map((s) => (s.id === id ? updater(s) : s));
 }
 
+function findSessionByIdentity(sessions: ChatSessionInfo[], identity: string): ChatSessionInfo | undefined {
+  return sessions.find((s) => s.id === identity || s.recordId === identity);
+}
+
+function fallbackTitle(agentId: string, title?: string): string {
+  const agentLabels: Record<string, string> = {
+    opencode: 'OpenCode',
+    claude: 'Claude Code',
+    codex: 'Codex CLI',
+    gemini: 'Gemini CLI',
+    pi: 'Pi',
+    amp: 'Amp',
+    copilot: 'Copilot',
+  };
+  const agentLabel = agentLabels[agentId] ?? agentId ?? 'Chat';
+  return title && title.trim() ? title : agentLabel;
+}
+
 function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
   for (let i = arr.length - 1; i >= 0; i--) {
     if (predicate(arr[i])) return i;
   }
   return -1;
+}
+
+type ReplayResult = {
+  messages: ChatMessage[];
+  commands?: SlashCommandInfo[];
+  configOptions?: ConfigOptionInfo[];
+  title?: string;
+};
+
+export function replayTranscriptToMessages(events: TranscriptEventRecord[]): ReplayResult {
+  const msgs: ChatMessage[] = [];
+  let commands: SlashCommandInfo[] | undefined;
+  let configOptions: ConfigOptionInfo[] | undefined;
+  let title: string | undefined;
+  const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+  for (const evt of events) {
+    let payload: ChatEvent;
+    try {
+      payload = JSON.parse(evt.payloadJson) as ChatEvent;
+    } catch {
+      continue;
+    }
+
+    const last = msgs[msgs.length - 1];
+
+    switch (evt.kind) {
+      case 'text': {
+        if (last && last.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, content: last.content + (payload.text ?? '') };
+        } else {
+          msgs.push({ id: genId(), role: 'assistant', content: payload.text ?? '', timestamp: evt.timestamp });
+        }
+        break;
+      }
+
+      case 'thinking':
+        if (last && last.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + (payload.thinking ?? '') };
+        }
+        break;
+
+      case 'tool_call': {
+        const tc: ToolCallInfo = {
+          toolCallId: payload.toolCallId ?? '',
+          title: payload.toolTitle ?? '',
+          kind: payload.toolKind ?? '',
+          status: payload.toolStatus ?? 'pending',
+          locations: payload.toolLocations,
+        };
+        msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall: tc, timestamp: evt.timestamp });
+        break;
+      }
+
+      case 'tool_call_update': {
+        const idx = findLastIndex(msgs, (m) => m.role === 'tool_call' && m.toolCall?.toolCallId === payload.toolCallId);
+        if (idx >= 0) {
+          const entry = msgs[idx];
+          const tc = entry.toolCall!;
+          msgs[idx] = {
+            ...entry,
+            toolCall: {
+              ...tc,
+              status: payload.toolStatus ?? tc.status,
+              title: payload.toolTitle ?? tc.title,
+              content: payload.toolContent ?? tc.content,
+            },
+          };
+        }
+        break;
+      }
+
+      case 'diff': {
+        const diff = { path: payload.diffPath ?? '', oldText: payload.diffOldText ?? '', newText: payload.diffNewText ?? '' };
+        const tcIdx = findLastIndex(msgs, (m) => m.role === 'tool_call');
+        if (tcIdx >= 0) {
+          const entry = msgs[tcIdx];
+          msgs[tcIdx] = { ...entry, diffs: [...(entry.diffs ?? []), diff] };
+        } else if (last && last.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, diffs: [...(last.diffs ?? []), diff] };
+        }
+        break;
+      }
+
+      case 'plan':
+        msgs.push({ id: genId(), role: 'plan', content: '', plan: payload.planEntries ?? [], timestamp: evt.timestamp });
+        break;
+
+      case 'commands':
+        commands = payload.commands ?? [];
+        break;
+
+      case 'config_options':
+        configOptions = payload.configOptions ?? [];
+        break;
+
+      case 'title':
+        title = payload.title;
+        break;
+
+      case 'done':
+      case 'error':
+        break;
+    }
+  }
+
+  return { messages: msgs, commands, configOptions, title };
+}
+
+export function parseSnapshotJson<T>(json: string | undefined | null): T[] | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -64,13 +208,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   queuedMessages: {},
   includeIgnoredInMentions: false,
   autoApprove: false,
+  restoring: false,
+  lastRestoreError: null,
 
   loadAgents: (agents) => set({ agents }),
 
   createSession: (session) => {
+    const normalized = { ...session, recordId: session.recordId ?? session.id, kind: session.kind ?? 'live' };
     set((state) => ({
-      sessions: [...state.sessions, session],
-      activeSessionId: session.id,
+      sessions: [...state.sessions.filter((s) => s.id !== normalized.id && s.recordId !== normalized.recordId), normalized],
+      activeSessionId: normalized.id,
     }));
   },
 
@@ -87,9 +234,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }),
     }));
     if (message.role === 'user') {
-      const session = get().sessions.find((s) => s.id === sessionId);
+      const session = findSessionByIdentity(get().sessions, sessionId);
       saveChatMessage({
-        sessionId,
+        sessionId: session?.recordId ?? sessionId,
         agentId: session?.agentId,
         title: session?.title,
         role: message.role,
@@ -219,12 +366,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   finalizeAssistantMessage: (sessionId) => {
-    const session = get().sessions.find((s) => s.id === sessionId);
+    const session = findSessionByIdentity(get().sessions, sessionId);
     if (!session) return;
     const lastMsg = session.messages[session.messages.length - 1];
     if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content) {
       saveChatMessage({
-        sessionId,
+        sessionId: session.recordId ?? sessionId,
         agentId: session.agentId,
         title: session.title,
         role: 'assistant',
@@ -238,6 +385,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, status })),
     })),
 
+  setSessionKind: (sessionId, kind) =>
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, kind })),
+    })),
+
   toggleChat: () => set((state) => ({ chatVisible: !state.chatVisible })),
 
   deleteSession: (id) =>
@@ -249,9 +401,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
-  loadHistory: async () => {
+  loadHistory: async (workDir?: string) => {
     try {
-      const sessions = await getChatHistory();
+      const sessions = await getChatHistory(workDir);
       set({ historySessions: sessions, historyLoaded: true });
     } catch {
       set({ historyLoaded: true });
@@ -259,40 +411,74 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadHistorySession: async (sessionId: string) => {
-    const existing = get().sessions.find((s) => s.id === sessionId);
+    const existing = findSessionByIdentity(get().sessions, sessionId);
     if (existing) {
-      set({ activeSessionId: sessionId });
+      set({ activeSessionId: existing.id, lastRestoreError: null });
       return;
     }
 
     try {
-      const messages = await getChatSessionMessages(sessionId);
       const historyEntry = get().historySessions.find((h) => h.id === sessionId);
+      let liveSessionId = sessionId;
+      let kind: ChatSessionKind = 'archived';
+      let acpSessionId: string | undefined;
+
+      if (historyEntry?.workDir && historyEntry.agentId && historyEntry.acpSessionId) {
+        set((state) => ({
+          sessions: [...state.sessions.filter((s) => s.id !== sessionId && s.recordId !== sessionId), {
+            id: sessionId,
+            recordId: sessionId,
+            agentId: historyEntry.agentId,
+            title: fallbackTitle(historyEntry.agentId, historyEntry.title),
+            messages: [],
+            status: 'connecting',
+            createdAt: historyEntry.createdAt ?? Date.now(),
+            kind: 'resumable',
+            acpSessionId: historyEntry.acpSessionId,
+          }],
+          activeSessionId: sessionId,
+        }));
+        try {
+          const resumed = await resumeChatSession(sessionId, historyEntry.agentId, historyEntry.workDir, historyEntry.acpSessionId);
+          if ('id' in resumed) {
+            liveSessionId = resumed.id;
+            kind = 'resumable';
+            acpSessionId = historyEntry.acpSessionId;
+          } else {
+            kind = 'archived';
+          }
+        } catch {
+          kind = 'archived';
+        }
+      }
+
+      const sessionState = await getChatSessionState(sessionId);
+      const replayed = replayTranscriptToMessages(sessionState.events);
+      const snapshotCommands = parseSnapshotJson<SlashCommandInfo>(sessionState.snapshot?.commandsJson);
+      const snapshotConfig = parseSnapshotJson<ConfigOptionInfo>(sessionState.snapshot?.configOptsJson);
       const session: ChatSessionInfo = {
-        id: sessionId,
+        id: liveSessionId,
+        recordId: sessionId,
         agentId: historyEntry?.agentId ?? 'unknown',
-        title: historyEntry?.title ?? 'History',
-        messages: messages.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          context: m.contextFile ? {
-            filePath: m.contextFile,
-            startLine: m.contextStartLine ?? 0,
-            endLine: m.contextEndLine ?? 0,
-            selectedCode: m.contextCode ?? '',
-            language: m.contextLanguage ?? '',
-          } : undefined,
-          timestamp: m.timestamp,
-        })),
-        status: 'idle',
+        title: replayed.title ?? fallbackTitle(historyEntry?.agentId ?? 'unknown', historyEntry?.title),
+        messages: replayed.messages,
+        status: kind === 'resumable' ? 'connecting' : 'idle',
         createdAt: historyEntry?.createdAt ?? Date.now(),
+        kind,
+        acpSessionId,
+        commands: replayed.commands ?? snapshotCommands,
+        configOptions: replayed.configOptions ?? snapshotConfig,
       };
-      set((state) => ({
-        sessions: [...state.sessions, session],
-        activeSessionId: sessionId,
-      }));
-    } catch {
+      set((state) => {
+        const idsToRemove = new Set([sessionId, liveSessionId]);
+        return {
+          sessions: [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session],
+          activeSessionId: session.id,
+          lastRestoreError: kind === 'archived' ? state.lastRestoreError : null,
+        };
+      });
+    } catch (err) {
+      console.error(`Failed to load history session ${sessionId}:`, err);
     }
   },
 
@@ -303,6 +489,116 @@ export const useChatStore = create<ChatState>((set, get) => ({
         historySessions: state.historySessions.filter((h) => h.id !== sessionId),
       }));
     } catch {
+    }
+  },
+
+  restoreSessionForProject: async (projectPath, preferredSessionId) => {
+    if (!projectPath) return;
+
+    set({ restoring: true, lastRestoreError: null });
+    try {
+      if (!get().historyLoaded) {
+        await get().loadHistory(projectPath);
+      }
+
+      const restore = await getRestorableChatSession(projectPath, preferredSessionId);
+      if (!restore?.found || !restore.sessionId) {
+        set({ restoring: false });
+        return;
+      }
+
+      const targetSessionId = restore.sessionId;
+
+      if (preferredSessionId && preferredSessionId !== targetSessionId) {
+        set({
+          restoring: false,
+          lastRestoreError: {
+            sessionId: preferredSessionId,
+            reason: restore.resumeError ?? `Preferred session ${preferredSessionId} not restorable, got ${targetSessionId} instead`,
+          },
+        });
+        return;
+      }
+
+      const existing = findSessionByIdentity(get().sessions, targetSessionId);
+      if (existing) {
+        set({ activeSessionId: existing.id, restoring: false, lastRestoreError: null });
+        return;
+      }
+
+      let liveSessionId = targetSessionId;
+      let kind: ChatSessionKind = 'archived';
+      let acpSessionId: string | undefined = restore.acpSessionId;
+      const restoreAgentId = restore.agentId;
+
+      if (restore.isLive) {
+        kind = 'live';
+      } else if (restore.canResume && restoreAgentId && restore.acpSessionId) {
+        set((state) => ({
+          sessions: [...state.sessions.filter((s) => s.id !== targetSessionId && s.recordId !== targetSessionId), {
+            id: targetSessionId,
+            recordId: targetSessionId,
+            agentId: restoreAgentId,
+            title: fallbackTitle(restoreAgentId, restore.title),
+            messages: [],
+            status: 'connecting',
+            createdAt: Date.now(),
+            kind: 'resumable',
+            acpSessionId: restore.acpSessionId,
+          }],
+          activeSessionId: targetSessionId,
+        }));
+        try {
+          const resumed = await resumeChatSession(targetSessionId, restoreAgentId, restore.workDir ?? projectPath, restore.acpSessionId);
+          if ('id' in resumed) {
+            liveSessionId = resumed.id;
+            kind = 'resumable';
+            acpSessionId = restore.acpSessionId;
+          } else {
+            kind = 'archived';
+          }
+        } catch (resumeErr) {
+          kind = 'archived';
+        }
+      }
+
+      const sessionState = await getChatSessionState(targetSessionId).catch(() => null);
+      const historyEntry = get().historySessions.find((h) => h.id === targetSessionId);
+
+      const replayed = sessionState ? replayTranscriptToMessages(sessionState.events) : { messages: [] as ChatMessage[] };
+      const snapshotCommands = sessionState ? parseSnapshotJson<SlashCommandInfo>(sessionState.snapshot?.commandsJson) : undefined;
+      const snapshotConfig = sessionState ? parseSnapshotJson<ConfigOptionInfo>(sessionState.snapshot?.configOptsJson) : undefined;
+
+      const session: ChatSessionInfo = {
+        id: liveSessionId,
+        recordId: targetSessionId,
+        agentId: restore.agentId ?? historyEntry?.agentId ?? 'unknown',
+        title: replayed.title ?? fallbackTitle(restore.agentId ?? historyEntry?.agentId ?? 'unknown', restore.title ?? historyEntry?.title),
+        messages: replayed.messages,
+        status: kind === 'resumable' ? 'connecting' : 'idle',
+        createdAt: historyEntry?.createdAt ?? Date.now(),
+        kind,
+        acpSessionId,
+        commands: replayed.commands ?? snapshotCommands,
+        configOptions: replayed.configOptions ?? snapshotConfig,
+      };
+
+      set((state) => {
+        const idsToRemove = new Set([targetSessionId, liveSessionId]);
+        return {
+          sessions: [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session],
+          activeSessionId: session.id,
+          restoring: false,
+        };
+      });
+    } catch (err) {
+      set({
+        restoring: false,
+        lastRestoreError: {
+          sessionId: preferredSessionId ?? 'unknown',
+          reason: `Restore failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      });
     }
   },
 

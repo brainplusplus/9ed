@@ -79,9 +79,12 @@ func (a *API) Handler() http.Handler {
 
 	mux.HandleFunc("/api/chat/agents", a.handleChatAgents)
 	mux.HandleFunc("/api/chat/sessions", a.handleChatSessions)
+	mux.HandleFunc("/api/chat/sessions/restore", a.handleChatRestore)
+	mux.HandleFunc("/api/chat/sessions/resume", a.handleChatResume)
 	mux.HandleFunc("/api/chat/sessions/", a.handleChatSessionByID)
 	mux.HandleFunc("/api/chat/history", a.handleChatHistory)
 	mux.HandleFunc("/api/chat/history/", a.handleChatHistoryByID)
+	mux.HandleFunc("/api/chat/state/", a.handleChatStateByID)
 	mux.HandleFunc("/api/chat/install-acp", a.handleChatInstallACP)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 

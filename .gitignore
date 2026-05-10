@@ -6,3 +6,5 @@ coverage/
 .omc/
 .claude/
 .server.pid
+# CocoIndex Code (ccc)
+/.cocoindex_code/

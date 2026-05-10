@@ -248,13 +248,18 @@ export type PendingPermission = {
   options: PermissionOptionInfo[];
 };
 
+export type ChatSessionKind = 'live' | 'resumable' | 'archived';
+
 export type ChatSessionInfo = {
   id: string;
+  recordId: string;
   agentId: string;
   title: string;
   messages: ChatMessage[];
   status: 'connecting' | 'idle' | 'streaming' | 'error';
   createdAt: number;
+  kind: ChatSessionKind;
+  acpSessionId?: string;
   commands?: SlashCommandInfo[];
   configOptions?: ConfigOptionInfo[];
   pendingPermission?: PendingPermission;
@@ -264,6 +269,9 @@ export type HistorySessionRecord = {
   id: string;
   agentId: string;
   title: string;
+  workDir?: string;
+  acpSessionId?: string;
+  status?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -279,4 +287,25 @@ export type HistoryMessageRecord = {
   contextCode?: string;
   contextLanguage?: string;
   timestamp: number;
+};
+
+export type TranscriptEventRecord = {
+  id: string;
+  sessionId: string;
+  kind: string;
+  payloadJson: string;
+  seq: number;
+  timestamp: number;
+};
+
+export type TranscriptSnapshotRecord = {
+  sessionId: string;
+  commandsJson: string;
+  configOptsJson: string;
+  updatedAt: number;
+};
+
+export type TranscriptResponse = {
+  events: TranscriptEventRecord[];
+  snapshot: TranscriptSnapshotRecord;
 };

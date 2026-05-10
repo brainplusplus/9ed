@@ -80,6 +80,7 @@ type PlanEntry struct {
 type ChatSession interface {
 	ID() string
 	AgentID() string
+	WorkDir() string
 	Send(ctx context.Context, message string) error
 	SetConfigOption(ctx context.Context, configID, value string) error
 	Events() <-chan ChatEvent
@@ -89,6 +90,8 @@ type ChatSession interface {
 	Mode() SessionMode
 	RespondPermission(resp PermissionResponse)
 	SetAutoApprove(enabled bool)
+	ACPSessionID() string
+	IsResumed() bool
 }
 
 // SessionMode distinguishes ACP from PTY sessions.
@@ -149,6 +152,7 @@ type PermissionResponse struct {
 type acpSession struct {
 	id           string
 	agentID      string
+	workDir      string
 	adapter      *acp.Adapter
 	sessionID    string
 	events       chan ChatEvent
@@ -158,6 +162,7 @@ type acpSession struct {
 	textBuf      strings.Builder
 	permissionCh chan PermissionResponse
 	autoApprove  bool
+	resumed      bool
 }
 
 func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (*acpSession, error) {
@@ -194,6 +199,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 	s := &acpSession{
 		id:           result.SessionID,
 		agentID:      agent.ID,
+		workDir:      workDir,
 		adapter:      adapter,
 		sessionID:    result.SessionID,
 		events:       make(chan ChatEvent, 128),
@@ -211,6 +217,59 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 	return s, nil
 }
 
+func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, acpSessionID string) (*acpSession, error) {
+	if workDir == "" {
+		workDir = currentWorkingDirectory()
+	}
+
+	acpCtx, cancel := context.WithCancel(ctx)
+
+	acpCommand := agent.Command
+	if agent.ACPCommand != "" {
+		acpCommand = agent.ACPCommand
+	}
+
+	cfg := acp.AdapterConfig{
+		Command: acpCommand,
+		Args:    agent.ACPArgs,
+		WorkDir: workDir,
+	}
+
+	adapter, err := acp.NewAdapter(acpCtx, cfg)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	result, err := adapter.ResumeSession(acpCtx, acpSessionID, workDir)
+	if err != nil {
+		_ = adapter.Close()
+		cancel()
+		return nil, fmt.Errorf("session/resume failed: %w", err)
+	}
+
+	s := &acpSession{
+		id:           result.SessionID,
+		agentID:      agent.ID,
+		workDir:      workDir,
+		adapter:      adapter,
+		sessionID:    result.SessionID,
+		events:       make(chan ChatEvent, 128),
+		done:         make(chan struct{}),
+		cancelFn:     cancel,
+		promptDone:   make(chan *acp.SessionPromptResult, 1),
+		permissionCh: make(chan PermissionResponse, 1),
+		resumed:      true,
+	}
+
+	if len(result.ConfigOptions) > 0 {
+		s.events <- ChatEvent{Type: "config_options", ConfigOptions: convertConfigOptions(result.ConfigOptions)}
+	}
+
+	go s.processNotifications()
+	return s, nil
+}
+
 func (s *acpSession) flushText() {
 	if s.textBuf.Len() > 0 {
 		s.events <- ChatEvent{Type: "text", Text: s.textBuf.String()}
@@ -218,11 +277,14 @@ func (s *acpSession) flushText() {
 	}
 }
 
-func (s *acpSession) ID() string        { return s.id }
-func (s *acpSession) AgentID() string    { return s.agentID }
-func (s *acpSession) Mode() SessionMode  { return ModeACP }
+func (s *acpSession) ID() string          { return s.id }
+func (s *acpSession) AgentID() string     { return s.agentID }
+func (s *acpSession) WorkDir() string     { return s.workDir }
+func (s *acpSession) Mode() SessionMode   { return ModeACP }
 func (s *acpSession) Events() <-chan ChatEvent { return s.events }
 func (s *acpSession) Done() <-chan struct{}    { return s.done }
+func (s *acpSession) ACPSessionID() string     { return s.sessionID }
+func (s *acpSession) IsResumed() bool          { return s.resumed }
 
 func (s *acpSession) RespondPermission(resp PermissionResponse) {
 	select {

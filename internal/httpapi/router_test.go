@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"go-webttyd/internal/chat"
 	"go-webttyd/internal/shells"
 	"go-webttyd/internal/terminal"
 
@@ -108,6 +110,92 @@ func TestUpgraderRejectsDifferentOrigin(t *testing.T) {
 	if api.upgrader.CheckOrigin(req) {
 		t.Fatal("expected foreign origin to be rejected")
 	}
+}
+
+func TestChatHistoryFiltersByProjectWorkDir(t *testing.T) {
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("repo-1", "claude", "Repo 1", "/repo", ""); err != nil {
+		t.Fatalf("CreateSessionFull repo-1: %v", err)
+	}
+	if err := store.CreateSessionFull("other-1", "opencode", "Other 1", "/other", ""); err != nil {
+		t.Fatalf("CreateSessionFull other-1: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := store.CreateSessionFull("repo-2", "claude", "Repo 2", "/repo", ""); err != nil {
+		t.Fatalf("CreateSessionFull repo-2: %v", err)
+	}
+
+	api := New(Dependencies{ChatStore: store})
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/history?workDir="+url.QueryEscape("/repo"), nil)
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var sessions []chat.SessionRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	if sessions[0].ID != "repo-2" || sessions[1].ID != "repo-1" {
+		t.Fatalf("expected repo-2 then repo-1, got %q then %q", sessions[0].ID, sessions[1].ID)
+	}
+}
+
+func TestChatSessionStateReturnsRichTranscriptAndSnapshot(t *testing.T) {
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("session-1", "opencode", "State test", "/repo", "acp-1"); err != nil {
+		t.Fatalf("CreateSessionFull: %v", err)
+	}
+	if err := store.AppendEvent(chat.EventRecord{ID: "evt-1", SessionID: "session-1", Kind: "tool_call", PayloadJSON: `{"toolCall":{"toolCallId":"tc1","title":"edit .env.local.example","kind":"edit","status":"completed"}}`, Seq: 1, Timestamp: 1000}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := store.SaveSnapshot(chat.SessionSnapshot{SessionID: "session-1", CommandsJSON: `[{"name":"help","description":"Show commands"}]`, ConfigOptsJSON: `[{"id":"model","name":"Model","type":"string","currentValue":"gpt-5","options":[{"value":"gpt-5","name":"GPT-5"}]}]`}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	api := New(Dependencies{ChatStore: store})
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/state/session-1", nil)
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var body struct {
+		Session  chat.SessionRecord    `json:"session"`
+		Events   []chat.EventRecord    `json:"events"`
+		Snapshot *chat.SessionSnapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if body.Session.ID != "session-1" {
+		t.Fatalf("expected session id session-1, got %q", body.Session.ID)
+	}
+	if len(body.Events) != 1 || body.Events[0].Kind != "tool_call" {
+		t.Fatalf("expected one tool_call event, got %#v", body.Events)
+	}
+	if body.Snapshot == nil || body.Snapshot.CommandsJSON == "" || body.Snapshot.ConfigOptsJSON == "" {
+		t.Fatal("expected snapshot with commands and config options")
+	}
+}
+
+func chatTempStoreForAPI(t *testing.T) *chat.ChatStore {
+	t.Helper()
+	store, err := chat.NewChatStore(t.TempDir() + "/chat.db")
+	if err != nil {
+		t.Fatalf("NewChatStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 type fakeManager struct {

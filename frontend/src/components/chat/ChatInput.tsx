@@ -132,7 +132,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 144) + 'px';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   }, []);
 
   const enqueueMessage = useChatStore((s) => s.enqueueMessage);
@@ -289,13 +289,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
             title="Attach file (or type @ to mention)"
             disabled={disabled}
           >
-            <span aria-hidden="true">+</span>
-            <span className="chat-action-label">Attach</span>
+            <span aria-hidden="true">＋</span>
           </button>
           {streaming ? (
             <button className="chat-send-btn stop" onClick={onCancel} type="button" title="Stop response">
               <span aria-hidden="true">■</span>
-              <span className="chat-action-label">Stop</span>
             </button>
           ) : (
             <button
@@ -305,8 +303,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
               type="button"
               title="Send message"
             >
-              <span aria-hidden="true">↵</span>
-              <span className="chat-action-label">Send</span>
+              <span aria-hidden="true">↗</span>
             </button>
           )}
         </div>

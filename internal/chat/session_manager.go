@@ -6,7 +6,6 @@ import (
 	"sync"
 )
 
-// SessionManager manages ChatSession instances (ACP + PTY).
 type SessionManager struct {
 	sessions map[string]ChatSession
 	mu       sync.Mutex
@@ -24,6 +23,26 @@ func (m *SessionManager) Create(ctx context.Context, agent AgentDescriptor, work
 	}
 
 	session, err := NewChatSession(ctx, agent, workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	m.sessions[session.ID()] = session
+	m.mu.Unlock()
+
+	return session, nil
+}
+
+func (m *SessionManager) Resume(ctx context.Context, agent AgentDescriptor, workDir, acpSessionID string) (ChatSession, error) {
+	if !agent.Available {
+		return nil, fmt.Errorf("agent %q is not available", agent.ID)
+	}
+	if !agent.SupportsACP {
+		return nil, fmt.Errorf("agent %q does not support ACP, cannot resume", agent.ID)
+	}
+
+	session, err := newACPResumedSession(ctx, agent, workDir, acpSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -63,4 +82,11 @@ func (m *SessionManager) List() []ChatSession {
 		list = append(list, s)
 	}
 	return list
+}
+
+func (m *SessionManager) IsLive(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.sessions[id]
+	return ok
 }

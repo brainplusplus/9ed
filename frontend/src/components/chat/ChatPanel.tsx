@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../../stores/chat';
+import { useWorkspaceStore } from '../../stores/workspace';
 import { useChatSession } from '../../hooks/useChatSession';
 import { getChatAgents, createChatSession } from '../../api';
 import { ChatMessage } from './ChatMessage';
@@ -12,9 +13,11 @@ import type { ChatSessionInfo } from '../../types';
 
 export function ChatPanel() {
   const activeSession = useChatStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
+  const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
   const agents = useChatStore((s) => s.agents);
   const loadAgents = useChatStore((s) => s.loadAgents);
   const createSessionStore = useChatStore((s) => s.createSession);
+  const restoring = useChatStore((s) => s.restoring);
   const { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected } = useChatSession();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [creating, setCreating] = useState(false);
@@ -22,6 +25,7 @@ export function ChatPanel() {
   const isStreaming = activeSession?.status === 'streaming';
   const isConnecting = activeSession?.status === 'connecting' || creating;
   const activeAgent = agents.find((agent) => agent.id === activeSession?.agentId);
+  const isArchived = activeSession?.kind === 'archived';
 
   useEffect(() => {
     getChatAgents()
@@ -42,19 +46,20 @@ export function ChatPanel() {
 
     setCreating(true);
     try {
-      const { id } = await createChatSession(agentId);
+      const { id } = await createChatSession(agentId, activeProject?.path);
       const agent = agents.find((a) => a.id === agentId);
       const session: ChatSessionInfo = {
         id,
+        recordId: id,
         agentId,
         title: agent?.label ?? 'Chat',
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
+        kind: 'live',
       };
       createSessionStore(session);
     } catch {
-      // failed to create session
     } finally {
       setCreating(false);
     }
@@ -75,31 +80,39 @@ export function ChatPanel() {
   return (
     <div className="chat-panel">
       <div className="chat-header">
-        <div className="chat-header-left">
+        <div className="chat-header-top">
           <div className="chat-title-block">
             <div className="chat-title-eyebrow">Assistant</div>
             <div className="chat-title-row">
-              <span className="chat-title-main">{activeSession?.title || activeAgent?.label || 'New Chat'}</span>
+              <span className="chat-title-main">{activeSession?.title || 'New Chat'}</span>
               {activeAgent && <span className="chat-title-subtle">{activeAgent.label}</span>}
+              {isArchived && <span className="chat-title-badge chat-badge-archived">Archived</span>}
             </div>
           </div>
-          <AgentPicker />
         </div>
-        <div className="chat-header-right">
+        <div className="chat-header-actions">
+          <AgentPicker />
+          <ChatSessionList />
           <button
-            className="chat-new-btn"
+            className="chat-new-btn chat-new-btn-icon"
             onClick={handleNewChat}
             type="button"
             title="New chat"
             disabled={creating}
           >
-            {creating ? '...' : '+'}
+            {creating ? '...' : '✎'}
           </button>
-          <ChatSessionList />
         </div>
       </div>
 
-      {isConnecting && !activeSession ? (
+      {restoring ? (
+        <div className="chat-empty">
+          <div className="chat-connecting">
+            <span className="chat-connecting-spinner" />
+            Restoring session...
+          </div>
+        </div>
+      ) : isConnecting && !activeSession ? (
         <div className="chat-empty">
           <div className="chat-connecting">
             <span className="chat-connecting-spinner" />
@@ -133,13 +146,13 @@ export function ChatPanel() {
             <div ref={messagesEndRef} />
           </div>
           <div className="chat-bottom-bar">
-            {activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
-            <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} />
+            {!isArchived && activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
+            {!isArchived && <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} />}
             <ChatInput
               onSend={handleSend}
               onCancel={cancel}
               streaming={isStreaming}
-              disabled={!connected || isConnecting}
+              disabled={isArchived || !connected || isConnecting}
             />
           </div>
         </>
