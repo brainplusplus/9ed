@@ -72,11 +72,34 @@ export type Project = {
   terminalSessions: string[];
 };
 
-export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal' | 'git';
+export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal' | 'git' | 'browser';
 
 export type AppConfig = {
   mode: 'simple' | 'full';
   workspaceRoot: string;
+};
+
+export type BrowserTab = {
+  id: string;
+  url: string;
+  title: string;
+  proxyPath: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type BrowserAutomationStatus = {
+  provider: string;
+  running: boolean;
+  lastError?: string;
+};
+
+export type BrowserState = {
+  provider: string;
+  automation: BrowserAutomationStatus;
+  tabs: BrowserTab[];
+  activeTabId?: string;
+  localhostScope: 'server';
 };
 
 // Git types

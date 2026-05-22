@@ -14,6 +14,7 @@ import { GitPanel } from '../../components/git/GitPanel';
 import { EditorArea } from '../../components/editor/EditorArea';
 import { TerminalPanel } from '../../components/terminal/TerminalPanel';
 import { ChatPanel } from '../../components/chat/ChatPanel';
+import { BrowserPanel } from '../../components/browser/BrowserPanel';
 import { BottomNav, type MobileView } from '../../components/shared/BottomNav';
 import { ShortcutsHelp } from '../../components/shared/ShortcutsHelp';
 import { getFileContent } from '../../api';
@@ -55,12 +56,14 @@ export function IDEWorkspace() {
   const sidebarVisible = useWorkspaceStore((s) => s.sidebarVisible);
   const terminalVisible = useWorkspaceStore((s) => s.terminalVisible);
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
+  const browserVisible = useWorkspaceStore((s) => s.browserVisible);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const projects = useWorkspaceStore((s) => s.projects);
   const openFile = useWorkspaceStore((s) => s.openFile);
   const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar);
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
+  const toggleBrowser = useWorkspaceStore((s) => s.toggleBrowser);
   const setActivePanel = useWorkspaceStore((s) => s.setActivePanel);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
@@ -80,6 +83,7 @@ export function IDEWorkspace() {
 
   const [tabletSidebarOpen, setTabletSidebarOpen] = useState(false);
   const [tabletChatOpen, setTabletChatOpen] = useState(false);
+  const [tabletBrowserOpen, setTabletBrowserOpen] = useState(false);
   const [mobileView, setMobileView] = useState<MobileView>('editor');
   const [showHelp, setShowHelp] = useState(false);
   const pendingDiffRef = useRef<{ filePath: string; original: string; modified: string; language: string } | null>(null);
@@ -95,6 +99,12 @@ export function IDEWorkspace() {
       setTabletChatOpen(chatVisible);
     }
   }, [layoutMode, chatVisible]);
+
+  useEffect(() => {
+    if (layoutMode === 'tablet') {
+      setTabletBrowserOpen(browserVisible);
+    }
+  }, [layoutMode, browserVisible]);
 
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const markFileSaved = useWorkspaceStore((s) => s.markFileSaved);
@@ -210,6 +220,10 @@ export function IDEWorkspace() {
         e.preventDefault();
         toggleChat();
       }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault();
+        toggleBrowser();
+      }
       if (e.key === 'F1') {
         e.preventDefault();
         setShowHelp((v) => !v);
@@ -217,7 +231,7 @@ export function IDEWorkspace() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleSidebar, toggleTerminal, toggleChat, setActivePanel, sidebarVisible]);
+  }, [toggleSidebar, toggleTerminal, toggleChat, toggleBrowser, setActivePanel, sidebarVisible]);
 
   const sidebarContent = (
     <>
@@ -282,6 +296,11 @@ export function IDEWorkspace() {
               <ChatPanel />
             </div>
           )}
+          {mobileView === 'browser' && (
+            <div style={{ height: '100%' }}>
+              <BrowserPanel />
+            </div>
+          )}
         </div>
         <BottomNav activeView={mobileView} onViewChange={(view) => {
           setMobileView(view);
@@ -332,6 +351,14 @@ export function IDEWorkspace() {
             </div>
           </>
         )}
+        {tabletBrowserOpen && (
+          <>
+            <div className="overlay-backdrop" onClick={() => setTabletBrowserOpen(false)} />
+            <div className="browser-overlay open">
+              <BrowserPanel />
+            </div>
+          </>
+        )}
         {helpOverlay}
       </div>
     );
@@ -371,6 +398,14 @@ export function IDEWorkspace() {
             <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
             <Panel defaultSize="25%" minSize="15%" maxSize="40%" className="ide-chat-area">
               <ChatPanel />
+            </Panel>
+          </>
+        )}
+        {browserVisible && (
+          <>
+            <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
+            <Panel defaultSize="34%" minSize="20%" maxSize="55%" className="ide-browser-area">
+              <BrowserPanel />
             </Panel>
           </>
         )}

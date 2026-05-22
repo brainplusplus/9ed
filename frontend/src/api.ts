@@ -1,4 +1,4 @@
-import type { AppConfig, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, BrowserState, BrowserTab, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
 const RESTORE_REQUEST_TIMEOUT_MS = 8000;
 const RESUME_REQUEST_TIMEOUT_MS = 30000;
@@ -567,5 +567,46 @@ export async function removeRecentProject(path: string): Promise<void> {
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || 'Failed to remove recent project');
+  }
+}
+
+export async function getBrowserState(): Promise<BrowserState> {
+  const response = await fetchWithTimeout('/api/browser/state', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
+  return parseResponse<BrowserState>(response);
+}
+
+export async function getBrowserTabs(): Promise<BrowserTab[]> {
+  const response = await fetchWithTimeout('/api/browser/tabs', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
+  return parseResponse<BrowserTab[]>(response);
+}
+
+export async function createBrowserTab(url: string): Promise<BrowserTab> {
+  const response = await fetch('/api/browser/tabs', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function navigateBrowserTab(tabId: string, url: string): Promise<BrowserTab> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/navigate`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function deleteBrowserTab(tabId: string): Promise<void> {
+  const response = await fetch(`/api/browser/tabs/${tabId}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok && response.status !== 404) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to close browser tab');
   }
 }

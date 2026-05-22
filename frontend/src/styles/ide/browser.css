@@ -1,0 +1,169 @@
+.ide-browser-area {
+  background: #111827;
+  min-width: 0;
+}
+
+.browser-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: #111827;
+  color: var(--sidebar-fg);
+}
+
+.browser-tab-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: 5px 6px 0;
+  background: var(--activity-bg);
+  border-bottom: 1px solid var(--border-color);
+  overflow-x: auto;
+}
+
+.browser-tab-chip {
+  display: flex;
+  align-items: center;
+  width: 148px;
+  min-width: 120px;
+  max-width: 180px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  background: #1f2937;
+  color: var(--tab-fg);
+}
+
+.browser-tab-chip.active {
+  background: #111827;
+  color: var(--tab-active-fg);
+  border-color: var(--border-color);
+}
+
+.browser-tab-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 6px;
+}
+
+.browser-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+}
+
+.browser-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex: 0 0 auto;
+}
+
+.browser-tab-close,
+.browser-icon-btn,
+.browser-go-btn {
+  border: 1px solid var(--border-color);
+  background: #1f2937;
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  height: 26px;
+  min-width: 28px;
+}
+
+.browser-tab-close {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border: none;
+  background: transparent;
+  color: var(--activity-fg);
+}
+
+.browser-tab-close:hover,
+.browser-icon-btn:hover,
+.browser-go-btn:hover {
+  color: white;
+  background: #263447;
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: #111827;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.browser-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--border-color);
+  background: #0f172a;
+  color: var(--sidebar-fg);
+  padding: 0 10px;
+  font-size: 0.86rem;
+  outline: none;
+}
+
+.browser-address:focus {
+  border-color: var(--accent-blue-light);
+}
+
+.browser-go-btn {
+  padding: 0 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.browser-status-line {
+  padding: 6px 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fecaca;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  background: white;
+}
+
+.browser-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: white;
+}
+
+.browser-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: #111827;
+}

@@ -61,6 +61,18 @@ function ChatIcon() {
   );
 }
 
+function BrowserIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M3.5 8 h13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M3.5 12 h13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M10 3 c2 2 3 4.3 3 7 s-1 5 -3 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M10 3 c-2 2 -3 4.3 -3 7 s1 5 3 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function BrandIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -94,6 +106,8 @@ export function ActivityBar() {
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
+  const browserVisible = useWorkspaceStore((s) => s.browserVisible);
+  const toggleBrowser = useWorkspaceStore((s) => s.toggleBrowser);
   const gitChangeCount = useGitStore((s) => s.status.length);
 
   function handlePanelClick(p: (typeof panels)[number]) {
@@ -138,6 +152,14 @@ export function ActivityBar() {
         type="button"
       >
         <span className="activity-icon"><ChatIcon /></span>
+      </button>
+      <button
+        className={`activity-btn${browserVisible ? ' active' : ''}`}
+        onClick={toggleBrowser}
+        title="Browser (Ctrl+Shift+B)"
+        type="button"
+      >
+        <span className="activity-icon"><BrowserIcon /></span>
       </button>
     </nav>
   );

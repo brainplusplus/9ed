@@ -9,6 +9,7 @@
 @import 'ide/terminal.css';
 @import 'ide/git.css';
 @import 'ide/chat.css';
+@import 'ide/browser.css';
 @import 'ide/overlays.css';
 @import 'ide/menus.css';
 @import 'ide/polish.css';

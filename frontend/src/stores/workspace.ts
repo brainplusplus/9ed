@@ -9,6 +9,7 @@ type WorkspaceState = {
   sidebarVisible: boolean;
   terminalVisible: boolean;
   chatVisible: boolean;
+  browserVisible: boolean;
   showPicker: boolean;
 
   addProject: (path: string, name: string) => void;
@@ -19,6 +20,7 @@ type WorkspaceState = {
   toggleSidebar: () => void;
   toggleTerminal: () => void;
   toggleChat: () => void;
+  toggleBrowser: () => void;
   setShowPicker: (show: boolean) => void;
 
   openFile: (projectId: string, file: FileTab) => void;
@@ -116,6 +118,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   sidebarVisible: true,
   terminalVisible: true,
   chatVisible: true,
+  browserVisible: false,
   showPicker: false,
 
   addProject: (path, name) => {
@@ -189,6 +192,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   toggleTerminal: () => set((state) => ({ terminalVisible: !state.terminalVisible })),
 
   toggleChat: () => set((state) => ({ chatVisible: !state.chatVisible })),
+
+  toggleBrowser: () => set((state) => ({ browserVisible: !state.browserVisible })),
 
   setShowPicker: (show) => set({ showPicker: show }),
 

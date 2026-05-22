@@ -12,6 +12,7 @@ import (
 	"log"
 
 	"github.com/brainplusplus/9ed/internal/auth"
+	"github.com/brainplusplus/9ed/internal/browser"
 	"github.com/brainplusplus/9ed/internal/chat"
 	"github.com/brainplusplus/9ed/internal/config"
 	"github.com/brainplusplus/9ed/internal/httpapi"
@@ -53,6 +54,11 @@ func New(cfg config.Config) *Server {
 		}
 	}
 
+	var browserMgr *browser.Manager
+	if cfg.Mode == "full" {
+		browserMgr = browser.NewManager()
+	}
+
 	api := httpapi.New(httpapi.Dependencies{
 		Shells:             profiles,
 		Sessions:           manager,
@@ -61,6 +67,7 @@ func New(cfg config.Config) *Server {
 		Watcher:            fw,
 		ChatSessionManager: chatSessionMgr,
 		ChatStore:          chatStore,
+		Browser:            browserMgr,
 	})
 
 	return &Server{

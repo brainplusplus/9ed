@@ -1,4 +1,4 @@
-export type MobileView = 'explorer' | 'git' | 'editor' | 'terminal' | 'chat';
+export type MobileView = 'explorer' | 'git' | 'editor' | 'terminal' | 'chat' | 'browser';
 
 type BottomNavProps = {
   activeView: MobileView;
@@ -56,12 +56,25 @@ function ChatIcon() {
   );
 }
 
+function BrowserIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M3.5 8 h13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M3.5 12 h13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M10 3 c2 2 3 4.3 3 7 s-1 5 -3 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M10 3 c-2 2 -3 4.3 -3 7 s1 5 3 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 const NAV_ITEMS: { view: MobileView; icon: React.ReactNode; label: string }[] = [
   { view: 'explorer', icon: <ExplorerIcon />, label: 'Files' },
   { view: 'git', icon: <GitIcon />, label: 'Git' },
   { view: 'editor', icon: <EditorIcon />, label: 'Editor' },
   { view: 'terminal', icon: <TerminalIcon />, label: 'Term' },
   { view: 'chat', icon: <ChatIcon />, label: 'Chat' },
+  { view: 'browser', icon: <BrowserIcon />, label: 'Web' },
 ];
 
 export function BottomNav({ activeView, onViewChange }: BottomNavProps) {

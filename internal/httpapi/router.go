@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/brainplusplus/9ed/internal/browser"
 	"github.com/brainplusplus/9ed/internal/chat"
 	"github.com/brainplusplus/9ed/internal/shells"
 	"github.com/brainplusplus/9ed/internal/terminal"
@@ -44,6 +45,7 @@ type Dependencies struct {
 	Watcher            *watcher.FileWatcher
 	ChatSessionManager ChatRuntimeManager
 	ChatStore          *chat.ChatStore
+	Browser            *browser.Manager
 }
 
 type API struct {
@@ -56,6 +58,7 @@ type API struct {
 	chatSessionManager ChatRuntimeManager
 	chatStore          *chat.ChatStore
 	chatStreams        *chatStreamRegistry
+	browser            *browser.Manager
 }
 
 func New(deps Dependencies) *API {
@@ -69,6 +72,7 @@ func New(deps Dependencies) *API {
 		chatSessionManager: deps.ChatSessionManager,
 		chatStore:          deps.ChatStore,
 		chatStreams:        newChatStreamRegistry(),
+		browser:            deps.Browser,
 	}
 }
 
@@ -102,6 +106,19 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/state/", a.handleChatStateByID)
 	mux.HandleFunc("/api/chat/install-acp", a.handleChatInstallACP)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
+
+	mux.HandleFunc("/api/browser/state", a.handleBrowserState)
+	mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)
+	mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
+	mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
+	mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
+	mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
+	mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)
+	mux.HandleFunc("/api/browser/automation/click", a.handleBrowserAutomationClick)
+	mux.HandleFunc("/api/browser/automation/type", a.handleBrowserAutomationType)
+	mux.HandleFunc("/api/browser/automation/evaluate", a.handleBrowserAutomationEvaluate)
+	mux.HandleFunc("/api/browser/automation/inspect", a.handleBrowserAutomationInspect)
+	mux.HandleFunc("/api/browser/automation/screenshot", a.handleBrowserAutomationScreenshot)
 
 	mux.HandleFunc("/api/projects/recent", a.handleRecentProjects)
 	mux.HandleFunc("/api/workspace/state", a.handleWorkspaceState)
