@@ -19,6 +19,7 @@ function resetChatStore() {
     chatVisible: false,
     historySessions: [],
     historyLoaded: false,
+    historyWorkDir: null,
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,

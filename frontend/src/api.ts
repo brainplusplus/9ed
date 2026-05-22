@@ -1,5 +1,19 @@
 import type { AppConfig, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
+const RESTORE_REQUEST_TIMEOUT_MS = 8000;
+const RESUME_REQUEST_TIMEOUT_MS = 30000;
+const SHORT_REQUEST_TIMEOUT_MS = 5000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = RESTORE_REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const message = await response.text();
@@ -48,17 +62,17 @@ export function createSessionWebSocket(sessionId: string): WebSocket {
 }
 
 export async function getConfig(): Promise<AppConfig> {
-  const response = await fetch('/api/config', { credentials: 'include' });
+  const response = await fetchWithTimeout('/api/config', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<AppConfig>(response);
 }
 
 export async function getDrives(): Promise<string[]> {
-  const response = await fetch('/api/files/drives', { credentials: 'include' });
+  const response = await fetchWithTimeout('/api/files/drives', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<string[]>(response);
 }
 
 export async function getFileTree(path: string): Promise<DirEntry[]> {
-  const response = await fetch(`/api/files/tree?path=${encodeURIComponent(path)}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/files/tree?path=${encodeURIComponent(path)}`, { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<DirEntry[]>(response);
 }
 
@@ -173,7 +187,7 @@ export async function uploadFiles(targetPath: string, files: FileList): Promise<
 }
 
 export async function getGitStatus(project: string): Promise<{ status: GitFileStatus[]; isRepo: boolean }> {
-  const response = await fetch(`/api/git/status?project=${encodeURIComponent(project)}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/git/status?project=${encodeURIComponent(project)}`, { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   const isRepo = response.headers.get('X-Git-Repo') !== 'false';
   const data = await parseResponse<GitFileStatus[]>(response);
   return { status: data, isRepo };
@@ -181,12 +195,12 @@ export async function getGitStatus(project: string): Promise<{ status: GitFileSt
 
 export async function getGitLog(project: string, limit = 50, offset = 0): Promise<GitCommit[]> {
   const params = new URLSearchParams({ project, limit: String(limit), offset: String(offset) });
-  const response = await fetch(`/api/git/log?${params}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/git/log?${params}`, { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<GitCommit[]>(response);
 }
 
 export async function getGitBranches(project: string): Promise<GitBranch[]> {
-  const response = await fetch(`/api/git/branches?project=${encodeURIComponent(project)}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/git/branches?project=${encodeURIComponent(project)}`, { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<GitBranch[]>(response);
 }
 
@@ -337,7 +351,16 @@ export async function getChatAgents(): Promise<ChatAgent[]> {
   return parseResponse<ChatAgent[]>(response);
 }
 
-export async function createChatSession(agentId: string, workDir?: string): Promise<{ id: string; mode: string }> {
+export type CreatedChatSession = {
+  id: string;
+  mode: string;
+  isResumed?: boolean;
+  resumedFrom?: string;
+  workDir?: string;
+  acpSessionId?: string;
+};
+
+export async function createChatSession(agentId: string, workDir?: string): Promise<CreatedChatSession> {
   const response = await fetch('/api/chat/sessions', {
     method: 'POST',
     credentials: 'include',
@@ -346,7 +369,7 @@ export async function createChatSession(agentId: string, workDir?: string): Prom
     },
     body: JSON.stringify({ agentId, workDir }),
   });
-  return parseResponse<{ id: string; mode: string }>(response);
+  return parseResponse<CreatedChatSession>(response);
 }
 
 export async function deleteChatSession(id: string): Promise<void> {
@@ -370,7 +393,7 @@ export type LiveChatSession = {
 };
 
 export async function getLiveChatSessions(): Promise<LiveChatSession[]> {
-  const response = await fetch('/api/chat/sessions', { credentials: 'include' });
+  const response = await fetchWithTimeout('/api/chat/sessions', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   if (!response.ok) return [];
   return parseResponse<LiveChatSession[]>(response);
 }
@@ -378,6 +401,7 @@ export async function getLiveChatSessions(): Promise<LiveChatSession[]> {
 export type RestorableChatSession = {
   found: boolean;
   sessionId?: string;
+  liveSessionId?: string;
   agentId?: string;
   workDir?: string;
   acpSessionId?: string;
@@ -393,19 +417,19 @@ export type RestorableChatSession = {
 export async function getRestorableChatSession(workDir: string, preferredSessionId?: string): Promise<RestorableChatSession | null> {
   const params = new URLSearchParams({ workDir });
   if (preferredSessionId) params.set('sessionId', preferredSessionId);
-  const response = await fetch(`/api/chat/sessions/restore?${params}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/chat/sessions/restore?${params}`, { credentials: 'include' });
   if (!response.ok) return null;
   return parseResponse<RestorableChatSession>(response);
 }
 
-export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId: string): Promise<{ id: string; mode: string } | RestorableChatSession> {
-  const response = await fetch('/api/chat/sessions/resume', {
+export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId?: string): Promise<CreatedChatSession | RestorableChatSession> {
+  const response = await fetchWithTimeout('/api/chat/sessions/resume', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, agentId, workDir, acpSessionId }),
-  });
-  return parseResponse<{ id: string; mode: string } | RestorableChatSession>(response);
+  }, RESUME_REQUEST_TIMEOUT_MS);
+  return parseResponse<CreatedChatSession | RestorableChatSession>(response);
 }
 
 export function createChatWebSocket(sessionId: string): WebSocket {
@@ -419,7 +443,7 @@ export async function getChatHistory(workDir?: string): Promise<HistorySessionRe
 		params.set('workDir', workDir);
 	}
 	const query = params.size > 0 ? `?${params.toString()}` : '';
-	const response = await fetch(`/api/chat/history${query}`, { credentials: 'include' });
+	const response = await fetchWithTimeout(`/api/chat/history${query}`, { credentials: 'include' });
 	return parseResponse<HistorySessionRecord[]>(response);
 }
 
@@ -436,7 +460,7 @@ export type ChatSessionStateResponse = {
 };
 
 export async function getChatSessionState(sessionId: string): Promise<ChatSessionStateResponse> {
-  const response = await fetch(`/api/chat/state/${sessionId}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/chat/state/${sessionId}`, { credentials: 'include' });
   return parseResponse<ChatSessionStateResponse>(response);
 }
 
@@ -444,6 +468,8 @@ export async function saveChatMessage(msg: {
   sessionId: string;
   agentId?: string;
   title?: string;
+  workDir?: string;
+  acpSessionId?: string;
   role: string;
   content: string;
   context?: CodeContext;
@@ -452,6 +478,8 @@ export async function saveChatMessage(msg: {
     sessionId: msg.sessionId,
     agentId: msg.agentId,
     title: msg.title,
+    workDir: msg.workDir,
+    acpSessionId: msg.acpSessionId,
     role: msg.role,
     content: msg.content,
   };
@@ -494,7 +522,7 @@ export type WorkspaceState = {
 };
 
 export async function getWorkspaceState(projectPath: string): Promise<WorkspaceState | null> {
-  const response = await fetch(`/api/workspace/state?projectPath=${encodeURIComponent(projectPath)}`, { credentials: 'include' });
+  const response = await fetchWithTimeout(`/api/workspace/state?projectPath=${encodeURIComponent(projectPath)}`, { credentials: 'include' });
   if (!response.ok) return null;
   const data = await response.json();
   return data ?? null;
@@ -512,7 +540,7 @@ export async function saveWorkspaceState(projectPath: string, state: WorkspaceSt
 export type RecentProject = { path: string; name: string; lastOpened: number };
 
 export async function getRecentProjects(): Promise<RecentProject[]> {
-  const response = await fetch('/api/projects/recent', { credentials: 'include' });
+  const response = await fetchWithTimeout('/api/projects/recent', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<RecentProject[]>(response);
 }
 

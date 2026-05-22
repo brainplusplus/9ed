@@ -55,6 +55,39 @@ func TestCreateAndListSessions(t *testing.T) {
 	}
 }
 
+func TestUpsertMessageUpdatesExistingMessage(t *testing.T) {
+	store := tempStore(t)
+	if err := store.CreateSession("s1", "opencode", "Upsert"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := store.UpsertMessage(MessageRecord{
+		ID:        "m1",
+		SessionID: "s1",
+		Role:      "assistant",
+		Content:   "hel",
+		Timestamp: 1,
+	}); err != nil {
+		t.Fatalf("UpsertMessage first: %v", err)
+	}
+	if err := store.UpsertMessage(MessageRecord{
+		ID:        "m1",
+		SessionID: "s1",
+		Role:      "assistant",
+		Content:   "hello",
+		Timestamp: 2,
+	}); err != nil {
+		t.Fatalf("UpsertMessage second: %v", err)
+	}
+
+	messages, err := store.GetMessages("s1")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "hello" || messages[0].Timestamp != 2 {
+		t.Fatalf("expected updated single message, got %#v", messages)
+	}
+}
+
 func TestDeleteSession_CascadesMessages(t *testing.T) {
 	store := tempStore(t)
 

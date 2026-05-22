@@ -69,12 +69,6 @@ export function TerminalPanel() {
     setTabs((prev) => prev.map((t) => (t.id === sessionId ? { ...t, status, errorMessage: error } : t)));
   }
 
-  useEffect(() => {
-    if (shells.length > 0 && tabs.length === 0 && !creating && activeProject) {
-      void handleCreateTab();
-    }
-  }, [shells.length, tabs.length, creating, activeProject, handleCreateTab]);
-
   const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
 
   const dispatchTerminalAction = useCallback((kind: TerminalAction['kind']) => {

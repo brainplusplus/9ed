@@ -117,6 +117,7 @@ func spaHandler(root string, mode string) http.Handler {
 		relativePath := strings.TrimPrefix(filepath.Clean(r.URL.Path), string(filepath.Separator))
 		requested := filepath.Join(root, relativePath)
 		if info, err := os.Stat(requested); err == nil && !info.IsDir() {
+			setStaticCacheHeaders(w, requested)
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -129,6 +130,21 @@ func spaHandler(root string, mode string) http.Handler {
 			}
 		}
 
-		http.ServeFile(w, r, filepath.Join(root, fallback))
+		fallbackPath := filepath.Join(root, fallback)
+		setStaticCacheHeaders(w, fallbackPath)
+		http.ServeFile(w, r, fallbackPath)
 	})
+}
+
+func setStaticCacheHeaders(w http.ResponseWriter, path string) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".html":
+		w.Header().Set("Cache-Control", "no-store")
+	default:
+		if strings.Contains(filepath.ToSlash(path), "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 }

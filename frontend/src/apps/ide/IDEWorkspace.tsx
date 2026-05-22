@@ -71,13 +71,9 @@ export function IDEWorkspace() {
   const restoredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!activeProject || restoredRef.current.has(activeProject.path)) return;
-    if (activeProject.openFiles.length > 0) {
-      restoredRef.current.add(activeProject.path);
-      return;
-    }
     restoredRef.current.add(activeProject.path);
     void restoreWorkspaceState(activeProject.path, activeProject.id);
-  }, [activeProject?.id, activeProject?.path, activeProject?.openFiles.length]);
+  }, [activeProject?.id, activeProject?.path]);
 
   const editorAreaRef = useRef<HTMLDivElement>(null);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);

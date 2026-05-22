@@ -54,7 +54,21 @@ func (a *API) handleFileDrives(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, filesystem.ListDrives())
+	drives := filesystem.ListDrives()
+	if volume := filepath.VolumeName(a.workspaceRoot); volume != "" {
+		rootDrive := volume + string(filepath.Separator)
+		found := false
+		for _, drive := range drives {
+			if drive == rootDrive {
+				found = true
+				break
+			}
+		}
+		if !found {
+			drives = append([]string{rootDrive}, drives...)
+		}
+	}
+	writeJSON(w, http.StatusOK, drives)
 }
 
 type fileTreeEntry struct {
@@ -510,26 +524,36 @@ func (a *API) handleFileWatch(w http.ResponseWriter, r *http.Request) {
 	defer a.watcher.Unsubscribe(sub)
 	debug.Printf("[ws/watch] Subscribed to watcher, root=%s", validated)
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				debug.Printf("[ws/watch] Client read loop ended: %v", err)
-				a.watcher.Unsubscribe(sub)
 				return
 			}
 		}
 	}()
 
 	eventCount := 0
-	for event := range sub.Ch {
-		eventCount++
-		if err := conn.WriteJSON(event); err != nil {
-			debug.Printf("[ws/watch] WriteJSON failed after %d events: %v", eventCount, err)
+	for {
+		select {
+		case <-done:
+			debug.Printf("[ws/watch] Channel closed, sent %d total events", eventCount)
 			return
-		}
-		if eventCount <= 5 || eventCount%50 == 0 {
-			debug.Printf("[ws/watch] Sent event #%d: type=%s name=%s path=%s", eventCount, event.Type, event.Name, event.Path)
+		case event, ok := <-sub.Ch:
+			if !ok {
+				debug.Printf("[ws/watch] Channel closed, sent %d total events", eventCount)
+				return
+			}
+			eventCount++
+			if err := conn.WriteJSON(event); err != nil {
+				debug.Printf("[ws/watch] WriteJSON failed after %d events: %v", eventCount, err)
+				return
+			}
+			if eventCount <= 5 || eventCount%50 == 0 {
+				debug.Printf("[ws/watch] Sent event #%d: type=%s name=%s path=%s", eventCount, event.Type, event.Name, event.Path)
+			}
 		}
 	}
-	debug.Printf("[ws/watch] Channel closed, sent %d total events", eventCount)
 }

@@ -23,6 +23,7 @@ vi.mock('../api', () => ({
 }));
 
 function resetChatStore() {
+  window.sessionStorage.clear();
   useChatStore.setState({
     sessions: [],
     activeSessionId: null,
@@ -30,6 +31,7 @@ function resetChatStore() {
     chatVisible: false,
     historySessions: [],
     historyLoaded: false,
+    historyWorkDir: null,
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,
@@ -49,7 +51,7 @@ describe('useChatStore restore/session identity', () => {
     deleteChatHistory.mockResolvedValue(undefined);
   });
 
-  it('persists user and assistant history against record id for resumed sessions', () => {
+  it('persists user history against record id for resumed sessions', () => {
     useChatStore.setState({
       sessions: [{
         id: 'live-50',
@@ -60,6 +62,8 @@ describe('useChatStore restore/session identity', () => {
         status: 'idle',
         createdAt: 1,
         kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-50',
       }],
       activeSessionId: 'live-50',
     });
@@ -71,24 +75,29 @@ describe('useChatStore restore/session identity', () => {
       timestamp: 10,
     });
 
-    useChatStore.getState().addMessage('live-50', {
-      id: 'assistant-1',
-      role: 'assistant',
-      content: 'ok',
-      timestamp: 20,
-    });
-    useChatStore.getState().finalizeAssistantMessage('live-50');
-
     expect(saveChatMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'record-50',
       role: 'user',
       content: 'buat file .env.local.example',
+      workDir: '/repo',
+      acpSessionId: 'acp-50',
     }));
-    expect(saveChatMessage).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: 'record-50',
-      role: 'assistant',
-      content: 'ok',
+    expect(saveChatMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores cached agents from session storage', async () => {
+    window.sessionStorage.setItem('9ed.chatAgents.v1', JSON.stringify({
+      agents: [{ id: 'opencode', label: 'OpenCode', available: true, configFound: true, activeModel: '', models: [], providers: [] }],
+      selectedAgentId: 'opencode',
     }));
+
+    vi.resetModules();
+    const reloaded = await import('./chat');
+    const state = reloaded.useChatStore.getState();
+
+    expect(state.agents).toHaveLength(1);
+    expect(state.agents[0].id).toBe('opencode');
+    expect(state.selectedAgentId).toBe('opencode');
   });
 
   it('preserves persisted record identity when restoring project session', async () => {
@@ -116,6 +125,7 @@ describe('useChatStore restore/session identity', () => {
   it('resumes chosen history session with exact persisted agent metadata', async () => {
     useChatStore.setState({
       historyLoaded: true,
+      historyWorkDir: '/repo',
       historySessions: [{
         id: 'record-2',
         agentId: 'opencode',
@@ -148,6 +158,68 @@ describe('useChatStore restore/session identity', () => {
     expect(useChatStore.getState().activeSessionId).toBe('live-22');
   });
 
+  it('restores persisted user prompts alongside ACP response events', async () => {
+    useChatStore.setState({
+      historyLoaded: true,
+      historyWorkDir: '/repo',
+      historySessions: [{
+        id: 'record-5',
+        agentId: 'opencode',
+        title: 'Greeting',
+        workDir: '/repo',
+        acpSessionId: 'acp-5',
+        createdAt: 10,
+        updatedAt: 20,
+      }],
+    });
+    getChatSessionState.mockResolvedValue({
+      session: { id: 'record-5', agentId: 'opencode', title: 'Greeting', workDir: '/repo', acpSessionId: 'acp-5', createdAt: 10, updatedAt: 20 },
+      messages: [
+        { id: 'user-5', sessionId: 'record-5', role: 'user', content: 'hi', timestamp: 11 },
+        { id: 'assistant-5', sessionId: 'record-5', role: 'assistant', content: 'ya', timestamp: 13 },
+      ],
+      events: [{ id: 'evt-5', sessionId: 'record-5', kind: 'text', payloadJson: JSON.stringify({ type: 'text', text: 'ya' }), seq: 1, timestamp: 13 }],
+      snapshot: null,
+    });
+    resumeChatSession.mockResolvedValue({ id: 'live-55', mode: 'acp' });
+
+    await useChatStore.getState().loadHistorySession('record-5');
+
+    const active = useChatStore.getState().sessions[0];
+    expect(active.messages.map((message) => `${message.role}:${message.content}`)).toEqual(['user:hi', 'assistant:ya']);
+  });
+
+  it('keeps persisted assistant reply when transcript has non-text events only', async () => {
+    useChatStore.setState({
+      historyLoaded: true,
+      historyWorkDir: '/repo',
+      historySessions: [{
+        id: 'record-non-text',
+        agentId: 'opencode',
+        title: 'Non text',
+        workDir: '/repo',
+        acpSessionId: 'acp-non-text',
+        createdAt: 10,
+        updatedAt: 20,
+      }],
+    });
+    getChatSessionState.mockResolvedValue({
+      session: { id: 'record-non-text', agentId: 'opencode', title: 'Non text', workDir: '/repo', acpSessionId: 'acp-non-text', createdAt: 10, updatedAt: 20 },
+      messages: [
+        { id: 'user-nt', sessionId: 'record-non-text', role: 'user', content: 'hmm', timestamp: 11 },
+        { id: 'assistant-nt', sessionId: 'record-non-text', role: 'assistant', content: 'ya', timestamp: 13 },
+      ],
+      events: [{ id: 'evt-usage', sessionId: 'record-non-text', kind: 'usage_update', payloadJson: JSON.stringify({ type: 'usage_update', contextWindow: 200000, contextUsed: 10 }), seq: 1, timestamp: 12 }],
+      snapshot: null,
+    });
+    resumeChatSession.mockResolvedValue({ id: 'live-non-text', mode: 'acp' });
+
+    await useChatStore.getState().loadHistorySession('record-non-text');
+
+    const active = useChatStore.getState().sessions[0];
+    expect(active.messages.map((message) => `${message.role}:${message.content}`)).toEqual(['user:hmm', 'assistant:ya']);
+  });
+
   it('marks restored history session as connecting before websocket upgrade finishes', async () => {
     let releaseResume: ((value: { id: string; mode: string }) => void) | undefined;
     resumeChatSession.mockImplementation(() => new Promise((resolve) => {
@@ -156,6 +228,7 @@ describe('useChatStore restore/session identity', () => {
 
     useChatStore.setState({
       historyLoaded: true,
+      historyWorkDir: '/repo',
       historySessions: [{
         id: 'record-4',
         agentId: 'claude',
@@ -172,11 +245,16 @@ describe('useChatStore restore/session identity', () => {
 
     const connecting = useChatStore.getState().sessions[0];
     expect(connecting.status).toBe('connecting');
+    expect(connecting.kind).toBe('archived');
     expect(connecting.recordId).toBe('record-4');
 
     expect(releaseResume).toBeDefined();
     releaseResume!({ id: 'live-44', mode: 'acp' });
     await pendingLoad;
+
+    const resumed = useChatStore.getState().sessions[0];
+    expect(resumed.id).toBe('live-44');
+    expect(resumed.kind).toBe('resumable');
   });
 
   it('does not create duplicate active entries when same record resumes again', async () => {
@@ -190,9 +268,7 @@ describe('useChatStore restore/session identity', () => {
       isLive: false,
       canResume: true,
     });
-    resumeChatSession
-      .mockResolvedValueOnce({ id: 'live-31', mode: 'acp' })
-      .mockResolvedValueOnce({ id: 'live-32', mode: 'acp' });
+    resumeChatSession.mockResolvedValueOnce({ id: 'live-31', mode: 'acp' });
 
     await useChatStore.getState().restoreSessionForProject('/repo', 'record-3');
     await useChatStore.getState().restoreSessionForProject('/repo', 'record-3');
@@ -203,6 +279,69 @@ describe('useChatStore restore/session identity', () => {
     expect(state.sessions[0].id).toBe('live-31');
     expect(state.activeSessionId).toBe('live-31');
     expect(resumeChatSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates replacement live session when archived record has no ACP session id', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'record-missing-acp',
+        recordId: 'record-missing-acp',
+        agentId: 'opencode',
+        title: 'Missing ACP',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'archived',
+        workDir: '/repo',
+      }],
+      activeSessionId: 'record-missing-acp',
+    });
+    resumeChatSession.mockResolvedValue({
+      id: 'live-created',
+      mode: 'acp',
+      acpSessionId: 'fresh-acp',
+      workDir: '/repo',
+    });
+
+    const ok = await useChatStore.getState().resumeSession('record-missing-acp');
+
+    expect(ok).toBe(true);
+    expect(resumeChatSession).toHaveBeenCalledWith('record-missing-acp', 'opencode', '/repo', undefined);
+    const active = useChatStore.getState().sessions[0];
+    expect(active.id).toBe('live-created');
+    expect(active.recordId).toBe('record-missing-acp');
+    expect(active.acpSessionId).toBe('fresh-acp');
+    expect(active.kind).toBe('resumable');
+  });
+
+  it('deduplicates concurrent resume requests for the same record', async () => {
+    let releaseResume: ((value: { id: string; mode: string; acpSessionId: string; workDir: string }) => void) | undefined;
+    resumeChatSession.mockImplementation(() => new Promise((resolve) => {
+      releaseResume = resolve as typeof releaseResume;
+    }));
+    useChatStore.setState({
+      sessions: [{
+        id: 'record-dedupe',
+        recordId: 'record-dedupe',
+        agentId: 'opencode',
+        title: 'Dedupe',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'archived',
+        workDir: '/repo',
+      }],
+      activeSessionId: 'record-dedupe',
+    });
+
+    const first = useChatStore.getState().resumeSession('record-dedupe');
+    const second = useChatStore.getState().resumeSession('record-dedupe');
+
+    expect(resumeChatSession).toHaveBeenCalledTimes(1);
+    releaseResume!({ id: 'live-dedupe', mode: 'acp', acpSessionId: 'acp-dedupe', workDir: '/repo' });
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(useChatStore.getState().sessions).toHaveLength(1);
+    expect(useChatStore.getState().sessions[0].id).toBe('live-dedupe');
   });
 });
 
@@ -275,6 +414,17 @@ describe('replayTranscriptToMessages', () => {
     expect(result.title).toBe('My Chat');
   });
 
+  it('restores context usage and cost from usage updates', () => {
+    const events = [
+      { id: 'e1', sessionId: 's', kind: 'usage_update', payloadJson: JSON.stringify({ type: 'usage_update', contextWindow: 200000, contextUsed: 44152, costAmount: 0.0001, costCurrency: 'USD' }), seq: 1, timestamp: 100 },
+    ];
+    const result = replayTranscriptToMessages(events);
+    expect(result.contextWindow).toBe(200000);
+    expect(result.contextUsed).toBe(44152);
+    expect(result.costAmount).toBe(0.0001);
+    expect(result.costCurrency).toBe('USD');
+  });
+
   it('produces empty result for empty events', () => {
     const result = replayTranscriptToMessages([]);
     expect(result.messages).toHaveLength(0);
@@ -303,6 +453,23 @@ describe('replayTranscriptToMessages', () => {
     expect(result.messages[1].diffs).toHaveLength(1);
     expect(result.messages[2].role).toBe('assistant');
     expect(result.messages[2].content).toBe('Done!');
+  });
+
+  it('starts a new assistant message after a done event', () => {
+    const events = [
+      { id: 'e1', sessionId: 's', kind: 'text', payloadJson: JSON.stringify({ type: 'text', text: 'Pakai mode normal dulu ya?' }), seq: 1, timestamp: 100 },
+      { id: 'e2', sessionId: 's', kind: 'done', payloadJson: JSON.stringify({ type: 'done', stopReason: 'end_turn' }), seq: 2, timestamp: 101 },
+      { id: 'e3', sessionId: 's', kind: 'text', payloadJson: JSON.stringify({ type: 'text', text: 'Siap, tunggu instruksi selanjutnya.' }), seq: 3, timestamp: 102 },
+      { id: 'e4', sessionId: 's', kind: 'done', payloadJson: JSON.stringify({ type: 'done', stopReason: 'end_turn' }), seq: 4, timestamp: 103 },
+    ];
+
+    const result = replayTranscriptToMessages(events);
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0].role).toBe('assistant');
+    expect(result.messages[0].content).toBe('Pakai mode normal dulu ya?');
+    expect(result.messages[1].role).toBe('assistant');
+    expect(result.messages[1].content).toBe('Siap, tunggu instruksi selanjutnya.');
   });
 });
 

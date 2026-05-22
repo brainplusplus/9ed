@@ -19,7 +19,15 @@ export function ProjectPicker() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void getRecentProjects().then(setRecentProjects).catch(() => {});
+    let cancelled = false;
+    void getRecentProjects()
+      .then((projects) => {
+        if (!cancelled) setRecentProjects(projects);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load recent projects');
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const loadTree = useCallback(async (path: string) => {
@@ -46,12 +54,10 @@ export function ProjectPicker() {
     let cancelled = false;
     async function init() {
       try {
-        const [config, availableDrives] = await Promise.all([getConfig(), getDrives()]);
+        const config = await getConfig();
         if (cancelled) return;
 
-        setDrives(availableDrives);
-
-        const root = config.workspaceRoot || availableDrives[0] || '/';
+        const root = config.workspaceRoot || '/';
         await loadTree(root);
       } catch (err) {
         if (!cancelled) {
@@ -61,6 +67,15 @@ export function ProjectPicker() {
       }
     }
     void init();
+
+    void getDrives()
+      .then((availableDrives) => {
+        if (!cancelled) setDrives(availableDrives);
+      })
+      .catch(() => {
+        if (!cancelled) setDrives([]);
+      });
+
     return () => { cancelled = true; };
   }, [loadTree]);
 

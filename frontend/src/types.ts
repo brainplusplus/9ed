@@ -235,6 +235,10 @@ export type ChatEvent = {
   title?: string;
   stopReason?: string;
   error?: string;
+  contextWindow?: number;
+  contextUsed?: number;
+  costAmount?: number;
+  costCurrency?: string;
   permissionId?: string;
   permissionTitle?: string;
   permissionOptions?: PermissionOptionInfo[];
@@ -259,10 +263,15 @@ export type ChatSessionInfo = {
   status: 'connecting' | 'idle' | 'streaming' | 'error';
   createdAt: number;
   kind: ChatSessionKind;
+  workDir?: string;
   acpSessionId?: string;
   commands?: SlashCommandInfo[];
   configOptions?: ConfigOptionInfo[];
   pendingPermission?: PendingPermission;
+  contextWindow?: number;
+  contextUsed?: number;
+  costAmount?: number;
+  costCurrency?: string;
 };
 
 export type HistorySessionRecord = {

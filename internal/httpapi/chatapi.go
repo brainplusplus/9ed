@@ -12,6 +12,7 @@ import (
 
 	"github.com/brainplusplus/9ed/internal/chat"
 	"github.com/brainplusplus/9ed/internal/chat/agentconfig"
+	"github.com/brainplusplus/9ed/internal/debug"
 )
 
 type chatCreateRequest struct {
@@ -22,24 +23,27 @@ type chatCreateRequest struct {
 }
 
 type chatCreateResponse struct {
-	ID          string `json:"id"`
-	Mode        string `json:"mode"`
-	IsResumed   bool   `json:"isResumed"`
-	ResumedFrom string `json:"resumedFrom,omitempty"`
+	ID           string `json:"id"`
+	Mode         string `json:"mode"`
+	IsResumed    bool   `json:"isResumed"`
+	ResumedFrom  string `json:"resumedFrom,omitempty"`
+	WorkDir      string `json:"workDir,omitempty"`
+	ACPSessionID string `json:"acpSessionId,omitempty"`
 }
 
 type chatSessionInfo struct {
-	ID            string `json:"id"`
-	AgentID       string `json:"agentId"`
-	Mode          string `json:"mode"`
-	WorkDir       string `json:"workDir,omitempty"`
-	ACPSessionID  string `json:"acpSessionId,omitempty"`
-	IsResumed     bool   `json:"isResumed"`
+	ID           string `json:"id"`
+	AgentID      string `json:"agentId"`
+	Mode         string `json:"mode"`
+	WorkDir      string `json:"workDir,omitempty"`
+	ACPSessionID string `json:"acpSessionId,omitempty"`
+	IsResumed    bool   `json:"isResumed"`
 }
 
 type chatRestoreResponse struct {
 	Found            bool   `json:"found"`
 	SessionID        string `json:"sessionId,omitempty"`
+	LiveSessionID    string `json:"liveSessionId,omitempty"`
 	AgentID          string `json:"agentId,omitempty"`
 	WorkDir          string `json:"workDir,omitempty"`
 	ACPSessionID     string `json:"acpSessionId,omitempty"`
@@ -59,13 +63,15 @@ type chatResumeRequest struct {
 	ACPSessionID string `json:"acpSessionId"`
 }
 
+var discoverAgentDescriptors = chat.DiscoverAgentDescriptors
+
 type chatWSInbound struct {
-	Type        string            `json:"type"`
-	Content     string            `json:"content,omitempty"`
-	Context     json.RawMessage   `json:"context,omitempty"`
-	ConfigID    string            `json:"configId,omitempty"`
-	Value       string            `json:"value,omitempty"`
-	Attachments []chatAttachment  `json:"attachments,omitempty"`
+	Type        string           `json:"type"`
+	Content     string           `json:"content,omitempty"`
+	Context     json.RawMessage  `json:"context,omitempty"`
+	ConfigID    string           `json:"configId,omitempty"`
+	Value       string           `json:"value,omitempty"`
+	Attachments []chatAttachment `json:"attachments,omitempty"`
 
 	PermissionID string `json:"permissionId,omitempty"`
 	OptionID     string `json:"optionId,omitempty"`
@@ -154,6 +160,7 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 		if a.chatStore != nil {
 			if resumedFrom != "" && session.ID() != req.ResumeID {
 				_ = a.chatStore.UpdateSessionACP(req.ResumeID, session.ACPSessionID(), workDir)
+				a.chatSessionManager.LinkRecordID(session.ID(), req.ResumeID)
 			} else {
 				record, _ := a.chatStore.GetSession(session.ID())
 				if record == nil {
@@ -167,14 +174,17 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 				} else {
 					_ = a.chatStore.UpdateSessionACP(session.ID(), session.ACPSessionID(), workDir)
 				}
+				a.chatSessionManager.LinkRecordID(session.ID(), session.ID())
 			}
 		}
 
 		writeJSON(w, http.StatusCreated, chatCreateResponse{
-			ID:          session.ID(),
-			Mode:        string(session.Mode()),
-			IsResumed:   resumedFrom != "",
-			ResumedFrom: resumedFrom,
+			ID:           session.ID(),
+			Mode:         string(session.Mode()),
+			IsResumed:    resumedFrom != "",
+			ResumedFrom:  resumedFrom,
+			WorkDir:      session.WorkDir(),
+			ACPSessionID: session.ACPSessionID(),
 		})
 
 	default:
@@ -203,42 +213,88 @@ func (a *API) handleChatSessionByID(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
-	if a.chatSessionManager == nil {
-		http.Error(w, "chat not available", http.StatusServiceUnavailable)
-		return
+func (a *API) newChatEventPersister(sessionID string) chatEventPersister {
+	if a.chatStore == nil {
+		debug.Printf("[chat/persist] disabled: no chat store session=%s", sessionID)
+		return nil
 	}
 
-	sessionID := strings.TrimPrefix(r.URL.Path, "/ws/chat/")
-	session, ok := a.chatSessionManager.Get(sessionID)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	conn, err := a.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	var writeMu sync.Mutex
-
-	var persistSeq int64
-	var persistRecordID string
-	if a.chatStore != nil {
+	persistRecordID := a.chatSessionManager.RecordIDFor(sessionID)
+	if persistRecordID == sessionID {
 		persistRecordID = a.chatStore.ResolveRecordID(sessionID)
-		persistSeq, _ = a.chatStore.NextEventSeq(persistRecordID)
 	}
+	if persistRecordID == "" {
+		debug.Printf("[chat/persist] disabled: empty record id for live session=%s", sessionID)
+		return nil
+	}
+	if record, err := a.chatStore.GetSession(persistRecordID); err != nil {
+		debug.Printf("[chat/persist] record lookup failed live=%s record=%s err=%v", sessionID, persistRecordID, err)
+	} else if record == nil {
+		if live, ok := a.chatSessionManager.Get(sessionID); ok {
+			if err := a.chatStore.CreateSessionFull(persistRecordID, live.AgentID(), "", live.WorkDir(), live.ACPSessionID()); err != nil {
+				debug.Printf("[chat/persist] record create failed live=%s record=%s agent=%s workDir=%q err=%v", sessionID, persistRecordID, live.AgentID(), live.WorkDir(), err)
+			} else {
+				debug.Printf("[chat/persist] record created live=%s record=%s agent=%s workDir=%q", sessionID, persistRecordID, live.AgentID(), live.WorkDir())
+			}
+		} else {
+			debug.Printf("[chat/persist] record missing and live session unavailable live=%s record=%s", sessionID, persistRecordID)
+		}
+	}
+	debug.Printf("[chat/persist] attached live=%s record=%s", sessionID, persistRecordID)
 
-	persistEvent := func(evt chat.ChatEvent) {
-		if a.chatStore == nil || persistRecordID == "" {
+	persistSeq, _ := a.chatStore.NextEventSeq(persistRecordID)
+	var mu sync.Mutex
+	var assistantText strings.Builder
+	assistantMessageID := ""
+	assistantSaved := false
+	saveAssistantDraft := func() {
+		if strings.TrimSpace(assistantText.String()) == "" {
 			return
 		}
+		now := time.Now().UnixMilli()
+		if assistantMessageID == "" {
+			assistantMessageID = fmt.Sprintf("%s-assistant-%d", persistRecordID, now)
+		}
+		if err := a.chatStore.UpsertMessage(chat.MessageRecord{
+			ID:        assistantMessageID,
+			SessionID: persistRecordID,
+			Role:      "assistant",
+			Content:   assistantText.String(),
+			Timestamp: now,
+		}); err != nil {
+			debug.Printf("[chat/persist] assistant upsert failed live=%s record=%s msg=%s chars=%d err=%v", sessionID, persistRecordID, assistantMessageID, assistantText.Len(), err)
+		} else {
+			debug.Printf("[chat/persist] assistant upserted live=%s record=%s msg=%s chars=%d", sessionID, persistRecordID, assistantMessageID, assistantText.Len())
+		}
+	}
+
+	return func(evt chat.ChatEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		if evt.Type == "text" || evt.Type == "done" || evt.Type == "error" || evt.Type == "usage_update" {
+			debug.Printf("[chat/persist] event live=%s record=%s type=%s textChars=%d stop=%q err=%q", sessionID, persistRecordID, evt.Type, len(evt.Text), evt.StopReason, evt.Error)
+		}
+
+		switch evt.Type {
+		case "text":
+			if assistantSaved {
+				assistantText.Reset()
+				assistantMessageID = ""
+				assistantSaved = false
+			}
+			assistantText.WriteString(evt.Text)
+			saveAssistantDraft()
+		case "done":
+			if !assistantSaved {
+				saveAssistantDraft()
+				assistantSaved = true
+			}
+		}
+
 		shouldPersist := false
 		switch evt.Type {
 		case "text", "thinking", "tool_call", "tool_call_update", "diff",
-			"plan", "title", "done", "error":
+			"plan", "title", "done", "error", "session_info", "usage_update":
 			shouldPersist = true
 		case "commands":
 			shouldPersist = true
@@ -266,45 +322,75 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		payload, _ := json.Marshal(evt)
 		now := time.Now().UnixMilli()
-		evtID := fmt.Sprintf("%s-e-%d", persistRecordID, persistSeq)
-		record := chat.EventRecord{
-			ID:          evtID,
-			SessionID:   persistRecordID,
-			Kind:        evt.Type,
-			PayloadJSON: string(payload),
-			Seq:         persistSeq,
-			Timestamp:   now,
+		for attempt := 0; attempt < 2; attempt++ {
+			evtID := fmt.Sprintf("%s-e-%d", persistRecordID, persistSeq)
+			record := chat.EventRecord{
+				ID:          evtID,
+				SessionID:   persistRecordID,
+				Kind:        evt.Type,
+				PayloadJSON: string(payload),
+				Seq:         persistSeq,
+				Timestamp:   now,
+			}
+			persistSeq++
+			if err := a.chatStore.AppendEvent(record); err == nil {
+				if evt.Type == "text" || evt.Type == "done" || evt.Type == "error" {
+					debug.Printf("[chat/persist] event appended live=%s record=%s seq=%d type=%s", sessionID, persistRecordID, record.Seq, evt.Type)
+				}
+				break
+			} else {
+				debug.Printf("[chat/persist] event append failed live=%s record=%s seq=%d type=%s attempt=%d err=%v", sessionID, persistRecordID, record.Seq, evt.Type, attempt+1, err)
+			}
+			nextSeq, err := a.chatStore.NextEventSeq(persistRecordID)
+			if err != nil {
+				break
+			}
+			persistSeq = nextSeq
 		}
-		persistSeq++
-		_ = a.chatStore.AppendEvent(record)
-		if evt.Type == "title" && evt.Title != "" {
+		if evt.Title != "" && (evt.Type == "title" || evt.Type == "session_info") {
 			_ = a.chatStore.UpdateSessionTitle(persistRecordID, evt.Title)
 		}
 	}
+}
 
-	sendEvent := func(evt chat.ChatEvent) {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		_ = conn.WriteJSON(evt)
-		persistEvent(evt)
+func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
+	if a.chatSessionManager == nil {
+		http.Error(w, "chat not available", http.StatusServiceUnavailable)
+		return
 	}
+
+	sessionID := strings.TrimPrefix(r.URL.Path, "/ws/chat/")
+	session, ok := a.chatSessionManager.Get(sessionID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	conn, err := a.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	stream := a.chatStreams.GetOrCreate(sessionID, session, a.newChatEventPersister(sessionID))
+	sub := stream.Subscribe()
+	defer stream.Unsubscribe(sub)
 
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-session.Done():
-				sendEvent(chat.ChatEvent{Type: "done", StopReason: "session_closed"})
-				return
-			case evt, ok := <-session.Events():
+			case evt, ok := <-sub.C:
 				if !ok {
 					return
 				}
-				sendEvent(evt)
+				if err := conn.WriteJSON(evt); err != nil {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
@@ -326,17 +412,17 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 				content = formatAttachments(content, msg.Attachments)
 			}
 			if err := session.Send(ctx, content); err != nil {
-				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
+				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
 
 		case "cancel":
 			if err := session.Cancel(); err != nil {
-				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
+				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
 
 		case "set_config_option":
 			if err := session.SetConfigOption(ctx, msg.ConfigID, msg.Value); err != nil {
-				sendEvent(chat.ChatEvent{Type: "error", Error: err.Error()})
+				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
 
 		case "permission_response":
@@ -350,12 +436,10 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			session.SetAutoApprove(msg.AutoApprove)
 
 		default:
-			sendEvent(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})
+			stream.publish(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})
 		}
 	}
 }
-
-
 
 func (a *API) handleChatRestore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -415,6 +499,15 @@ func (a *API) handleChatRestore(w http.ResponseWriter, r *http.Request) {
 	resp.Status = record.Status
 	resp.Title = record.Title
 
+	if a.chatSessionManager != nil {
+		if liveID, ok := a.chatSessionManager.LiveIDForRecordID(record.ID); ok {
+			resp.LiveSessionID = liveID
+			resp.IsLive = true
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
+
 	if a.chatSessionManager != nil && a.chatSessionManager.IsLive(record.ID) {
 		resp.IsLive = true
 		writeJSON(w, http.StatusOK, resp)
@@ -449,8 +542,8 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.SessionID == "" || req.AgentID == "" || req.ACPSessionID == "" {
-		http.Error(w, "sessionId, agentId, and acpSessionId are required", http.StatusBadRequest)
+	if req.SessionID == "" || req.AgentID == "" {
+		http.Error(w, "sessionId and agentId are required", http.StatusBadRequest)
 		return
 	}
 
@@ -459,36 +552,60 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 		workDir = a.workspaceRoot
 	}
 
-	agent, ok := findAgentDescriptor(req.AgentID)
+	agent, ok := findAnyAgentDescriptor(req.AgentID)
 	if !ok {
-		http.Error(w, "unknown or unavailable agent", http.StatusBadRequest)
+		writeJSON(w, http.StatusOK, chatRestoreResponse{
+			Found:       true,
+			SessionID:   req.SessionID,
+			CanResume:   false,
+			ResumeError: "unknown agent: " + req.AgentID,
+		})
 		return
 	}
-
-	if !agent.SupportsACP {
+	if !agent.Available {
 		writeJSON(w, http.StatusOK, chatRestoreResponse{
-			Found:        true,
-			SessionID:    req.SessionID,
-			CanResume:    false,
-			ResumeError:  "agent does not support ACP session/resume",
+			Found:       true,
+			SessionID:   req.SessionID,
+			CanResume:   false,
+			ResumeError: "agent is not available: " + req.AgentID,
 		})
 		return
 	}
 
-	session, err := a.chatSessionManager.Resume(context.Background(), agent, workDir, req.ACPSessionID)
+	var session chat.ChatSession
+	var err error
+	resumed := true
+	resumeErr := ""
+	if agent.SupportsACP && req.ACPSessionID != "" {
+		session, err = a.chatSessionManager.Resume(context.Background(), agent, workDir, req.ACPSessionID)
+		if err != nil {
+			resumeErr = err.Error()
+		}
+	} else if agent.SupportsACP {
+		resumeErr = "missing ACP session id; creating replacement session"
+		err = fmt.Errorf("%s", resumeErr)
+	} else {
+		resumeErr = "agent does not support ACP session/resume"
+		err = fmt.Errorf("%s", resumeErr)
+	}
 	if err != nil {
-		writeJSON(w, http.StatusOK, chatRestoreResponse{
-			Found:        true,
-			SessionID:    req.SessionID,
-			CanResume:    false,
-			ResumeError:  err.Error(),
-		})
-		return
+		session, err = a.chatSessionManager.Create(context.Background(), agent, workDir)
+		if err != nil {
+			writeJSON(w, http.StatusOK, chatRestoreResponse{
+				Found:       true,
+				SessionID:   req.SessionID,
+				CanResume:   false,
+				ResumeError: resumeErr + "; fallback create failed: " + err.Error(),
+			})
+			return
+		}
+		resumed = false
 	}
 
 	if a.chatStore != nil {
 		if session.ID() != req.SessionID {
 			_ = a.chatStore.UpdateSessionACP(req.SessionID, session.ACPSessionID(), workDir)
+			a.chatSessionManager.LinkRecordID(session.ID(), req.SessionID)
 		} else {
 			record, _ := a.chatStore.GetSession(session.ID())
 			if record == nil {
@@ -502,14 +619,17 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 			} else {
 				_ = a.chatStore.UpdateSessionACP(session.ID(), session.ACPSessionID(), workDir)
 			}
+			a.chatSessionManager.LinkRecordID(session.ID(), session.ID())
 		}
 	}
 
 	writeJSON(w, http.StatusCreated, chatCreateResponse{
-		ID:          session.ID(),
-		Mode:        string(session.Mode()),
-		IsResumed:   true,
-		ResumedFrom: req.SessionID,
+		ID:           session.ID(),
+		Mode:         string(session.Mode()),
+		IsResumed:    resumed,
+		ResumedFrom:  req.SessionID,
+		WorkDir:      session.WorkDir(),
+		ACPSessionID: session.ACPSessionID(),
 	})
 }
 
@@ -539,7 +659,7 @@ func (a *API) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 		workDir := r.URL.Query().Get("workDir")
 		var (
 			sessions []chat.SessionRecord
-			err error
+			err      error
 		)
 		if workDir != "" {
 			sessions, err = a.chatStore.SessionsForProject(workDir, 50)
@@ -588,8 +708,24 @@ func (a *API) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-		} else if req.Title != "" {
-			_ = a.chatStore.UpdateSessionTitle(req.SessionID, req.Title)
+		} else {
+			if req.Title != "" {
+				_ = a.chatStore.UpdateSessionTitle(req.SessionID, req.Title)
+			}
+			if req.WorkDir != "" || req.ACPSessionID != "" {
+				record, _ := a.chatStore.GetSession(req.SessionID)
+				workDir := req.WorkDir
+				acpSessionID := req.ACPSessionID
+				if record != nil {
+					if workDir == "" {
+						workDir = record.WorkDir
+					}
+					if acpSessionID == "" {
+						acpSessionID = record.ACPSessionID
+					}
+				}
+				_ = a.chatStore.UpdateSessionACP(req.SessionID, acpSessionID, workDir)
+			}
 		}
 
 		now := time.Now().UnixMilli()
@@ -753,9 +889,19 @@ func truncate(s string, maxLen int) string {
 }
 
 func findAgentDescriptor(id string) (chat.AgentDescriptor, bool) {
-	agents := chat.DiscoverAgentDescriptors()
+	agents := discoverAgentDescriptors()
 	for _, a := range agents {
 		if a.ID == id && a.Available {
+			return a, true
+		}
+	}
+	return chat.AgentDescriptor{}, false
+}
+
+func findAnyAgentDescriptor(id string) (chat.AgentDescriptor, bool) {
+	agents := discoverAgentDescriptors()
+	for _, a := range agents {
+		if a.ID == id {
 			return a, true
 		}
 	}

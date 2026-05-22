@@ -533,15 +533,25 @@
     justify-content: stretch;
   }
 
-  .chat-header-actions .chat-picker-wrap,
-  .chat-header-actions .chat-new-btn {
+  .chat-header-actions .chat-picker-wrap {
     flex: 1 1 auto;
   }
 
-  .chat-header-actions .agent-picker,
-  .chat-header-actions .chat-new-btn {
+  .chat-header-actions .agent-picker {
     width: 100%;
     justify-content: center;
+  }
+
+  .chat-header-actions .chat-new-btn:not(.chat-new-btn-icon) {
+    flex: 1 1 auto;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .chat-header-actions .chat-new-btn-icon {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 32px;
   }
 
   .chat-session-dropdown {

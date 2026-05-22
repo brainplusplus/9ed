@@ -15,20 +15,20 @@ type ChatStore struct {
 }
 
 type SessionRecord struct {
-	ID            string `json:"id"`
-	AgentID       string `json:"agentId"`
-	Title         string `json:"title"`
-	WorkDir       string `json:"workDir,omitempty"`
-	ACPSessionID  string `json:"acpSessionId,omitempty"`
-	Status        string `json:"status"` // "active", "closed"
-	CreatedAt     int64  `json:"createdAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
+	ID           string `json:"id"`
+	AgentID      string `json:"agentId"`
+	Title        string `json:"title"`
+	WorkDir      string `json:"workDir,omitempty"`
+	ACPSessionID string `json:"acpSessionId,omitempty"`
+	Status       string `json:"status"` // "active", "closed"
+	CreatedAt    int64  `json:"createdAt"`
+	UpdatedAt    int64  `json:"updatedAt"`
 }
 
 // SessionStatus constants.
 const (
-	SessionStatusActive  = "active"
-	SessionStatusClosed  = "closed"
+	SessionStatusActive = "active"
+	SessionStatusClosed = "closed"
 )
 
 type RecentProject struct {
@@ -318,6 +318,26 @@ func (s *ChatStore) AddMessage(msg MessageRecord) error {
 	_, err := s.db.Exec(
 		`INSERT INTO chat_messages (id, session_id, role, content, context_file, context_start_line, context_end_line, context_code, context_language, timestamp)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.SessionID, msg.Role, msg.Content,
+		nullString(msg.ContextFile), nullInt(msg.ContextStart), nullInt(msg.ContextEnd),
+		nullString(msg.ContextCode), nullString(msg.ContextLang), msg.Timestamp,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(
+		"UPDATE chat_sessions SET updated_at = ? WHERE id = ?",
+		msg.Timestamp, msg.SessionID,
+	)
+	return err
+}
+
+func (s *ChatStore) UpsertMessage(msg MessageRecord) error {
+	_, err := s.db.Exec(
+		`INSERT INTO chat_messages (id, session_id, role, content, context_file, context_start_line, context_end_line, context_code, context_language, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET content = excluded.content, timestamp = excluded.timestamp`,
 		msg.ID, msg.SessionID, msg.Role, msg.Content,
 		nullString(msg.ContextFile), nullInt(msg.ContextStart), nullInt(msg.ContextEnd),
 		nullString(msg.ContextCode), nullString(msg.ContextLang), msg.Timestamp,

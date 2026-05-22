@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +34,36 @@ func TestRouterReturnsShellProfiles(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestFileDrivesIncludesWorkspaceRootVolume(t *testing.T) {
+	volume := filepath.VolumeName(`D:\workspace`)
+	if volume == "" {
+		t.Skip("volume roots only apply on Windows")
+	}
+	api := New(Dependencies{Mode: "full", WorkspaceRoot: `D:\workspace`})
+	req := httptest.NewRequest(http.MethodGet, "/api/files/drives", nil)
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var drives []string
+	if err := json.Unmarshal(rec.Body.Bytes(), &drives); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	found := false
+	for _, drive := range drives {
+		if drive == `D:\` {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected workspace root drive in list, got %#v", drives)
 	}
 }
 
@@ -147,6 +180,49 @@ func TestChatHistoryFiltersByProjectWorkDir(t *testing.T) {
 	}
 }
 
+func TestChatHistoryPostRefreshesExistingSessionProjectMetadata(t *testing.T) {
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("session-1", "opencode", "Old", "", ""); err != nil {
+		t.Fatalf("CreateSessionFull: %v", err)
+	}
+
+	api := New(Dependencies{ChatStore: store})
+	body := strings.NewReader(`{
+		"sessionId":"session-1",
+		"agentId":"opencode",
+		"title":"Latest",
+		"workDir":"/repo",
+		"acpSessionId":"acp-1",
+		"role":"user",
+		"content":"hi"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/history", body)
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	record, err := store.GetSession("session-1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if record == nil {
+		t.Fatal("expected session record")
+	}
+	if record.WorkDir != "/repo" || record.ACPSessionID != "acp-1" {
+		t.Fatalf("expected refreshed metadata, got workDir=%q acp=%q", record.WorkDir, record.ACPSessionID)
+	}
+	sessions, err := store.SessionsForProject("/repo", 10)
+	if err != nil {
+		t.Fatalf("SessionsForProject: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "session-1" {
+		t.Fatalf("expected session-1 in project history, got %#v", sessions)
+	}
+}
+
 func TestChatSessionStateReturnsRichTranscriptAndSnapshot(t *testing.T) {
 	store := chatTempStoreForAPI(t)
 	if err := store.CreateSessionFull("session-1", "opencode", "State test", "/repo", "acp-1"); err != nil {
@@ -188,6 +264,190 @@ func TestChatSessionStateReturnsRichTranscriptAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestChatEventPersisterSavesAssistantMessageOnDone(t *testing.T) {
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("record-1", "opencode", "Persist test", "/repo", "acp-1"); err != nil {
+		t.Fatalf("CreateSessionFull: %v", err)
+	}
+	manager := chat.NewSessionManager()
+	manager.LinkRecordID("live-1", "record-1")
+	api := New(Dependencies{ChatSessionManager: manager, ChatStore: store})
+
+	persist := api.newChatEventPersister("live-1")
+	persist(chat.ChatEvent{Type: "text", Text: "ya"})
+	persist(chat.ChatEvent{Type: "session_info", ContextWindow: 200000, ContextUsed: 44000, CostAmount: 0.0123, CostCurrency: "USD"})
+	persist(chat.ChatEvent{Type: "done", StopReason: "end_turn"})
+
+	messages, err := store.GetMessages("record-1")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "assistant" || messages[0].Content != "ya" {
+		t.Fatalf("expected persisted assistant message, got %#v", messages)
+	}
+
+	events, err := store.GetEvents("record-1")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 transcript events, got %d: %#v", len(events), events)
+	}
+}
+
+func TestChatEventPersisterSavesAssistantDraftBeforeDone(t *testing.T) {
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("record-draft", "opencode", "Draft test", "/repo", "acp-1"); err != nil {
+		t.Fatalf("CreateSessionFull: %v", err)
+	}
+	manager := chat.NewSessionManager()
+	manager.LinkRecordID("live-draft", "record-draft")
+	api := New(Dependencies{ChatSessionManager: manager, ChatStore: store})
+
+	persist := api.newChatEventPersister("live-draft")
+	persist(chat.ChatEvent{Type: "text", Text: "ya"})
+
+	messages, err := store.GetMessages("record-draft")
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "assistant" || messages[0].Content != "ya" {
+		t.Fatalf("expected assistant draft before done, got %#v", messages)
+	}
+
+	persist(chat.ChatEvent{Type: "text", Text: " lanjut"})
+	messages, err = store.GetMessages("record-draft")
+	if err != nil {
+		t.Fatalf("GetMessages after append: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "ya lanjut" {
+		t.Fatalf("expected updated single assistant draft, got %#v", messages)
+	}
+}
+
+func TestChatResumeFallsBackToReplacementSessionWhenACPResumeFails(t *testing.T) {
+	withChatAgents(t, []chat.AgentDescriptor{{
+		ID:          "opencode",
+		Label:       "OpenCode",
+		Command:     "opencode",
+		Available:   true,
+		SupportsACP: true,
+	}})
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("record-1", "opencode", "Old chat", "/repo", "old-acp"); err != nil {
+		t.Fatalf("CreateSessionFull: %v", err)
+	}
+	manager := &fakeChatRuntimeManager{
+		resumeErr: errors.New("old ACP session disappeared"),
+		createSession: &apiFakeChatSession{
+			id:           "live-new",
+			agentID:      "opencode",
+			workDir:      "/repo",
+			acpSessionID: "fresh-acp",
+			mode:         chat.ModeACP,
+			events:       make(chan chat.ChatEvent),
+			done:         make(chan struct{}),
+		},
+	}
+	api := New(Dependencies{ChatSessionManager: manager, ChatStore: store})
+
+	body, _ := json.Marshal(chatResumeRequest{
+		SessionID:    "record-1",
+		AgentID:      "opencode",
+		WorkDir:      "/repo",
+		ACPSessionID: "old-acp",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/sessions/resume", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp chatCreateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if resp.ID != "live-new" || resp.IsResumed {
+		t.Fatalf("expected replacement live session, got %#v", resp)
+	}
+	if manager.resumeCalls != 1 || manager.createCalls != 1 {
+		t.Fatalf("expected one resume attempt and one fallback create, got resume=%d create=%d", manager.resumeCalls, manager.createCalls)
+	}
+	if manager.recordIDs["live-new"] != "record-1" {
+		t.Fatalf("expected live-new linked to record-1, got %#v", manager.recordIDs)
+	}
+	record, err := store.GetSession("record-1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if record.ACPSessionID != "fresh-acp" {
+		t.Fatalf("expected stored ACP session to refresh to fresh-acp, got %q", record.ACPSessionID)
+	}
+}
+
+func TestChatResumeCreatesReplacementWhenACPSessionIDMissing(t *testing.T) {
+	withChatAgents(t, []chat.AgentDescriptor{{
+		ID:          "opencode",
+		Label:       "OpenCode",
+		Command:     "opencode",
+		Available:   true,
+		SupportsACP: true,
+	}})
+	store := chatTempStoreForAPI(t)
+	if err := store.CreateSessionFull("record-2", "opencode", "Old chat", "/repo", ""); err != nil {
+		t.Fatalf("CreateSessionFull: %v", err)
+	}
+	manager := &fakeChatRuntimeManager{
+		createSession: &apiFakeChatSession{
+			id:           "live-created",
+			agentID:      "opencode",
+			workDir:      "/repo",
+			acpSessionID: "created-acp",
+			mode:         chat.ModeACP,
+			events:       make(chan chat.ChatEvent),
+			done:         make(chan struct{}),
+		},
+	}
+	api := New(Dependencies{ChatSessionManager: manager, ChatStore: store})
+
+	body, _ := json.Marshal(chatResumeRequest{
+		SessionID: "record-2",
+		AgentID:   "opencode",
+		WorkDir:   "/repo",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/sessions/resume", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp chatCreateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if resp.ID != "live-created" || resp.ACPSessionID != "created-acp" {
+		t.Fatalf("expected created replacement session, got %#v", resp)
+	}
+	if manager.resumeCalls != 0 || manager.createCalls != 1 {
+		t.Fatalf("expected create without resume attempt, got resume=%d create=%d", manager.resumeCalls, manager.createCalls)
+	}
+}
+
+func withChatAgents(t *testing.T, agents []chat.AgentDescriptor) {
+	t.Helper()
+	original := discoverAgentDescriptors
+	discoverAgentDescriptors = func() []chat.AgentDescriptor {
+		return agents
+	}
+	t.Cleanup(func() {
+		discoverAgentDescriptors = original
+	})
+}
+
 func chatTempStoreForAPI(t *testing.T) *chat.ChatStore {
 	t.Helper()
 	store, err := chat.NewChatStore(t.TempDir() + "/chat.db")
@@ -197,6 +457,128 @@ func chatTempStoreForAPI(t *testing.T) *chat.ChatStore {
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
+
+type fakeChatRuntimeManager struct {
+	resumeSession chat.ChatSession
+	resumeErr     error
+	createSession chat.ChatSession
+	createErr     error
+	sessions      map[string]chat.ChatSession
+	recordIDs     map[string]string
+	resumeCalls   int
+	createCalls   int
+}
+
+func (m *fakeChatRuntimeManager) Create(_ context.Context, _ chat.AgentDescriptor, _ string) (chat.ChatSession, error) {
+	m.createCalls++
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	if m.sessions == nil {
+		m.sessions = make(map[string]chat.ChatSession)
+	}
+	if m.createSession != nil {
+		m.sessions[m.createSession.ID()] = m.createSession
+	}
+	return m.createSession, nil
+}
+
+func (m *fakeChatRuntimeManager) Resume(_ context.Context, _ chat.AgentDescriptor, _ string, _ string) (chat.ChatSession, error) {
+	m.resumeCalls++
+	if m.resumeErr != nil {
+		return nil, m.resumeErr
+	}
+	if m.sessions == nil {
+		m.sessions = make(map[string]chat.ChatSession)
+	}
+	if m.resumeSession != nil {
+		m.sessions[m.resumeSession.ID()] = m.resumeSession
+	}
+	return m.resumeSession, nil
+}
+
+func (m *fakeChatRuntimeManager) Get(id string) (chat.ChatSession, bool) {
+	session, ok := m.sessions[id]
+	return session, ok
+}
+
+func (m *fakeChatRuntimeManager) Remove(id string) {
+	delete(m.sessions, id)
+	delete(m.recordIDs, id)
+}
+
+func (m *fakeChatRuntimeManager) List() []chat.ChatSession {
+	list := make([]chat.ChatSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		list = append(list, session)
+	}
+	return list
+}
+
+func (m *fakeChatRuntimeManager) IsLive(id string) bool {
+	if _, ok := m.sessions[id]; ok {
+		return true
+	}
+	for _, recordID := range m.recordIDs {
+		if recordID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *fakeChatRuntimeManager) LinkRecordID(liveSessionID, recordID string) {
+	if m.recordIDs == nil {
+		m.recordIDs = make(map[string]string)
+	}
+	m.recordIDs[liveSessionID] = recordID
+}
+
+func (m *fakeChatRuntimeManager) RecordIDFor(liveSessionID string) string {
+	if recordID := m.recordIDs[liveSessionID]; recordID != "" {
+		return recordID
+	}
+	return liveSessionID
+}
+
+func (m *fakeChatRuntimeManager) LiveIDForRecordID(recordID string) (string, bool) {
+	if _, ok := m.sessions[recordID]; ok {
+		return recordID, true
+	}
+	for liveID, mappedRecordID := range m.recordIDs {
+		if mappedRecordID == recordID {
+			if _, ok := m.sessions[liveID]; ok {
+				return liveID, true
+			}
+		}
+	}
+	return "", false
+}
+
+type apiFakeChatSession struct {
+	id           string
+	agentID      string
+	workDir      string
+	acpSessionID string
+	mode         chat.SessionMode
+	events       chan chat.ChatEvent
+	done         chan struct{}
+}
+
+func (s *apiFakeChatSession) ID() string                                            { return s.id }
+func (s *apiFakeChatSession) AgentID() string                                       { return s.agentID }
+func (s *apiFakeChatSession) WorkDir() string                                       { return s.workDir }
+func (s *apiFakeChatSession) Mode() chat.SessionMode                                { return s.mode }
+func (s *apiFakeChatSession) Events() <-chan chat.ChatEvent                         { return s.events }
+func (s *apiFakeChatSession) Done() <-chan struct{}                                 { return s.done }
+func (s *apiFakeChatSession) Send(context.Context, string) error                    { return nil }
+func (s *apiFakeChatSession) Cancel() error                                         { return nil }
+func (s *apiFakeChatSession) Close() error                                          { close(s.done); return nil }
+func (s *apiFakeChatSession) SetConfigOption(context.Context, string, string) error { return nil }
+func (s *apiFakeChatSession) ACPSessionID() string                                  { return s.acpSessionID }
+func (s *apiFakeChatSession) IsResumed() bool                                       { return false }
+func (s *apiFakeChatSession) RespondPermission(chat.PermissionResponse)             {}
+func (s *apiFakeChatSession) SetAutoApprove(bool)                                   {}
 
 type fakeManager struct {
 	removedID string

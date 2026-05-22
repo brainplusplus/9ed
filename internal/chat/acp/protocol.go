@@ -258,6 +258,7 @@ const (
 	UpdateSessionInfoUpdate      SessionUpdateType = "session_info_update"
 	UpdateAvailableCommandsUpdate SessionUpdateType = "available_commands_update"
 	UpdateConfigOptionsUpdate     SessionUpdateType = "config_options_update"
+	UpdateUsageUpdate             SessionUpdateType = "usage_update"
 )
 
 // AvailableCommandsUpdate reports slash commands the agent supports.
@@ -504,6 +505,29 @@ type SessionInfoUpdateNotification struct {
 	SessionUpdate SessionUpdateType `json:"sessionUpdate"` // "session_info_update"
 	Title         string            `json:"title,omitempty"`
 	Model         string            `json:"model,omitempty"`
+	ContextWindow int               `json:"contextWindow,omitempty"`
+	ContextUsed   int               `json:"contextUsed,omitempty"`
+	// Alternate field names agents may use
+	TokenUsage struct {
+		TotalTokens      int `json:"totalTokens,omitempty"`
+		PromptTokens     int `json:"promptTokens,omitempty"`
+		CompletionTokens int `json:"completionTokens,omitempty"`
+		ContextWindow    int `json:"contextWindow,omitempty"`
+	} `json:"tokenUsage,omitempty"`
+}
+
+// UsageUpdateNotification reports token usage from the agent.
+type UsageUpdateNotification struct {
+	SessionUpdate SessionUpdateType `json:"sessionUpdate"` // "usage_update"
+	Used          int               `json:"used"`
+	Size          int               `json:"size"`
+	Cost          UsageCost         `json:"cost,omitempty"`
+}
+
+// UsageCost reports monetary cost for the session.
+type UsageCost struct {
+	Amount   float64 `json:"amount"`
+	Currency string  `json:"currency"`
 }
 
 // --- ACP Method Names ---

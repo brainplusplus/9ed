@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/brainplusplus/9ed/internal/debug"
+	"github.com/fsnotify/fsnotify"
 )
 
 type Event struct {
@@ -51,6 +51,8 @@ type FileWatcher struct {
 	fsw         *fsnotify.Watcher
 	mu          sync.RWMutex
 	subscribers map[*Subscriber]struct{}
+	watched     map[string]struct{}
+	watchedMu   sync.Mutex
 	debounce    map[string]*time.Timer
 	debounceMu  sync.Mutex
 }
@@ -64,6 +66,7 @@ func New() (*FileWatcher, error) {
 	fw := &FileWatcher{
 		fsw:         fsw,
 		subscribers: make(map[*Subscriber]struct{}),
+		watched:     make(map[string]struct{}),
 		debounce:    make(map[string]*time.Timer),
 	}
 
@@ -101,10 +104,29 @@ func (fw *FileWatcher) WatchRecursive(root string) error {
 			if shouldSkipDir(info.Name()) {
 				return filepath.SkipDir
 			}
-			return fw.fsw.Add(path)
+			return fw.addWatch(path)
 		}
 		return nil
 	})
+}
+
+func (fw *FileWatcher) addWatch(path string) error {
+	clean := filepath.Clean(path)
+	fw.watchedMu.Lock()
+	if _, ok := fw.watched[clean]; ok {
+		fw.watchedMu.Unlock()
+		return nil
+	}
+	fw.watchedMu.Unlock()
+
+	if err := fw.fsw.Add(clean); err != nil {
+		return err
+	}
+
+	fw.watchedMu.Lock()
+	fw.watched[clean] = struct{}{}
+	fw.watchedMu.Unlock()
+	return nil
 }
 
 func (fw *FileWatcher) Close() error {
@@ -114,6 +136,10 @@ func (fw *FileWatcher) Close() error {
 	}
 	fw.subscribers = make(map[*Subscriber]struct{})
 	fw.mu.Unlock()
+
+	fw.watchedMu.Lock()
+	fw.watched = make(map[string]struct{})
+	fw.watchedMu.Unlock()
 
 	return fw.fsw.Close()
 }
@@ -151,7 +177,7 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 
 	if fsEvent.Op.Has(fsnotify.Create) {
 		if info, err := os.Stat(path); err == nil && info.IsDir() && !shouldSkipDir(info.Name()) {
-			_ = fw.fsw.Add(path)
+			_ = fw.addWatch(path)
 			debug.Printf("[watcher] Auto-watching new dir: %s", path)
 		}
 	}
@@ -219,5 +245,22 @@ func shouldSkipEventPath(path string) bool {
 			return true
 		}
 	}
+	name := filepath.Base(normalized)
+	if shouldSkipTransientFile(name) {
+		return true
+	}
 	return false
+}
+
+func shouldSkipTransientFile(name string) bool {
+	if name == "" {
+		return false
+	}
+	if name == ".DS_Store" || name == "Thumbs.db" {
+		return true
+	}
+	if strings.HasSuffix(name, "~") || strings.HasSuffix(name, ".swp") || strings.HasSuffix(name, ".swx") || strings.HasSuffix(name, ".tmp") {
+		return true
+	}
+	return strings.Contains(name, ".tmp-")
 }

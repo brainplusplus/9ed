@@ -67,6 +67,7 @@ func tryBore(bin, localPort string, remotePort int) (*Tunnel, error) {
 
 	t := newTunnel("bore", cmd, cancel)
 
+	go t.waitAndReap()
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 
 	urlCh := make(chan string, 1)
@@ -83,7 +84,6 @@ func tryBore(bin, localPort string, remotePort int) (*Tunnel, error) {
 		return t, err
 	}
 
-	go t.waitAndReap()
 	return t, nil
 }
 

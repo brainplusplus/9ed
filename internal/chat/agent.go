@@ -15,23 +15,28 @@ import (
 type ChatEvent struct {
 	Type string `json:"type"`
 
-	Text      string `json:"text,omitempty"`
-	Thinking  string `json:"thinking,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	ToolTitle  string `json:"toolTitle,omitempty"`
-	ToolKind   string `json:"toolKind,omitempty"`
-	ToolStatus string `json:"toolStatus,omitempty"`
-	ToolContent string `json:"toolContent,omitempty"`
-	ToolLocations []ToolLocation `json:"toolLocations,omitempty"`
-	DiffPath    string `json:"diffPath,omitempty"`
-	DiffOldText string `json:"diffOldText,omitempty"`
-	DiffNewText string `json:"diffNewText,omitempty"`
-	PlanEntries []PlanEntry `json:"planEntries,omitempty"`
-	Commands []CommandInfo `json:"commands,omitempty"`
+	Text          string             `json:"text,omitempty"`
+	Thinking      string             `json:"thinking,omitempty"`
+	ToolCallID    string             `json:"toolCallId,omitempty"`
+	ToolTitle     string             `json:"toolTitle,omitempty"`
+	ToolKind      string             `json:"toolKind,omitempty"`
+	ToolStatus    string             `json:"toolStatus,omitempty"`
+	ToolContent   string             `json:"toolContent,omitempty"`
+	ToolLocations []ToolLocation     `json:"toolLocations,omitempty"`
+	DiffPath      string             `json:"diffPath,omitempty"`
+	DiffOldText   string             `json:"diffOldText,omitempty"`
+	DiffNewText   string             `json:"diffNewText,omitempty"`
+	PlanEntries   []PlanEntry        `json:"planEntries,omitempty"`
+	Commands      []CommandInfo      `json:"commands,omitempty"`
 	ConfigOptions []ConfigOptionInfo `json:"configOptions,omitempty"`
-	Title string `json:"title,omitempty"`
-	StopReason string `json:"stopReason,omitempty"`
-	Error string `json:"error,omitempty"`
+	Title         string             `json:"title,omitempty"`
+	StopReason    string             `json:"stopReason,omitempty"`
+	Error         string             `json:"error,omitempty"`
+
+	ContextWindow int     `json:"contextWindow,omitempty"`
+	ContextUsed   int     `json:"contextUsed,omitempty"`
+	CostAmount    float64 `json:"costAmount,omitempty"`
+	CostCurrency  string  `json:"costCurrency,omitempty"`
 
 	PermissionID      string             `json:"permissionId,omitempty"`
 	PermissionTitle   string             `json:"permissionTitle,omitempty"`
@@ -51,13 +56,13 @@ type CommandInfo struct {
 }
 
 type ConfigOptionInfo struct {
-	ID           string             `json:"id"`
-	Name         string             `json:"name"`
-	Description  string             `json:"description,omitempty"`
-	Category     string             `json:"category,omitempty"`
-	Type         string             `json:"type"`
-	CurrentValue string             `json:"currentValue"`
-	Options      []ConfigValueInfo  `json:"options"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Description  string            `json:"description,omitempty"`
+	Category     string            `json:"category,omitempty"`
+	Type         string            `json:"type"`
+	CurrentValue string            `json:"currentValue"`
+	Options      []ConfigValueInfo `json:"options"`
 }
 
 type ConfigValueInfo struct {
@@ -155,6 +160,7 @@ type acpSession struct {
 	workDir      string
 	adapter      *acp.Adapter
 	sessionID    string
+	ctx          context.Context
 	events       chan ChatEvent
 	done         chan struct{}
 	cancelFn     context.CancelFunc
@@ -202,6 +208,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 		workDir:      workDir,
 		adapter:      adapter,
 		sessionID:    result.SessionID,
+		ctx:          acpCtx,
 		events:       make(chan ChatEvent, 128),
 		done:         make(chan struct{}),
 		cancelFn:     cancel,
@@ -254,6 +261,7 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		workDir:      workDir,
 		adapter:      adapter,
 		sessionID:    result.SessionID,
+		ctx:          acpCtx,
 		events:       make(chan ChatEvent, 128),
 		done:         make(chan struct{}),
 		cancelFn:     cancel,
@@ -277,10 +285,10 @@ func (s *acpSession) flushText() {
 	}
 }
 
-func (s *acpSession) ID() string          { return s.id }
-func (s *acpSession) AgentID() string     { return s.agentID }
-func (s *acpSession) WorkDir() string     { return s.workDir }
-func (s *acpSession) Mode() SessionMode   { return ModeACP }
+func (s *acpSession) ID() string               { return s.id }
+func (s *acpSession) AgentID() string          { return s.agentID }
+func (s *acpSession) WorkDir() string          { return s.workDir }
+func (s *acpSession) Mode() SessionMode        { return ModeACP }
 func (s *acpSession) Events() <-chan ChatEvent { return s.events }
 func (s *acpSession) Done() <-chan struct{}    { return s.done }
 func (s *acpSession) ACPSessionID() string     { return s.sessionID }
@@ -306,13 +314,13 @@ func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string
 	return nil
 }
 
-func (s *acpSession) Send(ctx context.Context, message string) error {
+func (s *acpSession) Send(_ context.Context, message string) error {
 	content := []acp.ContentBlock{
 		{Type: "text", Text: message},
 	}
 
 	go func() {
-		result, err := s.adapter.Prompt(ctx, s.sessionID, content)
+		result, err := s.adapter.Prompt(s.ctx, s.sessionID, content)
 		if err != nil {
 			s.promptDone <- nil
 			s.events <- ChatEvent{Type: "error", Error: err.Error()}
@@ -392,7 +400,7 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 		return
 	}
 
-	debug.Printf("[ACP] session_update: %s", base.SessionUpdate)
+	debug.Printf("[ACP] session_update: %s raw: %.500s", base.SessionUpdate, string(params.Update))
 
 	if base.SessionUpdate != acp.UpdateAgentMessageChunk {
 		s.flushText()
@@ -502,8 +510,60 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 
 	case acp.UpdateSessionInfoUpdate:
 		var update acp.SessionInfoUpdateNotification
-		if jsonUnmarshal(params.Update, &update) == nil && update.Title != "" {
-			s.events <- ChatEvent{Type: "title", Title: update.Title}
+		if jsonUnmarshal(params.Update, &update) == nil {
+			ctxWindow := update.ContextWindow
+			ctxUsed := update.ContextUsed
+			// Fallback: try alternate field locations
+			if ctxWindow == 0 && update.TokenUsage.ContextWindow > 0 {
+				ctxWindow = update.TokenUsage.ContextWindow
+			}
+			if ctxUsed == 0 && update.TokenUsage.TotalTokens > 0 {
+				ctxUsed = update.TokenUsage.TotalTokens
+			}
+			// Also try reading raw JSON for any context-related fields
+			if ctxWindow == 0 || ctxUsed == 0 {
+				var raw map[string]any
+				if jsonUnmarshal(params.Update, &raw) == nil {
+					if ctxUsed == 0 {
+						if v, ok := raw["totalTokens"]; ok {
+							if f, ok := toFloat(v); ok && f > 0 {
+								ctxUsed = int(f)
+							}
+						}
+						if v, ok := raw["tokensUsed"]; ok {
+							if f, ok := toFloat(v); ok && f > 0 {
+								ctxUsed = int(f)
+							}
+						}
+					}
+					if ctxWindow == 0 {
+						if v, ok := raw["maxTokens"]; ok {
+							if f, ok := toFloat(v); ok && f > 0 {
+								ctxWindow = int(f)
+							}
+						}
+					}
+				}
+			}
+			debug.Printf("[ACP] session_info: title=%q contextWindow=%d contextUsed=%d", update.Title, ctxWindow, ctxUsed)
+			evt := ChatEvent{Type: "session_info", ContextWindow: ctxWindow, ContextUsed: ctxUsed}
+			if update.Title != "" {
+				evt.Title = update.Title
+			}
+			s.events <- evt
+		}
+
+	case acp.UpdateUsageUpdate:
+		var update acp.UsageUpdateNotification
+		if jsonUnmarshal(params.Update, &update) == nil {
+			debug.Printf("[ACP] usage_update: used=%d size=%d cost=%.4f%s", update.Used, update.Size, update.Cost.Amount, update.Cost.Currency)
+			s.events <- ChatEvent{
+				Type:          "session_info",
+				ContextWindow: update.Size,
+				ContextUsed:   update.Used,
+				CostAmount:    update.Cost.Amount,
+				CostCurrency:  update.Cost.Currency,
+			}
 		}
 	}
 }
@@ -622,5 +682,20 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 			Code:    -32601,
 			Message: "method not supported: " + req.Method,
 		})
+	}
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
 	}
 }

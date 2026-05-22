@@ -3,6 +3,7 @@ import { useGitStore } from '../stores/git';
 
 const POLL_INTERVAL = 5000;
 const DEBOUNCE_DELAY = 1000;
+const INITIAL_REFRESH_DELAY = 1200;
 
 export function useGitStatus(projectPath: string | null) {
   const refresh = useGitStore((s) => s.refresh);
@@ -11,13 +12,16 @@ export function useGitStatus(projectPath: string | null) {
   useEffect(() => {
     if (!projectPath) return;
 
-    refresh(projectPath);
+    const initialTimer = setTimeout(() => {
+      void refresh(projectPath);
+    }, INITIAL_REFRESH_DELAY);
 
     const interval = setInterval(() => {
-      refresh(projectPath);
-    }, POLL_INTERVAL);
+      void refresh(projectPath);
+    }, POLL_INTERVAL + INITIAL_REFRESH_DELAY);
 
     return () => {
+      clearTimeout(initialTimer);
       clearInterval(interval);
     };
   }, [projectPath, refresh]);

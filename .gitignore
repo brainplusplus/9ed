@@ -8,3 +8,6 @@ coverage/
 .server.pid
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+.omx/
+.opencode-jce/
+.opencode-context.md

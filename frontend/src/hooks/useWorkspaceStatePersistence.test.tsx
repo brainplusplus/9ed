@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useWorkspaceStatePersistence } from './useWorkspaceStatePersistence';
+import { restoreWorkspaceState, useWorkspaceStatePersistence } from './useWorkspaceStatePersistence';
 import { useWorkspaceStore } from '../stores/workspace';
 import { useChatStore } from '../stores/chat';
 
@@ -60,6 +60,7 @@ function resetStores() {
     chatVisible: false,
     historySessions: [],
     historyLoaded: false,
+    historyWorkDir: null,
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,
@@ -136,5 +137,79 @@ describe('useWorkspaceStatePersistence', () => {
     expect(saveWorkspaceState).toHaveBeenCalledWith('/repo', expect.objectContaining({
       lastChatSessionId: 'record-20',
     }));
+  });
+
+  it('does not overwrite last chat session with undefined during bootstrap restore', async () => {
+    getWorkspaceState.mockResolvedValue({
+      openFiles: [],
+      activeFilePath: null,
+      sidebarPanel: 'explorer',
+      chatVisible: true,
+      lastChatSessionId: 'record-bootstrap',
+    });
+    const loadHistory = vi.fn().mockImplementation(async () => {
+      act(() => {
+        useWorkspaceStore.getState().setActivePanel('git');
+      });
+    });
+    const restoreSessionForProject = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      historyLoaded: false,
+      historyWorkDir: null,
+      loadHistory,
+      restoreSessionForProject,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await restoreWorkspaceState('/repo', 'project-1');
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(restoreSessionForProject).toHaveBeenCalledWith('/repo', 'record-bootstrap');
+    expect(saveWorkspaceState).not.toHaveBeenCalledWith('/repo', expect.objectContaining({
+      lastChatSessionId: undefined,
+    }));
+  });
+
+  it('restores latest project chat even when workspace state is missing', async () => {
+    const loadHistory = vi.fn().mockResolvedValue(undefined);
+    const restoreSessionForProject = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      historyLoaded: false,
+      historyWorkDir: null,
+      loadHistory,
+      restoreSessionForProject,
+    });
+    getWorkspaceState.mockResolvedValue(null);
+
+    await restoreWorkspaceState('/repo', 'project-1');
+
+    expect(loadHistory).toHaveBeenCalledWith('/repo');
+    expect(restoreSessionForProject).toHaveBeenCalledWith('/repo', undefined);
+  });
+
+  it('falls back to latest project chat when saved workspace has no last chat id', async () => {
+    const loadHistory = vi.fn().mockResolvedValue(undefined);
+    const restoreSessionForProject = vi.fn().mockResolvedValue(undefined);
+    useChatStore.setState({
+      historyLoaded: false,
+      historyWorkDir: null,
+      loadHistory,
+      restoreSessionForProject,
+    });
+    getWorkspaceState.mockResolvedValue({
+      openFiles: [],
+      activeFilePath: null,
+      sidebarPanel: 'explorer',
+      chatVisible: true,
+    });
+
+    await restoreWorkspaceState('/repo', 'project-1');
+
+    expect(loadHistory).toHaveBeenCalledWith('/repo');
+    expect(restoreSessionForProject).toHaveBeenCalledWith('/repo', undefined);
   });
 });

@@ -7,13 +7,15 @@ import (
 )
 
 type SessionManager struct {
-	sessions map[string]ChatSession
-	mu       sync.Mutex
+	sessions  map[string]ChatSession
+	recordIDs map[string]string
+	mu        sync.Mutex
 }
 
 func NewSessionManager() *SessionManager {
 	return &SessionManager{
-		sessions: make(map[string]ChatSession),
+		sessions:  make(map[string]ChatSession),
+		recordIDs: make(map[string]string),
 	}
 }
 
@@ -29,6 +31,7 @@ func (m *SessionManager) Create(ctx context.Context, agent AgentDescriptor, work
 
 	m.mu.Lock()
 	m.sessions[session.ID()] = session
+	m.recordIDs[session.ID()] = session.ID()
 	m.mu.Unlock()
 
 	return session, nil
@@ -66,6 +69,7 @@ func (m *SessionManager) Remove(id string) {
 	s, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		delete(m.recordIDs, id)
 	}
 	m.mu.Unlock()
 
@@ -87,6 +91,47 @@ func (m *SessionManager) List() []ChatSession {
 func (m *SessionManager) IsLive(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.sessions[id]
-	return ok
+	if _, ok := m.sessions[id]; ok {
+		return true
+	}
+	for _, recordID := range m.recordIDs {
+		if recordID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *SessionManager) LinkRecordID(liveSessionID, recordID string) {
+	if liveSessionID == "" || recordID == "" {
+		return
+	}
+	m.mu.Lock()
+	m.recordIDs[liveSessionID] = recordID
+	m.mu.Unlock()
+}
+
+func (m *SessionManager) RecordIDFor(liveSessionID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if recordID, ok := m.recordIDs[liveSessionID]; ok && recordID != "" {
+		return recordID
+	}
+	return liveSessionID
+}
+
+func (m *SessionManager) LiveIDForRecordID(recordID string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[recordID]; ok {
+		return recordID, true
+	}
+	for liveID, mappedRecordID := range m.recordIDs {
+		if mappedRecordID == recordID {
+			if _, ok := m.sessions[liveID]; ok {
+				return liveID, true
+			}
+		}
+	}
+	return "", false
 }

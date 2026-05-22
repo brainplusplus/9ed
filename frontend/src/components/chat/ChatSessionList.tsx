@@ -21,6 +21,7 @@ function formatSessionTitle(agentId: string, title: string): string {
 }
 
 function SessionStatusIcon({ status, kind }: { status: string; kind: string }) {
+  if (status === 'connecting') return <span className="session-status-icon session-status-connecting" title="Connecting">○</span>;
   if (kind === 'archived') return <span className="session-status-icon session-status-archived" title="Archived">◷</span>;
   if (kind === 'resumable') return <span className="session-status-icon session-status-resumable" title="Resumable">↻</span>;
   switch (status) {
@@ -38,6 +39,7 @@ export function ChatSessionList() {
   const deleteSessionStore = useChatStore((s) => s.deleteSession);
   const historySessions = useChatStore((s) => s.historySessions);
   const historyLoaded = useChatStore((s) => s.historyLoaded);
+  const historyWorkDir = useChatStore((s) => s.historyWorkDir);
   const loadHistory = useChatStore((s) => s.loadHistory);
   const loadHistorySession = useChatStore((s) => s.loadHistorySession);
   const deleteHistorySession = useChatStore((s) => s.deleteHistorySession);
@@ -49,10 +51,10 @@ export function ChatSessionList() {
   const [overlayStyle, setOverlayStyle] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!historyLoaded) {
+    if (!historyLoaded || historyWorkDir !== (activeProject?.path ?? null)) {
       loadHistory(activeProject?.path);
     }
-  }, [activeProject?.path, historyLoaded, loadHistory]);
+  }, [activeProject?.path, historyLoaded, historyWorkDir, loadHistory]);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;

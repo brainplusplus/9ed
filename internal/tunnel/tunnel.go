@@ -243,22 +243,32 @@ func installBinary(dest, toolName string) error {
 	}
 	tmp.Close()
 
-	switch goos {
-	case "windows":
+	switch {
+	case strings.HasSuffix(filename, ".zip"):
 		if err := extractZip(tmpPath, dest, toolName); err != nil {
 			return fmt.Errorf("extract zip: %w", err)
 		}
-	case "darwin":
-		if err := os.Rename(tmpPath, dest); err != nil {
-			return fmt.Errorf("rename: %w", err)
-		}
-	default:
+	case strings.HasSuffix(filename, ".tar.gz"):
 		if err := extractTarGz(tmpPath, dest, toolName); err != nil {
 			return fmt.Errorf("extract tar.gz: %w", err)
 		}
+	default:
+		// Raw binary (e.g., cloudflared on macOS)
+		if err := os.Rename(tmpPath, dest); err != nil {
+			return fmt.Errorf("rename: %w", err)
+		}
 	}
 
-	return os.Chmod(dest, 0o755)
+	if err := os.Chmod(dest, 0o755); err != nil {
+		return err
+	}
+
+	// Clear macOS quarantine so downloaded binary can run without Gatekeeper block.
+	if runtime.GOOS == "darwin" {
+		_ = exec.Command("xattr", "-d", "com.apple.quarantine", dest).Run()
+	}
+
+	return nil
 }
 
 func resolveLatestTag(repo string) (string, error) {

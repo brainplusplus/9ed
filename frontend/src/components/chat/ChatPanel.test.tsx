@@ -21,10 +21,12 @@ Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
 
 const getChatAgents = vi.fn();
 const createChatSession = vi.fn();
+const resumeChatSession = vi.fn();
 
 vi.mock('../../api', () => ({
   getChatAgents: () => getChatAgents(),
   createChatSession: (...args: unknown[]) => createChatSession(...args),
+  resumeChatSession: (...args: unknown[]) => resumeChatSession(...args),
 }));
 
 vi.mock('../../hooks/useChatSession', () => ({
@@ -58,6 +60,7 @@ function resetStores() {
     chatVisible: false,
     historySessions: [],
     historyLoaded: false,
+    historyWorkDir: null,
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,
@@ -91,6 +94,7 @@ describe('ChatPanel new chat', () => {
     resetStores();
     getChatAgents.mockResolvedValue([{ id: 'opencode', label: 'OpenCode', available: true, configFound: true, activeModel: '', models: [], providers: [] }]);
     createChatSession.mockResolvedValue({ id: 'live-99' });
+    resumeChatSession.mockResolvedValue({ id: 'live-resumed', mode: 'acp', acpSessionId: 'new-acp', workDir: '/repo' });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -116,5 +120,59 @@ describe('ChatPanel new chat', () => {
     });
 
     expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo');
+  });
+
+  it('shows loading state instead of no-agents while agent fetch is pending', async () => {
+    getChatAgents.mockReturnValue(new Promise(() => {}));
+    useChatStore.setState({
+      agents: [],
+      selectedAgentId: null,
+    });
+
+    await act(async () => {
+      root.render(<ChatPanel />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Loading agents...');
+    expect(container.textContent).not.toContain('No agents available');
+  });
+
+  it('auto-resumes an archived active session only once per in-flight request', async () => {
+    let releaseResume: ((value: { id: string; mode: string; acpSessionId: string; workDir: string }) => void) | undefined;
+    resumeChatSession.mockImplementation(() => new Promise((resolve) => {
+      releaseResume = resolve as typeof releaseResume;
+    }));
+    useChatStore.setState({
+      sessions: [{
+        id: 'record-auto',
+        recordId: 'record-auto',
+        agentId: 'opencode',
+        title: 'Auto resume',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'archived',
+        workDir: '/repo',
+      }],
+      activeSessionId: 'record-auto',
+    });
+
+    await act(async () => {
+      root.render(<ChatPanel />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(<ChatPanel />);
+      await Promise.resolve();
+    });
+
+    expect(resumeChatSession).toHaveBeenCalledTimes(1);
+    releaseResume!({ id: 'live-auto', mode: 'acp', acpSessionId: 'auto-acp', workDir: '/repo' });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(useChatStore.getState().activeSessionId).toBe('live-auto');
   });
 });

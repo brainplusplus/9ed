@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,13 +24,25 @@ type SessionManager interface {
 	Remove(id string) error
 }
 
+type ChatRuntimeManager interface {
+	Create(context.Context, chat.AgentDescriptor, string) (chat.ChatSession, error)
+	Resume(context.Context, chat.AgentDescriptor, string, string) (chat.ChatSession, error)
+	Get(string) (chat.ChatSession, bool)
+	Remove(string)
+	List() []chat.ChatSession
+	IsLive(string) bool
+	LinkRecordID(string, string)
+	RecordIDFor(string) string
+	LiveIDForRecordID(string) (string, bool)
+}
+
 type Dependencies struct {
 	Shells             []shells.Profile
 	Sessions           SessionManager
 	Mode               string
 	WorkspaceRoot      string
 	Watcher            *watcher.FileWatcher
-	ChatSessionManager *chat.SessionManager
+	ChatSessionManager ChatRuntimeManager
 	ChatStore          *chat.ChatStore
 }
 
@@ -40,8 +53,9 @@ type API struct {
 	mode               string
 	workspaceRoot      string
 	watcher            *watcher.FileWatcher
-	chatSessionManager *chat.SessionManager
+	chatSessionManager ChatRuntimeManager
 	chatStore          *chat.ChatStore
+	chatStreams        *chatStreamRegistry
 }
 
 func New(deps Dependencies) *API {
@@ -54,6 +68,7 @@ func New(deps Dependencies) *API {
 		watcher:            deps.Watcher,
 		chatSessionManager: deps.ChatSessionManager,
 		chatStore:          deps.ChatStore,
+		chatStreams:        newChatStreamRegistry(),
 	}
 }
 

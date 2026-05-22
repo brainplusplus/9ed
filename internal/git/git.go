@@ -2,10 +2,14 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const commandTimeout = 10 * time.Second
 
 // Repo provides git operations scoped to a directory.
 type Repo struct {
@@ -30,7 +34,10 @@ func (r *Repo) IsRepo() bool {
 
 // exec runs a git command in the repo directory and returns trimmed stdout.
 func (r *Repo) exec(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = r.dir
 
 	var stdout, stderr bytes.Buffer
@@ -38,6 +45,9 @@ func (r *Repo) exec(args ...string) (string, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s: timed out after %s", strings.Join(args, " "), commandTimeout)
+		}
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
 	}
 

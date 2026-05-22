@@ -97,6 +97,7 @@ describe('TerminalView', () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -115,6 +116,7 @@ describe('TerminalView', () => {
       root.unmount();
     });
     container.remove();
+    vi.useRealTimers();
   });
 
   it('does not recreate the websocket when only the status callback identity changes', () => {
@@ -133,6 +135,9 @@ describe('TerminalView', () => {
 
     act(() => {
       root.render(<TerminalView tab={tab} active onStatusChange={() => undefined} />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(450);
     });
 
     expect(createSessionWebSocket).toHaveBeenCalledTimes(1);
@@ -160,6 +165,9 @@ describe('TerminalView', () => {
 
     act(() => {
       root.render(<TerminalView tab={tab} active onStatusChange={() => undefined} />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(450);
     });
 
     act(() => {

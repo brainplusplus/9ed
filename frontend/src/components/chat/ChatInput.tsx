@@ -11,6 +11,7 @@ type ChatInputProps = {
   onCancel: () => void;
   streaming: boolean;
   disabled: boolean;
+  canSend?: boolean;
 };
 
 export type Attachment = {
@@ -19,7 +20,7 @@ export type Attachment = {
   name: string;
 };
 
-export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = true }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -139,7 +140,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled) return;
+    if ((!trimmed && attachments.length === 0) || disabled || !canSend) return;
 
     if (streaming && activeSessionId) {
       const queuedMsg: QueuedMessage = {
@@ -159,7 +160,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [value, attachments, streaming, disabled, onSend, activeSessionId, enqueueMessage]);
+  }, [value, attachments, streaming, disabled, canSend, onSend, activeSessionId, enqueueMessage]);
 
   const selectCommand = useCallback((name: string) => {
     setValue('/' + name + ' ');
@@ -169,6 +170,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      const isPlainEnter = (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13) && !e.shiftKey;
       if (mentionResults.length > 0 && mentionQuery !== null) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
@@ -180,7 +182,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
           setMentionIdx((i) => Math.max(i - 1, 0));
           return;
         }
-        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        if (e.key === 'Tab' || isPlainEnter) {
           e.preventDefault();
           selectMention(mentionResults[mentionIdx]);
           return;
@@ -200,7 +202,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
           setSelectedIdx((i) => Math.max(i - 1, 0));
           return;
         }
-        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        if (e.key === 'Tab' || isPlainEnter) {
           e.preventDefault();
           selectCommand(filteredCommands[selectedIdx].name);
           return;
@@ -209,7 +211,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
           setValue('');
           return;
         }
-      } else if (e.key === 'Enter' && !e.shiftKey) {
+      } else if (isPlainEnter) {
         e.preventDefault();
         handleSend();
       }
@@ -299,7 +301,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled }: ChatInputPr
             <button
               className="chat-send-btn"
               onClick={handleSend}
-              disabled={(!value.trim() && attachments.length === 0) || disabled}
+              disabled={(!value.trim() && attachments.length === 0) || disabled || !canSend}
               type="button"
               title="Send message"
             >

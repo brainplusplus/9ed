@@ -6,6 +6,9 @@ import '@xterm/xterm/css/xterm.css';
 import { createSessionWebSocket } from '../api';
 import type { SessionTab, TerminalAction, WebSocketIncomingMessage, WebSocketOutgoingMessage } from '../types';
 
+const TERMINAL_INITIAL_CONNECT_DELAY_MS = 450;
+const TERMINAL_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000];
+
 type TerminalViewProps = {
   tab: SessionTab;
   active: boolean;
@@ -19,6 +22,7 @@ export function TerminalView(props: TerminalViewProps) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStatusChangeRef = useRef(onStatusChange);
 
   useEffect(() => {
@@ -56,40 +60,76 @@ export function TerminalView(props: TerminalViewProps) {
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
-    const socket = createSessionWebSocket(tab.id);
-    socketRef.current = socket;
+    let disposed = false;
+    let reconnectAttempt = 0;
 
     const sendMessage = (message: WebSocketOutgoingMessage) => {
-      if (socket.readyState === WebSocket.OPEN) {
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(message));
       }
     };
 
-    socket.addEventListener('open', () => {
-      onStatusChangeRef.current(tab.id, 'ready');
-      fitAddon.fit();
-      sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
-    });
+    const connect = () => {
+      if (disposed) return;
+      const socket = createSessionWebSocket(tab.id);
+      socketRef.current = socket;
 
-    socket.addEventListener('message', (event) => {
-      const message = JSON.parse(String(event.data)) as WebSocketIncomingMessage;
-      if (message.type === 'output') {
-        terminal.write(message.data);
-        return;
-      }
+      socket.addEventListener('open', () => {
+        if (disposed || socketRef.current !== socket) return;
+        reconnectAttempt = 0;
+        onStatusChangeRef.current(tab.id, 'ready');
+        fitAddon.fit();
+        sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
+      });
 
-      if (message.type === 'error') {
-        onStatusChangeRef.current(tab.id, 'error', message.data);
-      }
-    });
+      socket.addEventListener('message', (event) => {
+        if (disposed || socketRef.current !== socket) return;
+        const message = JSON.parse(String(event.data)) as WebSocketIncomingMessage;
+        if (message.type === 'output') {
+          terminal.write(message.data);
+          return;
+        }
 
-    socket.addEventListener('close', () => {
-      onStatusChangeRef.current(tab.id, 'disconnected');
-    });
+        if (message.type === 'error') {
+          onStatusChangeRef.current(tab.id, 'error', message.data);
+        }
+      });
 
-    socket.addEventListener('error', () => {
-      onStatusChangeRef.current(tab.id, 'error', 'WebSocket connection failed');
-    });
+      const scheduleReconnect = () => {
+        if (disposed || reconnectTimerRef.current) return;
+        if (reconnectAttempt >= TERMINAL_RECONNECT_DELAYS_MS.length) {
+          onStatusChangeRef.current(tab.id, 'error', 'Terminal connection failed');
+          return;
+        }
+        onStatusChangeRef.current(tab.id, 'disconnected');
+        const delay = TERMINAL_RECONNECT_DELAYS_MS[reconnectAttempt];
+        reconnectAttempt += 1;
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          connect();
+        }, delay);
+      };
+
+      socket.addEventListener('close', () => {
+        if (disposed || socketRef.current !== socket) return;
+        scheduleReconnect();
+      });
+
+      socket.addEventListener('error', () => {
+        if (disposed || socketRef.current !== socket) return;
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        } else {
+          scheduleReconnect();
+        }
+      });
+    };
+
+    const initialTimer = setTimeout(() => {
+      onStatusChangeRef.current(tab.id, 'connecting');
+      connect();
+    }, TERMINAL_INITIAL_CONNECT_DELAY_MS);
 
     const disposable = terminal.onData((data) => {
       sendMessage({ type: 'input', data });
@@ -103,9 +143,15 @@ export function TerminalView(props: TerminalViewProps) {
     window.addEventListener('resize', handleResize);
 
     return () => {
+      disposed = true;
+      clearTimeout(initialTimer);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       window.removeEventListener('resize', handleResize);
       disposable.dispose();
-      socket.close();
+      socketRef.current?.close();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;

@@ -38,15 +38,15 @@ func startCloudflare(port string) (*Tunnel, error) {
 
 	t := newTunnel("cloudflare", cmd, cancel)
 
+	go t.waitAndReap()
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 
 	urlCh := make(chan string, 1)
 	go scanLines(stderr, "cloudflared", cloudflaredURLPattern, urlCh)
 
-	if err := waitForURL(urlCh, 45*time.Second, t, "cloudflared"); err != nil {
+	if err := waitForURL(urlCh, 45*time.Second, t, "cloudflare"); err != nil {
 		return nil, err
 	}
 
-	go t.waitAndReap()
 	return t, nil
 }

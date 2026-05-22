@@ -5,6 +5,9 @@ import { getWorkspaceState, saveWorkspaceState, getFileContent } from '../api';
 import type { WorkspaceState } from '../api';
 import type { FileTab } from '../types';
 
+const restoringProjects = new Set<string>();
+const lastKnownChatSessionByProject = new Map<string, string>();
+
 function languageFromPath(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   const map: Record<string, string> = {
@@ -22,21 +25,22 @@ function languageFromPath(filePath: string): string {
 
 export function useWorkspaceStatePersistence() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restoringRef = useRef(false);
 
   const scheduleSave = (projectPath: string, state: WorkspaceState) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      if (state.lastChatSessionId) {
+        lastKnownChatSessionByProject.set(projectPath, state.lastChatSessionId);
+      }
       void saveWorkspaceState(projectPath, state);
     }, 1000);
   };
 
   useEffect(() => {
     const unsubscribe = useWorkspaceStore.subscribe((state, prevState) => {
-      if (restoringRef.current) return;
-
       const activeProject = state.projects.find((p) => p.id === state.activeProjectId);
       if (!activeProject) return;
+      if (restoringProjects.has(activeProject.path)) return;
 
       const prevProject = prevState.projects.find((p) => p.id === prevState.activeProjectId);
       const changed =
@@ -49,6 +53,10 @@ export function useWorkspaceStatePersistence() {
 
       const chatState = useChatStore.getState();
       const activeChatSession = chatState.sessions.find((session) => session.id === chatState.activeSessionId) ?? null;
+      const lastChatSessionId =
+        activeChatSession?.recordId ??
+        chatState.activeSessionId ??
+        lastKnownChatSessionByProject.get(activeProject.path);
       const wsState: WorkspaceState = {
         openFiles: activeProject.openFiles.map((f) => ({
           path: f.path,
@@ -58,7 +66,7 @@ export function useWorkspaceStatePersistence() {
         activeFilePath: activeProject.openFiles.find((f) => f.id === activeProject.activeFileId)?.path ?? null,
         sidebarPanel: state.activePanel,
         chatVisible: state.chatVisible,
-        lastChatSessionId: activeChatSession?.recordId ?? chatState.activeSessionId ?? undefined,
+        lastChatSessionId,
       };
       scheduleSave(activeProject.path, wsState);
     });
@@ -71,14 +79,18 @@ export function useWorkspaceStatePersistence() {
 
   useEffect(() => {
     const unsubscribe = useChatStore.subscribe((state, prevState) => {
-      if (restoringRef.current) return;
       if (state.activeSessionId === prevState.activeSessionId && state.sessions === prevState.sessions) return;
 
       const workspace = useWorkspaceStore.getState();
       const activeProject = workspace.projects.find((p) => p.id === workspace.activeProjectId);
       if (!activeProject) return;
+      if (restoringProjects.has(activeProject.path)) return;
 
       const activeChatSession = state.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+      const lastChatSessionId =
+        activeChatSession?.recordId ??
+        state.activeSessionId ??
+        lastKnownChatSessionByProject.get(activeProject.path);
       const wsState: WorkspaceState = {
         openFiles: activeProject.openFiles.map((f) => ({
           path: f.path,
@@ -88,7 +100,7 @@ export function useWorkspaceStatePersistence() {
         activeFilePath: activeProject.openFiles.find((f) => f.id === activeProject.activeFileId)?.path ?? null,
         sidebarPanel: workspace.activePanel,
         chatVisible: workspace.chatVisible,
-        lastChatSessionId: activeChatSession?.recordId ?? state.activeSessionId ?? undefined,
+        lastChatSessionId,
       };
       scheduleSave(activeProject.path, wsState);
     });
@@ -98,54 +110,58 @@ export function useWorkspaceStatePersistence() {
 }
 
 export async function restoreWorkspaceState(projectPath: string, projectId: string): Promise<void> {
-  const saved = await getWorkspaceState(projectPath);
-  if (!saved) return;
+  restoringProjects.add(projectPath);
+  try {
+    const saved = await getWorkspaceState(projectPath).catch(() => null);
+    if (saved?.lastChatSessionId) {
+      lastKnownChatSessionByProject.set(projectPath, saved.lastChatSessionId);
+    }
+    const store = useWorkspaceStore.getState();
 
-  const store = useWorkspaceStore.getState();
+    if (saved?.openFiles && saved.openFiles.length > 0) {
+      for (const fileInfo of saved.openFiles) {
+        try {
+          const content = await getFileContent(fileInfo.path);
+          const fileTab: FileTab = {
+            id: fileInfo.path,
+            path: fileInfo.path,
+            name: fileInfo.name,
+            content: content.content,
+            language: fileInfo.language || languageFromPath(fileInfo.path),
+            modified: false,
+          };
+          store.openFile(projectId, fileTab);
+        } catch {
+        }
+      }
 
-  if (saved.openFiles && saved.openFiles.length > 0) {
-    for (const fileInfo of saved.openFiles) {
-      try {
-        const content = await getFileContent(fileInfo.path);
-        const fileTab: FileTab = {
-          id: fileInfo.path,
-          path: fileInfo.path,
-          name: fileInfo.name,
-          content: content.content,
-          language: fileInfo.language || languageFromPath(fileInfo.path),
-          modified: false,
-        };
-        store.openFile(projectId, fileTab);
-      } catch {
+      if (saved?.activeFilePath) {
+        const updatedStore = useWorkspaceStore.getState();
+        const project = updatedStore.projects.find((p) => p.id === projectId);
+        const activeFile = project?.openFiles.find((f) => f.path === saved.activeFilePath);
+        if (activeFile) {
+          store.setActiveFile(projectId, activeFile.id);
+        }
       }
     }
 
-    if (saved.activeFilePath) {
-      const updatedStore = useWorkspaceStore.getState();
-      const project = updatedStore.projects.find((p) => p.id === projectId);
-      const activeFile = project?.openFiles.find((f) => f.path === saved.activeFilePath);
-      if (activeFile) {
-        store.setActiveFile(projectId, activeFile.id);
+    if (saved?.sidebarPanel) {
+      store.setActivePanel(saved.sidebarPanel as import('../types').ActivePanel);
+    }
+
+    if (saved?.chatVisible !== undefined) {
+      const current = useWorkspaceStore.getState().chatVisible;
+      if (current !== saved.chatVisible) {
+        store.toggleChat();
       }
     }
-  }
 
-  if (saved.sidebarPanel) {
-    store.setActivePanel(saved.sidebarPanel as import('../types').ActivePanel);
-  }
-
-  if (saved.chatVisible !== undefined) {
-    const current = useWorkspaceStore.getState().chatVisible;
-    if (current !== saved.chatVisible) {
-      store.toggleChat();
-    }
-  }
-
-  if (saved.lastChatSessionId) {
     const chatStore = useChatStore.getState();
-    if (!chatStore.historyLoaded) {
-      await chatStore.loadHistory(projectPath);
+    if (!chatStore.historyLoaded || chatStore.historyWorkDir !== projectPath) {
+      await chatStore.loadHistory(projectPath).catch(() => undefined);
     }
-    await useChatStore.getState().restoreSessionForProject(projectPath, saved.lastChatSessionId);
+    await useChatStore.getState().restoreSessionForProject(projectPath, saved?.lastChatSessionId).catch(() => undefined);
+  } finally {
+    restoringProjects.delete(projectPath);
   }
 }

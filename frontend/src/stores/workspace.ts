@@ -14,6 +14,7 @@ type WorkspaceState = {
   addProject: (path: string, name: string) => void;
   removeProject: (id: string) => void;
   setActiveProject: (id: string) => void;
+  restoreLastActiveProject: () => void;
   setActivePanel: (panel: ActivePanel) => void;
   toggleSidebar: () => void;
   toggleTerminal: () => void;
@@ -39,17 +40,78 @@ type WorkspaceState = {
   removeTerminalSession: (projectId: string, sessionId: string) => void;
 };
 
+type StoredActiveProject = {
+  id: string;
+  path: string;
+  name: string;
+};
+
+const ACTIVE_PROJECT_STORAGE_KEY = '9ed.activeProject.v1';
+
+function storage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function readStoredActiveProject(): StoredActiveProject | null {
+  const store = storage();
+  if (!store) return null;
+  try {
+    const raw = store.getItem(ACTIVE_PROJECT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredActiveProject>;
+    if (!parsed.path || !parsed.name) return null;
+    return {
+      id: parsed.id || generateId(),
+      path: parsed.path,
+      name: parsed.name,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredActiveProject(project: Pick<Project, 'id' | 'path' | 'name'> | null): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    if (!project) {
+      store.removeItem(ACTIVE_PROJECT_STORAGE_KEY);
+      return;
+    }
+    store.setItem(ACTIVE_PROJECT_STORAGE_KEY, JSON.stringify({
+      id: project.id,
+      path: project.path,
+      name: project.name,
+    }));
+  } catch {
+  }
 }
 
 function updateProject(projects: Project[], projectId: string, updater: (p: Project) => Project): Project[] {
   return projects.map((p) => (p.id === projectId ? updater(p) : p));
 }
 
+const initialActiveProject = readStoredActiveProject();
+
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
-  projects: [],
-  activeProjectId: null,
+  projects: initialActiveProject ? [{
+    id: initialActiveProject.id,
+    path: initialActiveProject.path,
+    name: initialActiveProject.name,
+    openFiles: [],
+    activeFileId: null,
+    terminalSessions: [],
+  }] : [],
+  activeProjectId: initialActiveProject?.id ?? null,
   activePanel: 'explorer',
   sidebarVisible: true,
   terminalVisible: true,
@@ -57,11 +119,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   showPicker: false,
 
   addProject: (path, name) => {
-    const id = generateId();
     void saveRecentProject(path, name);
     set((state) => ({
-      projects: [...state.projects, { id, path, name, openFiles: [], activeFileId: null, terminalSessions: [] }],
-      activeProjectId: id,
+      ...(() => {
+        const existing = state.projects.find((p) => p.path === path);
+        if (existing) {
+          writeStoredActiveProject(existing);
+          return {
+            projects: state.projects,
+            activeProjectId: existing.id,
+          };
+        }
+        const id = generateId();
+        const project = { id, path, name, openFiles: [], activeFileId: null, terminalSessions: [] };
+        writeStoredActiveProject(project);
+        return {
+          projects: [...state.projects, project],
+          activeProjectId: id,
+        };
+      })(),
       showPicker: false,
     }));
   },
@@ -69,13 +145,42 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   removeProject: (id) =>
     set((state) => {
       const next = state.projects.filter((p) => p.id !== id);
+      const nextActiveId = state.activeProjectId === id ? (next[0]?.id ?? null) : state.activeProjectId;
+      const nextActive = next.find((p) => p.id === nextActiveId) ?? null;
+      writeStoredActiveProject(nextActive);
       return {
         projects: next,
-        activeProjectId: state.activeProjectId === id ? (next[0]?.id ?? null) : state.activeProjectId,
+        activeProjectId: nextActiveId,
       };
     }),
 
-  setActiveProject: (id) => set({ activeProjectId: id }),
+  setActiveProject: (id) => set((state) => {
+    const project = state.projects.find((p) => p.id === id) ?? null;
+    if (project) writeStoredActiveProject(project);
+    return { activeProjectId: id };
+  }),
+
+  restoreLastActiveProject: () => set((state) => {
+    if (state.activeProjectId) return state;
+    const stored = readStoredActiveProject();
+    if (!stored) return state;
+    const existing = state.projects.find((p) => p.path === stored.path);
+    if (existing) {
+      return { activeProjectId: existing.id, showPicker: false };
+    }
+    return {
+      projects: [...state.projects, {
+        id: stored.id,
+        path: stored.path,
+        name: stored.name,
+        openFiles: [],
+        activeFileId: null,
+        terminalSessions: [],
+      }],
+      activeProjectId: stored.id,
+      showPicker: false,
+    };
+  }),
 
   setActivePanel: (panel) => set({ activePanel: panel }),
 

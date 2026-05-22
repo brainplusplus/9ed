@@ -9,10 +9,12 @@ import { useWorkspaceStore } from '../../stores/workspace';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const deleteChatSession = vi.fn();
+const getChatHistory = vi.fn();
 const loadHistorySessionSpy = vi.fn();
 
 vi.mock('../../api', () => ({
   deleteChatSession: (sessionId: string) => deleteChatSession(sessionId),
+  getChatHistory: (workDir?: string) => getChatHistory(workDir),
 }));
 
 function resetStores() {
@@ -57,6 +59,7 @@ function resetStores() {
       updatedAt: Date.now(),
     }],
     historyLoaded: true,
+    historyWorkDir: '/repo',
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,

@@ -34,6 +34,16 @@ function tabTitle(tab: ChatSessionInfo): string {
   return 'New Chat';
 }
 
+function tabStatusText(tab: ChatSessionInfo): string {
+  if (tab.kind === 'archived') {
+    if (tab.status === 'connecting') return 'Reconnecting';
+    if (tab.status === 'error') return 'Resume failed';
+    if (tab.agentId && tab.workDir) return 'Resumable';
+    return 'History';
+  }
+  return statusLabel[tab.status];
+}
+
 export function ChatTabs({ tabs, activeTabId, agents, onSelectTab, onCloseTab }: ChatTabsProps) {
   const stripRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -106,7 +116,7 @@ export function ChatTabs({ tabs, activeTabId, agents, onSelectTab, onCloseTab }:
                 <span className="chat-tab-chip-icon" aria-hidden="true">{agentIcon(tab.agentId)}</span>
                 <span className="chat-tab-chip-copy">
                   <span className="chat-tab-chip-title">{tabTitle(tab)}</span>
-                  <small>{agent?.label ?? tab.agentId} · {statusLabel[tab.status]}</small>
+                  <small>{agent?.label ?? tab.agentId} · {tabStatusText(tab)}</small>
                 </span>
               </button>
               <button className="chat-tab-close" onClick={() => onCloseTab(tab.id)} type="button" aria-label={`Close ${tabTitle(tab)}`}>

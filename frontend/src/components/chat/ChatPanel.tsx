@@ -12,6 +12,37 @@ import { ChatTabs } from './ChatTabs';
 import { ChatSessionList } from './ChatSessionList';
 import type { ChatSessionInfo } from '../../types';
 
+const AGENT_RETRY_DELAYS_MS = [500, 1500, 4000];
+
+function ContextUsageBar({ contextUsed, contextWindow, costAmount, costCurrency }: { contextUsed?: number; contextWindow?: number; costAmount?: number; costCurrency?: string }) {
+  if (!contextUsed || !contextWindow || contextWindow <= 0) return null;
+
+  const pct = Math.min((contextUsed / contextWindow) * 100, 100);
+  const usedK = (contextUsed / 1000).toFixed(1).replace(/\.0$/, '');
+  const windowK = (contextWindow / 1000).toFixed(0);
+  const pctDisplay = pct.toFixed(0);
+
+  let barColor = 'var(--ctx-bar-low)';
+  if (pct > 80) barColor = 'var(--ctx-bar-high, #ef4444)';
+  else if (pct > 60) barColor = 'var(--ctx-bar-mid, #f59e0b)';
+
+  const costStr = costAmount && costAmount > 0 ? `${costCurrency === 'USD' ? '$' : costCurrency ? costCurrency + ' ' : '$'}${costAmount.toFixed(4)}` : '';
+
+  return (
+    <div className="ctx-usage" title={`${contextUsed.toLocaleString()} / ${contextWindow.toLocaleString()} tokens`}>
+      <div className="ctx-usage-label">
+        <span className="ctx-usage-icon">🧠</span>
+        <span className="ctx-usage-text">{usedK}k / {windowK}k</span>
+        <span className="ctx-usage-pct">{pctDisplay}%</span>
+        {costStr && <span className="ctx-usage-cost">{costStr}</span>}
+      </div>
+      <div className="ctx-usage-track">
+        <div className="ctx-usage-fill" style={{ width: `${pct}%`, background: barColor }} />
+      </div>
+    </div>
+  );
+}
+
 export function ChatPanel() {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const activeSession = useChatStore((s) => s.sessions.find((sess) => sess.id === s.activeSessionId));
@@ -23,20 +54,64 @@ export function ChatPanel() {
   const createSessionStore = useChatStore((s) => s.createSession);
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const deleteSessionStore = useChatStore((s) => s.deleteSession);
+  const resumeSession = useChatStore((s) => s.resumeSession);
   const restoring = useChatStore((s) => s.restoring);
   const { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected } = useChatSession();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const autoResumeKeysRef = useRef<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  const [agentsLoading, setAgentsLoading] = useState(agents.length === 0);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
 
   const isStreaming = activeSession?.status === 'streaming';
   const isConnecting = activeSession?.status === 'connecting' || creating;
   const isArchived = activeSession?.kind === 'archived';
+  const canResumeArchived = Boolean(activeSession?.kind === 'archived' && activeSession.agentId && activeSession.workDir);
 
   useEffect(() => {
-    getChatAgents()
-      .then(loadAgents)
-      .catch(() => {});
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const load = async (attempt: number) => {
+      if (cancelled) return;
+      if (attempt === 0) setAgentsLoading(true);
+      try {
+        const nextAgents = await getChatAgents();
+        if (cancelled) return;
+        loadAgents(nextAgents);
+        setAgentsError(null);
+        setAgentsLoading(false);
+        if (nextAgents.length === 0 && attempt < AGENT_RETRY_DELAYS_MS.length) {
+          retryTimer = setTimeout(() => void load(attempt + 1), AGENT_RETRY_DELAYS_MS[attempt]);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setAgentsError(err instanceof Error ? err.message : 'Failed to load agents');
+        if (attempt < AGENT_RETRY_DELAYS_MS.length) {
+          retryTimer = setTimeout(() => void load(attempt + 1), AGENT_RETRY_DELAYS_MS[attempt]);
+          return;
+        }
+        setAgentsLoading(false);
+      }
+    };
+
+    void load(0);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [loadAgents]);
+
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'idle') return;
+    if (activeSession.kind !== 'archived' || !activeSession.agentId || !activeSession.workDir) return;
+    const resumeKey = activeSession.recordId ?? activeSession.id;
+    if (autoResumeKeysRef.current.has(resumeKey)) return;
+    autoResumeKeysRef.current.add(resumeKey);
+    void resumeSession(activeSession.id).finally(() => {
+      autoResumeKeysRef.current.delete(resumeKey);
+    });
+  }, [activeSession?.id, activeSession?.recordId, activeSession?.kind, activeSession?.status, activeSession?.agentId, activeSession?.workDir, resumeSession]);
 
   const messages = activeSession?.messages;
   const lastMsgContent = messages?.[messages.length - 1]?.content;
@@ -52,16 +127,18 @@ export function ChatPanel() {
 
     setCreating(true);
     try {
-      const { id } = await createChatSession(agentId, activeProject?.path);
+      const created = await createChatSession(agentId, activeProject?.path);
       const session: ChatSessionInfo = {
-        id,
-        recordId: id,
+        id: created.id,
+        recordId: created.resumedFrom ?? created.id,
         agentId,
         title: agent.label ?? 'Chat',
         messages: [],
         status: 'idle',
         createdAt: Date.now(),
         kind: 'live',
+        workDir: created.workDir ?? activeProject?.path,
+        acpSessionId: created.acpSessionId,
       };
       createSessionStore(session);
     } catch {
@@ -83,10 +160,10 @@ export function ChatPanel() {
     sendMessage(content, undefined, attachments);
   };
 
-  if (agents.length === 0) {
+  if (agents.length === 0 && !activeSession && !restoring) {
     return (
       <div className="chat-panel">
-        <div className="chat-empty">No agents available</div>
+        <div className="chat-empty">{agentsLoading ? 'Loading agents...' : (agentsError ?? 'No agents available')}</div>
       </div>
     );
   }
@@ -159,13 +236,15 @@ export function ChatPanel() {
             <div ref={messagesEndRef} />
           </div>
           <div className="chat-bottom-bar">
+            <ContextUsageBar contextUsed={activeSession?.contextUsed} contextWindow={activeSession?.contextWindow} costAmount={activeSession?.costAmount} costCurrency={activeSession?.costCurrency} />
             {!isArchived && activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
             {!isArchived && <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} />}
             <ChatInput
               onSend={handleSend}
               onCancel={cancel}
               streaming={isStreaming}
-              disabled={isArchived || !connected || isConnecting}
+              disabled={(isArchived && !canResumeArchived) || isConnecting}
+              canSend={connected}
             />
           </div>
         </>
