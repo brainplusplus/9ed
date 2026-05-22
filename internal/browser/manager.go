@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"net/url"
 	"path"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	camoufox "github.com/brainplusplus/go-camoufox"
 	"github.com/google/uuid"
 	playwright "github.com/playwright-community/playwright-go"
 )
@@ -25,11 +23,12 @@ type Tab struct {
 }
 
 type State struct {
-	Provider       string `json:"provider"`
-	Automation     Status `json:"automation"`
-	Tabs           []Tab  `json:"tabs"`
-	ActiveTabID    string `json:"activeTabId,omitempty"`
-	LocalhostScope string `json:"localhostScope"`
+	Provider       string        `json:"provider"`
+	Transport      TransportType `json:"transport"`
+	Automation     Status        `json:"automation"`
+	Tabs           []Tab         `json:"tabs"`
+	ActiveTabID    string        `json:"activeTabId,omitempty"`
+	LocalhostScope string        `json:"localhostScope"`
 }
 
 type Status struct {
@@ -53,10 +52,12 @@ type Manager struct {
 }
 
 type automationRuntime struct {
-	browser *camoufox.Browser
-	context playwright.BrowserContext
-	page    playwright.Page
-	lastErr string
+	pw       *playwright.Playwright
+	browser  playwright.Browser
+	context  playwright.BrowserContext
+	page     playwright.Page
+	lastErr  string
+	execPath string
 }
 
 func NewManager() *Manager {
@@ -73,7 +74,8 @@ func (m *Manager) State() State {
 	defer m.mu.Unlock()
 
 	return State{
-		Provider:       "go-camoufox",
+		Provider:       "playwright",
+		Transport:      TransportIframe,
 		Automation:     m.automation.statusLocked(),
 		Tabs:           m.tabsLocked(),
 		ActiveTabID:    m.activeTabID,
@@ -247,6 +249,12 @@ func (m *Manager) AutomationScreenshot(ctx context.Context) ([]byte, error) {
 	return page.Screenshot(playwright.PageScreenshotOptions{FullPage: &fullPage})
 }
 
+func (m *Manager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.automation.closeLocked()
+}
+
 func (m *Manager) automationPage(ctx context.Context) (playwright.Page, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -266,7 +274,7 @@ func (m *Manager) tabsLocked() []Tab {
 
 func (a *automationRuntime) statusLocked() Status {
 	return Status{
-		Provider:  "go-camoufox/playwright",
+		Provider:  "playwright",
 		Running:   a.page != nil,
 		LastError: a.lastErr,
 	}
@@ -277,43 +285,76 @@ func (a *automationRuntime) ensureLocked(ctx context.Context) error {
 		return nil
 	}
 
-	headless := camoufox.HeadlessTrue
-	iKnow := true
-	blockWebRTC := true
-	opts := &camoufox.LaunchOptions{
-		Headless:         &headless,
-		IKnowWhatImDoing: &iKnow,
-		BlockWebRTC:      &blockWebRTC,
-		OS:               camoufoxOS(),
-		Window:           &[2]int{1280, 800},
+	// Discover local browser binary.
+	execPath := FindBrowser()
+	if execPath == "" {
+		a.lastErr = "no local browser found; install Chrome, Edge, or Chromium"
+		return fmt.Errorf("%s", a.lastErr)
+	}
+	a.execPath = execPath
+
+	// Start playwright driver.
+	pw, err := playwright.Run()
+	if err != nil {
+		a.lastErr = fmt.Sprintf("playwright driver failed: %v", err)
+		return fmt.Errorf("%s", a.lastErr)
+	}
+	a.pw = pw
+
+	// Launch browser using the local binary.
+	headless := true
+	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+		ExecutablePath: &execPath,
+		Headless:       &headless,
+	})
+	if err != nil {
+		a.lastErr = fmt.Sprintf("browser launch failed: %v", err)
+		_ = pw.Stop()
+		a.pw = nil
+		return fmt.Errorf("%s", a.lastErr)
 	}
 
-	browser, err := camoufox.New(ctx, opts)
+	// Create context and page.
+	bCtx, err := browser.NewContext(playwright.BrowserNewContextOptions{
+		Viewport: &playwright.Size{Width: 1280, Height: 800},
+	})
 	if err != nil {
-		a.lastErr = err.Error()
-		return err
+		a.lastErr = fmt.Sprintf("browser context failed: %v", err)
+		_ = browser.Close()
+		_ = pw.Stop()
+		a.pw = nil
+		return fmt.Errorf("%s", a.lastErr)
 	}
 
-	fpCtx, err := browser.NewBrowserContext(ctx, &camoufox.ContextOptions{})
+	page, err := bCtx.NewPage()
 	if err != nil {
-		_ = browser.Close(ctx)
-		a.lastErr = err.Error()
-		return err
-	}
-
-	page, err := fpCtx.Context.NewPage()
-	if err != nil {
-		_ = fpCtx.Context.Close()
-		_ = browser.Close(ctx)
-		a.lastErr = err.Error()
-		return err
+		a.lastErr = fmt.Sprintf("browser page failed: %v", err)
+		_ = bCtx.Close()
+		_ = browser.Close()
+		_ = pw.Stop()
+		a.pw = nil
+		return fmt.Errorf("%s", a.lastErr)
 	}
 
 	a.browser = browser
-	a.context = fpCtx.Context
+	a.context = bCtx
 	a.page = page
 	a.lastErr = ""
 	return nil
+}
+
+func (a *automationRuntime) closeLocked() {
+	if a.page != nil {
+		a.context.Close()
+		a.browser.Close()
+		a.page = nil
+		a.context = nil
+		a.browser = nil
+	}
+	if a.pw != nil {
+		_ = a.pw.Stop()
+		a.pw = nil
+	}
 }
 
 func inspectPage(page playwright.Page) (InspectResult, error) {
@@ -330,19 +371,6 @@ func inspectPage(page playwright.Page) (InspectResult, error) {
 		Text:      text,
 		TextBytes: bytes,
 	}, nil
-}
-
-func camoufoxOS() []string {
-	switch runtime.GOOS {
-	case "windows":
-		return []string{"windows"}
-	case "darwin":
-		return []string{"macos"}
-	case "linux":
-		return []string{"linux"}
-	default:
-		return nil
-	}
 }
 
 func joinURLPath(basePath string, requestPath string) string {

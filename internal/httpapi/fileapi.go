@@ -43,6 +43,7 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, configResponse{
 		Mode:          a.mode,
 		WorkspaceRoot: a.workspaceRoot,
+		UseBrowser:    a.useBrowser,
 	})
 }
 

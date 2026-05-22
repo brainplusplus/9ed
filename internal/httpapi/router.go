@@ -42,6 +42,7 @@ type Dependencies struct {
 	Sessions           SessionManager
 	Mode               string
 	WorkspaceRoot      string
+	UseBrowser         bool
 	Watcher            *watcher.FileWatcher
 	ChatSessionManager ChatRuntimeManager
 	ChatStore          *chat.ChatStore
@@ -54,6 +55,7 @@ type API struct {
 	upgrader           websocket.Upgrader
 	mode               string
 	workspaceRoot      string
+	useBrowser         bool
 	watcher            *watcher.FileWatcher
 	chatSessionManager ChatRuntimeManager
 	chatStore          *chat.ChatStore
@@ -68,6 +70,7 @@ func New(deps Dependencies) *API {
 		upgrader:           websocket.Upgrader{CheckOrigin: sameOrigin},
 		mode:               deps.Mode,
 		workspaceRoot:      deps.WorkspaceRoot,
+		useBrowser:         deps.UseBrowser,
 		watcher:            deps.Watcher,
 		chatSessionManager: deps.ChatSessionManager,
 		chatStore:          deps.ChatStore,
@@ -107,18 +110,20 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/install-acp", a.handleChatInstallACP)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
-	mux.HandleFunc("/api/browser/state", a.handleBrowserState)
-	mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)
-	mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
-	mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
-	mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
-	mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
-	mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)
-	mux.HandleFunc("/api/browser/automation/click", a.handleBrowserAutomationClick)
-	mux.HandleFunc("/api/browser/automation/type", a.handleBrowserAutomationType)
-	mux.HandleFunc("/api/browser/automation/evaluate", a.handleBrowserAutomationEvaluate)
-	mux.HandleFunc("/api/browser/automation/inspect", a.handleBrowserAutomationInspect)
-	mux.HandleFunc("/api/browser/automation/screenshot", a.handleBrowserAutomationScreenshot)
+	if a.useBrowser {
+		mux.HandleFunc("/api/browser/state", a.handleBrowserState)
+		mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)
+		mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
+		mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
+		mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
+		mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
+		mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)
+		mux.HandleFunc("/api/browser/automation/click", a.handleBrowserAutomationClick)
+		mux.HandleFunc("/api/browser/automation/type", a.handleBrowserAutomationType)
+		mux.HandleFunc("/api/browser/automation/evaluate", a.handleBrowserAutomationEvaluate)
+		mux.HandleFunc("/api/browser/automation/inspect", a.handleBrowserAutomationInspect)
+		mux.HandleFunc("/api/browser/automation/screenshot", a.handleBrowserAutomationScreenshot)
+	}
 
 	mux.HandleFunc("/api/projects/recent", a.handleRecentProjects)
 	mux.HandleFunc("/api/workspace/state", a.handleWorkspaceState)

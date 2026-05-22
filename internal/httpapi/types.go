@@ -46,4 +46,5 @@ type copyMoveRequest struct {
 type configResponse struct {
 	Mode          string `json:"mode"`
 	WorkspaceRoot string `json:"workspaceRoot"`
+	UseBrowser    bool   `json:"useBrowser"`
 }

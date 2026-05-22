@@ -36,6 +36,7 @@ func TestLoadFromEnvDefaultsToSimpleMode(t *testing.T) {
 	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
 	t.Setenv("MODE", "")
 	t.Setenv("WORKSPACE_ROOT", "")
+	t.Setenv("TUNNEL_ENGINE", "")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -48,6 +49,10 @@ func TestLoadFromEnvDefaultsToSimpleMode(t *testing.T) {
 
 	if cfg.WorkspaceRoot != "" {
 		t.Fatalf("expected empty workspace root, got %q", cfg.WorkspaceRoot)
+	}
+
+	if cfg.TunnelEngine != "cloudflare" {
+		t.Fatalf("expected default tunnel engine 'cloudflare', got %q", cfg.TunnelEngine)
 	}
 }
 
@@ -102,5 +107,35 @@ func TestLoadFromEnvReadsConfiguredValues(t *testing.T) {
 	}
 	if cfg.BasicAuthPassword != "hunter2" {
 		t.Fatalf("expected configured password, got %q", cfg.BasicAuthPassword)
+	}
+}
+
+func TestLoadFromEnvDefaultsBrowserDisabled(t *testing.T) {
+	t.Setenv("PORT", "8080")
+	t.Setenv("BASIC_AUTH_USERNAME", "alice")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	t.Setenv("USE_BROWSER", "")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv returned error: %v", err)
+	}
+	if cfg.UseBrowser {
+		t.Fatal("expected UseBrowser to default to false when USE_BROWSER is empty")
+	}
+}
+
+func TestLoadFromEnvEnablesBrowser(t *testing.T) {
+	t.Setenv("PORT", "8080")
+	t.Setenv("BASIC_AUTH_USERNAME", "alice")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	t.Setenv("USE_BROWSER", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv returned error: %v", err)
+	}
+	if !cfg.UseBrowser {
+		t.Fatal("expected UseBrowser to be true when USE_BROWSER=true")
 	}
 }

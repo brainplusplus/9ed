@@ -3,6 +3,17 @@
   min-width: 0;
 }
 
+/* Browser overlay layered on top of editor area.
+   Editor stays mounted underneath, preserving Monaco state. */
+.browser-editor-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: #111827;
+  display: flex;
+  flex-direction: column;
+}
+
 .browser-panel {
   display: flex;
   flex-direction: column;

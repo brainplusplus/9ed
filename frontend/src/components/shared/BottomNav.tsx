@@ -1,3 +1,5 @@
+import { useWorkspaceStore } from '../../stores/workspace';
+
 export type MobileView = 'explorer' | 'git' | 'editor' | 'terminal' | 'chat' | 'browser';
 
 type BottomNavProps = {
@@ -74,13 +76,21 @@ const NAV_ITEMS: { view: MobileView; icon: React.ReactNode; label: string }[] = 
   { view: 'editor', icon: <EditorIcon />, label: 'Editor' },
   { view: 'terminal', icon: <TerminalIcon />, label: 'Term' },
   { view: 'chat', icon: <ChatIcon />, label: 'Chat' },
-  { view: 'browser', icon: <BrowserIcon />, label: 'Web' },
 ];
 
+const BROWSER_ITEM: { view: MobileView; icon: React.ReactNode; label: string } = {
+  view: 'browser',
+  icon: <BrowserIcon />,
+  label: 'Web',
+};
+
 export function BottomNav({ activeView, onViewChange }: BottomNavProps) {
+  const browserEnabled = useWorkspaceStore((s) => s.browserEnabled);
+  const items = browserEnabled ? [...NAV_ITEMS, BROWSER_ITEM] : NAV_ITEMS;
+
   return (
     <nav className="bottom-nav">
-      {NAV_ITEMS.map((item) => (
+      {items.map((item) => (
         <button
           key={item.view}
           className={`bottom-nav-btn${activeView === item.view ? ' active' : ''}`}

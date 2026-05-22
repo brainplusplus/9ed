@@ -75,9 +75,9 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), tunnel
 
 ### Tunnel
 - Auto-start tunnel for public access — no manual setup needed
-- **Bore** (default): Fixed port tunnel via `bore.pub`, auto-installs binary
-- **Cloudflare**: Quick tunnel via `cloudflared`, generates random public URL
-- Toggle with `TUNNEL=true/false`, select engine with `TUNNEL_ENGINE=bore|cloudflare`
+- **Cloudflare** (default): Quick tunnel via `cloudflared`, generates random public URL
+- **Bore**: Fixed port tunnel via `bore.pub`, auto-installs binary
+- Toggle with `TUNNEL=true/false`, select engine with `TUNNEL_ENGINE=cloudflare|bore`
 - Auto-shutdown on server exit
 
 ## Requirements
@@ -121,7 +121,7 @@ npm run start
 | `WORKSPACE_ROOT` | Default workspace directory | cwd |
 | `AUTOKILL_PORT` | Kill existing process on port before start | `true` |
 | `TUNNEL` | Auto-start tunnel for public access | `true` |
-| `TUNNEL_ENGINE` | `bore` (fixed port via bore.pub) or `cloudflare` (random URL via cloudflared) | `bore` |
+| `TUNNEL_ENGINE` | `cloudflare` (random URL via cloudflared) or `bore` (fixed port via bore.pub) | `cloudflare` |
 | `DEBUG` | Enable verbose debug logging | `false` |
 
 ## AI Agent Support

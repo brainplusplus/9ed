@@ -18,6 +18,7 @@ function resetWorkspaceStore() {
     terminalVisible: true,
     chatVisible: true,
     browserVisible: false,
+    browserEnabled: false,
     showPicker: false,
   });
 }

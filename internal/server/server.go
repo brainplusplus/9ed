@@ -55,7 +55,7 @@ func New(cfg config.Config) *Server {
 	}
 
 	var browserMgr *browser.Manager
-	if cfg.Mode == "full" {
+	if cfg.Mode == "full" && cfg.UseBrowser {
 		browserMgr = browser.NewManager()
 	}
 
@@ -64,6 +64,7 @@ func New(cfg config.Config) *Server {
 		Sessions:           manager,
 		Mode:               cfg.Mode,
 		WorkspaceRoot:      cfg.WorkspaceRoot,
+		UseBrowser:         cfg.UseBrowser && cfg.Mode == "full",
 		Watcher:            fw,
 		ChatSessionManager: chatSessionMgr,
 		ChatStore:          chatStore,

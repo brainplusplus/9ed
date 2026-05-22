@@ -18,6 +18,7 @@ type Config struct {
 	AutokillPort      bool
 	Tunnel            bool
 	TunnelEngine      string
+	UseBrowser        bool
 	Debug             bool
 }
 
@@ -27,6 +28,7 @@ func LoadFromEnv() (Config, error) {
 	autokill := strings.TrimSpace(strings.ToLower(os.Getenv("AUTOKILL_PORT")))
 	tunnel := strings.TrimSpace(strings.ToLower(os.Getenv("TUNNEL")))
 	tunnelEngine := strings.TrimSpace(strings.ToLower(os.Getenv("TUNNEL_ENGINE")))
+	useBrowser := strings.TrimSpace(strings.ToLower(os.Getenv("USE_BROWSER")))
 	dbg := strings.TrimSpace(strings.ToLower(os.Getenv("DEBUG")))
 
 	cfg := Config{
@@ -38,6 +40,7 @@ func LoadFromEnv() (Config, error) {
 		AutokillPort:      autokill == "" || autokill == "true" || autokill == "1",
 		Tunnel:            tunnel == "" || tunnel == "true" || tunnel == "1",
 		TunnelEngine:      tunnelEngine,
+		UseBrowser:        useBrowser == "true" || useBrowser == "1",
 		Debug:             dbg == "true" || dbg == "1",
 	}
 
@@ -50,7 +53,7 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	if cfg.TunnelEngine == "" {
-		cfg.TunnelEngine = "bore"
+		cfg.TunnelEngine = "cloudflare"
 	}
 
 	if cfg.Mode != "simple" && cfg.Mode != "full" {

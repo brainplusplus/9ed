@@ -77,6 +77,7 @@ export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal' | 'git
 export type AppConfig = {
   mode: 'simple' | 'full';
   workspaceRoot: string;
+  useBrowser: boolean;
 };
 
 export type BrowserTab = {

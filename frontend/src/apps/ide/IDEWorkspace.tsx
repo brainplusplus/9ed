@@ -17,7 +17,7 @@ import { ChatPanel } from '../../components/chat/ChatPanel';
 import { BrowserPanel } from '../../components/browser/BrowserPanel';
 import { BottomNav, type MobileView } from '../../components/shared/BottomNav';
 import { ShortcutsHelp } from '../../components/shared/ShortcutsHelp';
-import { getFileContent } from '../../api';
+import { getConfig, getFileContent } from '../../api';
 import type { FileTab } from '../../types';
 
 export const recentSaveTimestamps = new Map<string, number>();
@@ -57,6 +57,7 @@ export function IDEWorkspace() {
   const terminalVisible = useWorkspaceStore((s) => s.terminalVisible);
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const browserVisible = useWorkspaceStore((s) => s.browserVisible);
+  const browserEnabled = useWorkspaceStore((s) => s.browserEnabled);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const projects = useWorkspaceStore((s) => s.projects);
   const openFile = useWorkspaceStore((s) => s.openFile);
@@ -64,9 +65,19 @@ export function IDEWorkspace() {
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
   const toggleBrowser = useWorkspaceStore((s) => s.toggleBrowser);
+  const setBrowserEnabled = useWorkspaceStore((s) => s.setBrowserEnabled);
   const setActivePanel = useWorkspaceStore((s) => s.setActivePanel);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
+
+  // Load server config on mount to check browser availability.
+  useEffect(() => {
+    let alive = true;
+    getConfig().then((config) => {
+      if (alive) setBrowserEnabled(config.useBrowser);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [setBrowserEnabled]);
 
   useWorkspaceStatePersistence();
   useGitStatus(activeProject?.path ?? null);
@@ -296,7 +307,7 @@ export function IDEWorkspace() {
               <ChatPanel />
             </div>
           )}
-          {mobileView === 'browser' && (
+          {mobileView === 'browser' && browserEnabled && (
             <div style={{ height: '100%' }}>
               <BrowserPanel />
             </div>
@@ -351,7 +362,7 @@ export function IDEWorkspace() {
             </div>
           </>
         )}
-        {tabletBrowserOpen && (
+        {tabletBrowserOpen && browserEnabled && (
           <>
             <div className="overlay-backdrop" onClick={() => setTabletBrowserOpen(false)} />
             <div className="browser-overlay open">
@@ -379,8 +390,13 @@ export function IDEWorkspace() {
         <Panel minSize="20%" className="ide-content">
           <Group orientation="vertical" style={{ height: '100%' }}>
             <Panel minSize="15%" className="ide-editor-area">
-              <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
                 <EditorArea />
+                {browserVisible && browserEnabled && (
+                  <div className="browser-editor-overlay">
+                    <BrowserPanel />
+                  </div>
+                )}
               </div>
             </Panel>
             {terminalVisible && (
@@ -398,14 +414,6 @@ export function IDEWorkspace() {
             <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
             <Panel defaultSize="25%" minSize="15%" maxSize="40%" className="ide-chat-area">
               <ChatPanel />
-            </Panel>
-          </>
-        )}
-        {browserVisible && (
-          <>
-            <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
-            <Panel defaultSize="34%" minSize="20%" maxSize="55%" className="ide-browser-area">
-              <BrowserPanel />
             </Panel>
           </>
         )}

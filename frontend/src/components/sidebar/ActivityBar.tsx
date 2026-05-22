@@ -107,6 +107,7 @@ export function ActivityBar() {
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
   const browserVisible = useWorkspaceStore((s) => s.browserVisible);
+  const browserEnabled = useWorkspaceStore((s) => s.browserEnabled);
   const toggleBrowser = useWorkspaceStore((s) => s.toggleBrowser);
   const gitChangeCount = useGitStore((s) => s.status.length);
 
@@ -153,14 +154,16 @@ export function ActivityBar() {
       >
         <span className="activity-icon"><ChatIcon /></span>
       </button>
-      <button
-        className={`activity-btn${browserVisible ? ' active' : ''}`}
-        onClick={toggleBrowser}
-        title="Browser (Ctrl+Shift+B)"
-        type="button"
-      >
-        <span className="activity-icon"><BrowserIcon /></span>
-      </button>
+      {browserEnabled && (
+        <button
+          className={`activity-btn${browserVisible ? ' active' : ''}`}
+          onClick={toggleBrowser}
+          title="Browser (Ctrl+Shift+B)"
+          type="button"
+        >
+          <span className="activity-icon"><BrowserIcon /></span>
+        </button>
+      )}
     </nav>
   );
 }
