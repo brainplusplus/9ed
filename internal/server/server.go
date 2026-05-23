@@ -81,8 +81,8 @@ func New(cfg config.Config) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.api.Handler())
-	mux.Handle("/browser/", s.api.Handler())
 	mux.Handle("/ws/", s.api.Handler())
+	mux.Handle("/browser/", s.api.Handler())
 	mux.Handle("/", spaHandler(distDir(), s.Config.Mode))
 
 	return auth.Middleware(s.Config.BasicAuthUsername, s.Config.BasicAuthPassword)(mux)
