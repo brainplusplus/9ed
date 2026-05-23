@@ -3,6 +3,15 @@ import { createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab
 import type { BrowserAutomationStatus, BrowserTab } from '../../types';
 
 const DEFAULT_URL = 'localhost:3000';
+const VIEWPORT_PRESETS = {
+  responsive: { label: 'Auto', width: 0, height: 0 },
+  desktop: { label: 'Desktop', width: 1440, height: 900 },
+  tablet: { label: 'Tablet', width: 834, height: 1194 },
+  mobile: { label: 'Mobile', width: 390, height: 844 },
+  custom: { label: 'Custom', width: 1280, height: 720 },
+} as const;
+
+type ViewportMode = keyof typeof VIEWPORT_PRESETS;
 
 type BrowserProxyMessage = {
   __nineBrowser: true;
@@ -17,6 +26,8 @@ function displayTitle(tab: BrowserTab): string {
 }
 
 export function BrowserPanel() {
+  const panelRef = useRef<HTMLElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [address, setAddress] = useState(DEFAULT_URL);
@@ -25,15 +36,84 @@ export function BrowserPanel() {
   const [automation, setAutomation] = useState<BrowserAutomationStatus | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const tabsRef = useRef<BrowserTab[]>([]);
+  const [viewportMode, setViewportMode] = useState<ViewportMode>('responsive');
+  const [customWidth, setCustomWidth] = useState(1280);
+  const [customHeight, setCustomHeight] = useState(720);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null,
     [tabs, activeTabId],
   );
+  const viewport = useMemo(() => {
+    if (viewportMode === 'custom') {
+      return {
+        label: VIEWPORT_PRESETS.custom.label,
+        width: Math.max(320, customWidth),
+        height: Math.max(320, customHeight),
+      };
+    }
+    return VIEWPORT_PRESETS[viewportMode];
+  }, [customHeight, customWidth, viewportMode]);
+  const viewportScale = useMemo(() => {
+    if (viewportMode === 'responsive' || stageSize.width === 0 || stageSize.height === 0) {
+      return 1;
+    }
+    return Math.min(stageSize.width / viewport.width, stageSize.height / viewport.height, 1);
+  }, [stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode]);
+  const scaledViewportStyle = useMemo(() => {
+    if (viewportMode === 'responsive') {
+      return undefined;
+    }
+    return {
+      width: `${Math.max(1, Math.round(viewport.width * viewportScale))}px`,
+      height: `${Math.max(1, Math.round(viewport.height * viewportScale))}px`,
+    };
+  }, [viewport.height, viewport.width, viewportMode, viewportScale]);
+  const frameStyle = useMemo(() => {
+    if (viewportMode === 'responsive') {
+      return undefined;
+    }
+    return {
+      width: `${viewport.width}px`,
+      height: `${viewport.height}px`,
+      transform: `scale(${viewportScale})`,
+    };
+  }, [viewport.height, viewport.width, viewportMode, viewportScale]);
 
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) {
+      return;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      setStageSize({
+        width: Math.floor(entry.contentRect.width),
+        height: Math.floor(entry.contentRect.height),
+      });
+    });
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsFullscreen(document.fullscreenElement === panelRef.current);
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -159,8 +239,25 @@ export function BrowserPanel() {
     setReloadNonce((value) => value + 1);
   }
 
+  async function handleFullscreenToggle() {
+    const panel = panelRef.current;
+    if (!panel) {
+      return;
+    }
+
+    try {
+      if (document.fullscreenElement === panel) {
+        await document.exitFullscreen();
+        return;
+      }
+      await panel.requestFullscreen();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to toggle fullscreen');
+    }
+  }
+
   return (
-    <section className="browser-panel">
+    <section ref={panelRef} className={`browser-panel${isFullscreen ? ' fullscreen' : ''}`}>
       <div className="browser-tab-strip">
         {tabs.map((tab) => (
           <div key={tab.id} className={`browser-tab-chip${tab.id === activeTab?.id ? ' active' : ''}`}>
@@ -200,21 +297,82 @@ export function BrowserPanel() {
         </button>
       </form>
 
+      <div className="browser-viewport-toolbar">
+        <div className="browser-viewport-presets" role="tablist" aria-label="Viewport mode">
+          {(Object.keys(VIEWPORT_PRESETS) as ViewportMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={`browser-viewport-chip${viewportMode === mode ? ' active' : ''}`}
+              type="button"
+              onClick={() => setViewportMode(mode)}
+            >
+              {VIEWPORT_PRESETS[mode].label}
+            </button>
+          ))}
+        </div>
+        <div className="browser-viewport-fields">
+          <label className="browser-viewport-field">
+            <span>W</span>
+            <input
+              type="number"
+              min={320}
+              max={4096}
+              step={1}
+              value={viewportMode === 'responsive' ? stageSize.width || '' : viewport.width}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  setViewportMode('custom');
+                  setCustomWidth(value);
+                }
+              }}
+              disabled={viewportMode === 'responsive'}
+            />
+          </label>
+          <label className="browser-viewport-field">
+            <span>H</span>
+            <input
+              type="number"
+              min={320}
+              max={4096}
+              step={1}
+              value={viewportMode === 'responsive' ? stageSize.height || '' : viewport.height}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  setViewportMode('custom');
+                  setCustomHeight(value);
+                }
+              }}
+              disabled={viewportMode === 'responsive'}
+            />
+          </label>
+          <button className="browser-viewport-fullscreen" type="button" onClick={handleFullscreenToggle}>
+            {isFullscreen ? 'Exit Full' : 'Full'}
+          </button>
+        </div>
+      </div>
+
       {(error || automation?.lastError) && (
         <div className="browser-status-line">
           {error || automation?.lastError}
         </div>
       )}
 
-      <div className="browser-frame-wrap">
+      <div ref={stageRef} className={`browser-frame-wrap${viewportMode === 'responsive' ? ' responsive' : ''}`}>
         {activeTab ? (
-          <iframe
-            key={`${activeTab.id}-${reloadNonce}`}
-            className="browser-frame"
-            src={activeTab.proxyPath}
-            title={displayTitle(activeTab)}
-            sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-          />
+          <div className="browser-viewport-stage">
+            <div className={`browser-viewport-shell${viewportMode === 'responsive' ? ' responsive' : ''}`} style={scaledViewportStyle}>
+              <iframe
+                key={`${activeTab.id}-${reloadNonce}`}
+                className={`browser-frame${viewportMode === 'responsive' ? ' responsive' : ''}`}
+                style={frameStyle}
+                src={activeTab.proxyPath}
+                title={displayTitle(activeTab)}
+                sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+              />
+            </div>
+          </div>
         ) : (
           <div className="browser-empty">
             <button className="browser-go-btn" type="button" onClick={handleNewTab}>
