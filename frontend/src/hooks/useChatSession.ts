@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createChatWebSocket, getBrowserState, getLiveChatSessions, inspectBrowserAutomation, navigateBrowserAutomation, startBrowserAutomation } from '../api';
 import { useChatStore } from '../stores/chat';
 import type { Attachment } from '../components/chat/ChatInput';
-import type { ChatEvent, ChatSessionKind, CodeContext } from '../types';
+import type { BrowserElementSelection, ChatEvent, ChatSessionKind, CodeContext } from '../types';
 import type { QueuedMessage } from '../stores/chat';
 
 const CONNECT_TIMEOUT_MS = 10000;
@@ -41,7 +41,7 @@ function isConnectableSession(session: { kind: ChatSessionKind; status?: string 
   return session.kind !== 'archived' && session.status !== 'error';
 }
 
-async function buildActiveBrowserContext(): Promise<string | null> {
+async function buildActiveBrowserContext(selection: BrowserElementSelection | null): Promise<string | null> {
   const state = await getBrowserState();
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
   if (!activeTab) {
@@ -71,6 +71,20 @@ async function buildActiveBrowserContext(): Promise<string | null> {
     lines.push(`Browser inspect status: ${error instanceof Error ? error.message : 'unavailable'}`);
   }
 
+  if (selection) {
+    lines.push('[Selected browser element]');
+    lines.push(`Selector: ${selection.selector}`);
+    lines.push(`Tag: ${selection.tagName}`);
+    if (selection.role) {
+      lines.push(`Role: ${selection.role}`);
+    }
+    if (selection.text) {
+      lines.push(`Text: ${selection.text}`);
+    }
+    lines.push('Outer HTML:');
+    lines.push(selection.outerHTML.slice(0, 3000));
+  }
+
   return lines.join('\n');
 }
 
@@ -78,6 +92,7 @@ export function useChatSession(): UseChatSessionResult {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
+  const browserSelection = useChatStore((s) => s.browserSelection);
   const addMessage = useChatStore((s) => s.addMessage);
   const handleChatEvent = useChatStore((s) => s.handleChatEvent);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
@@ -403,7 +418,7 @@ export function useChatSession(): UseChatSessionResult {
       let outboundContent = content;
       if (useActiveBrowser) {
         try {
-          const browserContext = await buildActiveBrowserContext();
+          const browserContext = await buildActiveBrowserContext(browserSelection);
           if (browserContext) {
             outboundContent = `${browserContext}\n\n[User request]\n${content}`;
           }
@@ -420,7 +435,7 @@ export function useChatSession(): UseChatSessionResult {
       }
       conn.ws.send(JSON.stringify(payload));
     },
-    [activeSessionId, addMessage, setSessionStatus, useActiveBrowser],
+    [activeSessionId, addMessage, browserSelection, setSessionStatus, useActiveBrowser],
   );
 
   sendQueuedRef.current = async (queued: QueuedMessage) => {

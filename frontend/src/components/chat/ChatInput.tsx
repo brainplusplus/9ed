@@ -4,7 +4,7 @@ import type { GitRepoFile } from '../../api';
 import { useChatStore } from '../../stores/chat';
 import type { QueuedMessage } from '../../stores/chat';
 import { useWorkspaceStore } from '../../stores/workspace';
-import type { DirEntry } from '../../types';
+import type { BrowserElementSelection, DirEntry } from '../../types';
 
 type ChatInputProps = {
   onSend: (content: string, attachments?: Attachment[]) => void | Promise<void>;
@@ -57,6 +57,9 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     const session = s.sessions.find((sess) => sess.id === s.activeSessionId);
     return session?.commands;
   }) ?? [];
+  const browserSelection = useChatStore((s) => s.browserSelection);
+  const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
+  const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
   const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
   const enqueueMessage = useChatStore((s) => s.enqueueMessage);
   const projects = useWorkspaceStore((s) => s.projects);
@@ -295,6 +298,20 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
 
   return (
     <div className="chat-input-area">
+      {browserSelection && (
+        <div className="chat-browser-selection">
+          <div className="chat-browser-selection-copy">
+            <span className="chat-browser-selection-label">Selected element</span>
+            <span className="chat-browser-selection-text">
+              {describeBrowserSelection(browserSelection)}
+              {!useActiveBrowser ? ' (enable Browser to send)' : ''}
+            </span>
+          </div>
+          <button className="chat-browser-selection-clear" type="button" onClick={() => setBrowserSelection(null)}>
+            x
+          </button>
+        </div>
+      )}
       {mentionResults.length > 0 && mentionQuery !== null && (
         <div className="chat-commands-popup">
           {mentionResults.map((entry, i) => {
@@ -417,4 +434,15 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
       />
     </div>
   );
+}
+
+function describeBrowserSelection(selection: BrowserElementSelection): string {
+  const pieces = [selection.tagName.toLowerCase()];
+  if (selection.role) {
+    pieces.push(selection.role);
+  }
+  if (selection.text) {
+    pieces.push(`"${selection.text}"`);
+  }
+  return pieces.join(' - ');
 }

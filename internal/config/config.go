@@ -40,7 +40,7 @@ func LoadFromEnv() (Config, error) {
 		AutokillPort:      autokill == "" || autokill == "true" || autokill == "1",
 		Tunnel:            tunnel == "" || tunnel == "true" || tunnel == "1",
 		TunnelEngine:      tunnelEngine,
-		UseBrowser:        useBrowser == "true" || useBrowser == "1",
+		UseBrowser:        useBrowser == "" || useBrowser == "true" || useBrowser == "1",
 		Debug:             dbg == "true" || dbg == "1",
 	}
 

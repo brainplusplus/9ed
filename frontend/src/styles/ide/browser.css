@@ -110,6 +110,11 @@
   background: #263447;
 }
 
+.browser-icon-btn.active {
+  background: #26435f;
+  color: white;
+}
+
 .browser-toolbar {
   display: flex;
   align-items: center;
@@ -222,6 +227,44 @@
   white-space: nowrap;
 }
 
+.browser-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  background: rgba(59, 130, 246, 0.12);
+  border-bottom: 1px solid rgba(96, 165, 250, 0.24);
+}
+
+.browser-selection-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.browser-selection-copy strong {
+  font-size: 0.72rem;
+}
+
+.browser-selection-copy span {
+  font-size: 0.74rem;
+  color: #bfdbfe;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-selection-clear {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  background: #1f2937;
+  color: var(--sidebar-fg);
+  cursor: pointer;
+}
+
 .browser-frame-wrap {
   flex: 1;
   min-height: 0;
@@ -242,6 +285,7 @@
 }
 
 .browser-viewport-shell {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -262,6 +306,14 @@
   transform-origin: top left;
   border: none;
   background: white;
+}
+
+.browser-inspect-highlight {
+  position: absolute;
+  border: 2px solid rgba(59, 130, 246, 0.95);
+  background: rgba(59, 130, 246, 0.16);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65) inset;
 }
 
 .browser-frame.responsive {

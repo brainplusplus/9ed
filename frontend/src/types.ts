@@ -102,6 +102,16 @@ export type BrowserInspectResult = {
   textBytes: number;
 };
 
+export type BrowserElementSelection = {
+  url: string;
+  title: string;
+  tagName: string;
+  role?: string;
+  text?: string;
+  selector: string;
+  outerHTML: string;
+};
+
 export type BrowserState = {
   provider: string;
   automation: BrowserAutomationStatus;

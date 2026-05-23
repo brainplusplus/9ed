@@ -600,6 +600,14 @@ export async function navigateBrowserTab(tabId: string, url: string): Promise<Br
   return parseResponse<BrowserTab>(response);
 }
 
+export async function activateBrowserTab(tabId: string): Promise<BrowserTab> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/activate`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return parseResponse<BrowserTab>(response);
+}
+
 export async function deleteBrowserTab(tabId: string): Promise<void> {
   const response = await fetch(`/api/browser/tabs/${tabId}`, {
     method: 'DELETE',

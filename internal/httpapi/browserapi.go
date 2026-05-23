@@ -67,6 +67,13 @@ func (a *API) handleBrowserTabByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case r.Method == http.MethodPost && action == "activate":
+		tab, err := a.browser.ActivateTab(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, tab)
 	case r.Method == http.MethodPost && action == "navigate":
 		var req browserNavigateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

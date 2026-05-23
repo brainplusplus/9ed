@@ -150,6 +150,17 @@ func (m *Manager) DeleteTab(id string) error {
 	return nil
 }
 
+func (m *Manager) ActivateTab(id string) (Tab, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tab, ok := m.tabs[id]
+	if !ok {
+		return Tab{}, fmt.Errorf("browser tab %q not found", id)
+	}
+	m.activeTabID = id
+	return tab, nil
+}
+
 func (m *Manager) ProxyTarget(id string, requestPath string, rawQuery string) (*url.URL, error) {
 	m.mu.Lock()
 	tab, ok := m.tabs[id]

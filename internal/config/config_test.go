@@ -110,7 +110,7 @@ func TestLoadFromEnvReadsConfiguredValues(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvDefaultsBrowserDisabled(t *testing.T) {
+func TestLoadFromEnvDefaultsBrowserEnabled(t *testing.T) {
 	t.Setenv("PORT", "8080")
 	t.Setenv("BASIC_AUTH_USERNAME", "alice")
 	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
@@ -120,8 +120,8 @@ func TestLoadFromEnvDefaultsBrowserDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromEnv returned error: %v", err)
 	}
-	if cfg.UseBrowser {
-		t.Fatal("expected UseBrowser to default to false when USE_BROWSER is empty")
+	if !cfg.UseBrowser {
+		t.Fatal("expected UseBrowser to default to true when USE_BROWSER is empty")
 	}
 }
 

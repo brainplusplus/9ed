@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
+import type { BrowserElementSelection, ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
 import { getChatHistory, getChatSessionState, saveChatMessage, deleteChatHistory, getRestorableChatSession, resumeChatSession } from '../api';
 
 export type ChatRestoreError = {
@@ -64,6 +64,7 @@ type ChatState = {
   includeIgnoredInMentions: boolean;
   autoApprove: boolean;
   useActiveBrowser: boolean;
+  browserSelection: BrowserElementSelection | null;
   restoring: boolean;
   lastRestoreError: ChatRestoreError | null;
 
@@ -94,6 +95,7 @@ type ChatState = {
   toggleIncludeIgnored: () => void;
   toggleAutoApprove: () => void;
   toggleUseActiveBrowser: () => void;
+  setBrowserSelection: (selection: BrowserElementSelection | null) => void;
 };
 
 function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: ChatSessionInfo) => ChatSessionInfo): ChatSessionInfo[] {
@@ -308,6 +310,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   includeIgnoredInMentions: false,
   autoApprove: false,
   useActiveBrowser: false,
+  browserSelection: null,
   restoring: false,
   lastRestoreError: null,
 
@@ -902,4 +905,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   toggleUseActiveBrowser: () =>
     set((state) => ({ useActiveBrowser: !state.useActiveBrowser })),
+
+  setBrowserSelection: (selection) =>
+    set({ browserSelection: selection }),
 }));

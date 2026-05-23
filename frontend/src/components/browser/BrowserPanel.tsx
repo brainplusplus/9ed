@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
-import type { BrowserAutomationStatus, BrowserTab } from '../../types';
+import { activateBrowserTab, createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
+import { useChatStore } from '../../stores/chat';
+import type { BrowserAutomationStatus, BrowserElementSelection, BrowserTab } from '../../types';
 
 const DEFAULT_URL = 'localhost:3000';
 const VIEWPORT_PRESETS = {
@@ -28,6 +29,8 @@ function displayTitle(tab: BrowserTab): string {
 export function BrowserPanel() {
   const panelRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const cleanupInspectRef = useRef<(() => void) | null>(null);
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [address, setAddress] = useState(DEFAULT_URL);
@@ -41,6 +44,12 @@ export function BrowserPanel() {
   const [customHeight, setCustomHeight] = useState(720);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [inspectMode, setInspectMode] = useState(false);
+  const [inspectRect, setInspectRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const browserSelection = useChatStore((s) => s.browserSelection);
+  const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
+  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
+  const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null,
@@ -176,7 +185,7 @@ export function BrowserPanel() {
       }
 
       if (data.type === 'focus-tab') {
-        setActiveTabId(data.tabId);
+        await handleSelectTab(data.tabId);
       }
     }
 
@@ -239,6 +248,15 @@ export function BrowserPanel() {
     setReloadNonce((value) => value + 1);
   }
 
+  async function handleSelectTab(tabId: string) {
+    setActiveTabId(tabId);
+    try {
+      await activateBrowserTab(tabId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to activate browser tab');
+    }
+  }
+
   async function handleFullscreenToggle() {
     const panel = panelRef.current;
     if (!panel) {
@@ -256,12 +274,108 @@ export function BrowserPanel() {
     }
   }
 
+  useEffect(() => {
+    if (!inspectMode) {
+      cleanupInspectRef.current?.();
+      cleanupInspectRef.current = null;
+      setInspectRect(null);
+      return;
+    }
+
+    const iframe = iframeRef.current;
+    const stage = stageRef.current;
+    if (!iframe || !stage) {
+      return;
+    }
+
+    const bindInspect = () => {
+      try {
+        const frameWindow = iframe.contentWindow;
+        const doc = iframe.contentDocument;
+        if (!frameWindow || !doc) {
+          return;
+        }
+
+        const updateRect = (element: Element | null) => {
+          if (!element) {
+            setInspectRect(null);
+            return;
+          }
+          const elementRect = element.getBoundingClientRect();
+          const iframeRect = iframe.getBoundingClientRect();
+          const stageRect = stage.getBoundingClientRect();
+          const scaleX = iframeRect.width / Math.max(1, iframe.clientWidth);
+          const scaleY = iframeRect.height / Math.max(1, iframe.clientHeight);
+          setInspectRect({
+            left: iframeRect.left - stageRect.left + elementRect.left * scaleX,
+            top: iframeRect.top - stageRect.top + elementRect.top * scaleY,
+            width: Math.max(1, elementRect.width * scaleX),
+            height: Math.max(1, elementRect.height * scaleY),
+          });
+        };
+
+        const handleMove = (event: MouseEvent) => {
+          updateRect(event.target instanceof Element ? event.target : null);
+        };
+
+        const handleLeave = () => {
+          setInspectRect(null);
+        };
+
+        const handleClick = (event: MouseEvent) => {
+          const element = event.target instanceof Element ? event.target : null;
+          if (!element || !activeTab) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const selection = createBrowserSelection(activeTab, element);
+          setBrowserSelection(selection);
+          if (!useActiveBrowser) {
+            toggleUseActiveBrowser();
+          }
+          updateRect(element);
+          setInspectMode(false);
+        };
+
+        doc.body.style.cursor = 'crosshair';
+        doc.addEventListener('mousemove', handleMove, true);
+        doc.addEventListener('mouseleave', handleLeave, true);
+        doc.addEventListener('click', handleClick, true);
+        cleanupInspectRef.current = () => {
+          doc.body.style.cursor = '';
+          doc.removeEventListener('mousemove', handleMove, true);
+          doc.removeEventListener('mouseleave', handleLeave, true);
+          doc.removeEventListener('click', handleClick, true);
+        };
+      } catch {
+        setError('Inspect mode is unavailable for this page');
+        setInspectMode(false);
+      }
+    };
+
+    if (iframe.contentDocument?.readyState === 'complete') {
+      bindInspect();
+    } else {
+      const handleLoad = () => {
+        bindInspect();
+      };
+      iframe.addEventListener('load', handleLoad, { once: true });
+      cleanupInspectRef.current = () => iframe.removeEventListener('load', handleLoad);
+    }
+
+    return () => {
+      cleanupInspectRef.current?.();
+      cleanupInspectRef.current = null;
+    };
+  }, [activeTab, inspectMode, setBrowserSelection, toggleUseActiveBrowser, useActiveBrowser]);
+
   return (
     <section ref={panelRef} className={`browser-panel${isFullscreen ? ' fullscreen' : ''}`}>
       <div className="browser-tab-strip">
         {tabs.map((tab) => (
           <div key={tab.id} className={`browser-tab-chip${tab.id === activeTab?.id ? ' active' : ''}`}>
-            <button className="browser-tab-button" type="button" onClick={() => setActiveTabId(tab.id)} title={tab.url}>
+            <button className="browser-tab-button" type="button" onClick={() => void handleSelectTab(tab.id)} title={tab.url}>
               <span className="browser-tab-dot" />
               <span className="browser-tab-title">{displayTitle(tab)}</span>
             </button>
@@ -284,6 +398,15 @@ export function BrowserPanel() {
         </button>
         <button className="browser-icon-btn" type="button" title="Reload" onClick={handleReload} disabled={!activeTab}>
           R
+        </button>
+        <button
+          className={`browser-icon-btn${inspectMode ? ' active' : ''}`}
+          type="button"
+          title="Inspect element"
+          onClick={() => setInspectMode((value) => !value)}
+          disabled={!activeTab}
+        >
+          I
         </button>
         <input
           className="browser-address"
@@ -358,12 +481,22 @@ export function BrowserPanel() {
           {error || automation?.lastError}
         </div>
       )}
+      {browserSelection && (
+        <div className="browser-selection-bar">
+          <div className="browser-selection-copy">
+            <strong>Selection</strong>
+            <span>{browserSelection.selector}</span>
+          </div>
+          <button type="button" className="browser-selection-clear" onClick={() => setBrowserSelection(null)}>Clear</button>
+        </div>
+      )}
 
       <div ref={stageRef} className={`browser-frame-wrap${viewportMode === 'responsive' ? ' responsive' : ''}`}>
         {activeTab ? (
           <div className="browser-viewport-stage">
             <div className={`browser-viewport-shell${viewportMode === 'responsive' ? ' responsive' : ''}`} style={scaledViewportStyle}>
               <iframe
+                ref={iframeRef}
                 key={`${activeTab.id}-${reloadNonce}`}
                 className={`browser-frame${viewportMode === 'responsive' ? ' responsive' : ''}`}
                 style={frameStyle}
@@ -371,6 +504,7 @@ export function BrowserPanel() {
                 title={displayTitle(activeTab)}
                 sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
               />
+              {inspectRect && <div className="browser-inspect-highlight" style={inspectRect} />}
             </div>
           </div>
         ) : (
@@ -383,4 +517,37 @@ export function BrowserPanel() {
       </div>
     </section>
   );
+}
+
+function createBrowserSelection(tab: BrowserTab, element: Element): BrowserElementSelection {
+  const text = element.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+  return {
+    url: tab.url,
+    title: tab.title,
+    tagName: element.tagName,
+    role: element.getAttribute('role') ?? undefined,
+    text: text.slice(0, 160) || undefined,
+    selector: buildElementSelector(element),
+    outerHTML: element.outerHTML.slice(0, 3000),
+  };
+}
+
+function buildElementSelector(element: Element): string {
+  const parts: string[] = [];
+  let current: Element | null = element;
+  while (current && parts.length < 4) {
+    let part = current.tagName.toLowerCase();
+    if (current.id) {
+      part += `#${current.id}`;
+      parts.unshift(part);
+      break;
+    }
+    const className = (current.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    if (className) {
+      part += `.${className}`;
+    }
+    parts.unshift(part);
+    current = current.parentElement;
+  }
+  return parts.join(' > ');
 }
