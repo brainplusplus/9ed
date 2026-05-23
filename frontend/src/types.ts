@@ -95,6 +95,13 @@ export type BrowserAutomationStatus = {
   lastError?: string;
 };
 
+export type BrowserInspectResult = {
+  url: string;
+  title: string;
+  text: string;
+  textBytes: number;
+};
+
 export type BrowserState = {
   provider: string;
   automation: BrowserAutomationStatus;

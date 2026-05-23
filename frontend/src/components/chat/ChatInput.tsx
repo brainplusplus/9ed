@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useChatStore } from '../../stores/chat';
-import type { QueuedMessage } from '../../stores/chat';
 import { getGitFiles } from '../../api';
 import type { GitRepoFile } from '../../api';
+import { useChatStore } from '../../stores/chat';
+import type { QueuedMessage } from '../../stores/chat';
 import { useWorkspaceStore } from '../../stores/workspace';
 import type { DirEntry } from '../../types';
 
 type ChatInputProps = {
-  onSend: (content: string, attachments?: Attachment[]) => void;
+  onSend: (content: string, attachments?: Attachment[]) => void | Promise<void>;
   onCancel: () => void;
   streaming: boolean;
   disabled: boolean;
@@ -20,6 +20,25 @@ export type Attachment = {
   name: string;
 };
 
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+};
+
+function getSpeechRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
+  const speechWindow = window as Window & {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
 export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = true }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -27,8 +46,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionResults, setMentionResults] = useState<DirEntry[]>([]);
   const [mentionIdx, setMentionIdx] = useState(0);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const speechRef = useRef<SpeechRecognitionLike | null>(null);
 
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const commands = useChatStore((s) => {
@@ -36,6 +58,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     return session?.commands;
   }) ?? [];
   const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
+  const enqueueMessage = useChatStore((s) => s.enqueueMessage);
   const projects = useWorkspaceStore((s) => s.projects);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const projectPath = projects.find((p) => p.id === activeProjectId)?.path ?? '';
@@ -51,6 +74,16 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const mentionFilesLoaded = useRef(false);
   const lastMentionProject = useRef('');
   const lastMentionIncludeIgnored = useRef(false);
+
+  useEffect(() => {
+    setVoiceSupported(Boolean(getSpeechRecognitionCtor()));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      speechRef.current?.stop();
+    };
+  }, []);
 
   useEffect(() => {
     if (!projectPath) return;
@@ -108,7 +141,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     setValue(before);
     setMentionQuery(null);
     textareaRef.current?.focus();
-  }, [value, projectPath]);
+  }, [projectPath, value]);
 
   const removeAttachment = useCallback((idx: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
@@ -133,10 +166,8 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, []);
-
-  const enqueueMessage = useChatStore((s) => s.enqueueMessage);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
@@ -151,73 +182,116 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
       };
       enqueueMessage(activeSessionId, queuedMsg);
     } else {
-      onSend(trimmed, attachments.length > 0 ? attachments : undefined);
+      void onSend(trimmed, attachments.length > 0 ? attachments : undefined);
     }
 
     setValue('');
     setAttachments([]);
     setSelectedIdx(0);
+    setMentionQuery(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [value, attachments, streaming, disabled, canSend, onSend, activeSessionId, enqueueMessage]);
+  }, [activeSessionId, attachments, canSend, disabled, enqueueMessage, onSend, streaming, value]);
+
+  const toggleVoiceInput = useCallback(() => {
+    const SpeechCtor = getSpeechRecognitionCtor();
+    if (!SpeechCtor || disabled) {
+      return;
+    }
+
+    if (voiceActive) {
+      speechRef.current?.stop();
+      return;
+    }
+
+    const recognition = new SpeechCtor();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'id-ID';
+    speechRef.current = recognition;
+    setVoiceActive(true);
+
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result?.[0]?.transcript) {
+          transcript += result[0].transcript;
+        }
+      }
+      if (!transcript.trim()) {
+        return;
+      }
+      setValue((current) => {
+        const next = current.trim().length > 0 ? `${current.trimEnd()} ${transcript.trim()}` : transcript.trim();
+        queueMicrotask(() => adjustHeight());
+        return next;
+      });
+    };
+    recognition.onerror = () => {
+      setVoiceActive(false);
+    };
+    recognition.onend = () => {
+      setVoiceActive(false);
+      speechRef.current = null;
+    };
+    recognition.start();
+  }, [adjustHeight, disabled, voiceActive]);
 
   const selectCommand = useCallback((name: string) => {
-    setValue('/' + name + ' ');
+    setValue(`/${name} `);
     setSelectedIdx(0);
     textareaRef.current?.focus();
   }, []);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      const isPlainEnter = (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13) && !e.shiftKey;
-      if (mentionResults.length > 0 && mentionQuery !== null) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setMentionIdx((i) => Math.min(i + 1, mentionResults.length - 1));
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setMentionIdx((i) => Math.max(i - 1, 0));
-          return;
-        }
-        if (e.key === 'Tab' || isPlainEnter) {
-          e.preventDefault();
-          selectMention(mentionResults[mentionIdx]);
-          return;
-        }
-        if (e.key === 'Escape') {
-          setMentionQuery(null);
-          return;
-        }
-      } else if (filteredCommands.length > 0) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          setSelectedIdx((i) => Math.min(i + 1, filteredCommands.length - 1));
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          setSelectedIdx((i) => Math.max(i - 1, 0));
-          return;
-        }
-        if (e.key === 'Tab' || isPlainEnter) {
-          e.preventDefault();
-          selectCommand(filteredCommands[selectedIdx].name);
-          return;
-        }
-        if (e.key === 'Escape') {
-          setValue('');
-          return;
-        }
-      } else if (isPlainEnter) {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const isPlainEnter = (e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13) && !e.shiftKey;
+    if (mentionResults.length > 0 && mentionQuery !== null) {
+      if (e.key === 'ArrowDown') {
         e.preventDefault();
-        handleSend();
+        setMentionIdx((i) => Math.min(i + 1, mentionResults.length - 1));
+        return;
       }
-    },
-    [handleSend, filteredCommands, selectedIdx, selectCommand, mentionResults, mentionQuery, mentionIdx, selectMention],
-  );
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Tab' || isPlainEnter) {
+        e.preventDefault();
+        selectMention(mentionResults[mentionIdx]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        setMentionQuery(null);
+        return;
+      }
+    } else if (filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIdx((i) => Math.min(i + 1, filteredCommands.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Tab' || isPlainEnter) {
+        e.preventDefault();
+        selectCommand(filteredCommands[selectedIdx].name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        setValue('');
+        return;
+      }
+    } else if (isPlainEnter) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [filteredCommands, handleSend, mentionIdx, mentionQuery, mentionResults, selectCommand, selectMention, selectedIdx]);
 
   return (
     <div className="chat-input-area">
@@ -234,7 +308,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
                 className={`chat-command-item ${i === mentionIdx ? 'active' : ''}${entry.ignored ? ' mention-ignored' : ''}`}
                 onClick={() => selectMention(entry)}
               >
-                <span className="chat-command-file-icon" aria-hidden="true">⌘</span>
+                <span className="chat-command-file-icon" aria-hidden="true">[]</span>
                 <span className="chat-mention-filename">{fileName}</span>
                 {dirPath && <span className="chat-mention-dir">{dirPath}</span>}
               </div>
@@ -259,30 +333,32 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
         <div className="chat-attachments">
           {attachments.map((att, i) => (
             <span key={i} className="chat-attachment-chip">
-              <span className="chat-attachment-icon" aria-hidden="true">{att.type === 'image' ? '◫' : '⌘'}</span>
+              <span className="chat-attachment-icon" aria-hidden="true">{att.type === 'image' ? 'o' : '[]'}</span>
               {att.name}
-              <button className="chat-attachment-remove" onClick={() => removeAttachment(i)} type="button">×</button>
+              <button className="chat-attachment-remove" onClick={() => removeAttachment(i)} type="button">x</button>
             </span>
           ))}
         </div>
       )}
       <div className="chat-composer-shell">
-        <textarea
-          ref={textareaRef}
-          className="chat-textarea"
-          placeholder="Ask something..."
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            setSelectedIdx(0);
-            handleMentionDetect(e.target.value);
-            adjustHeight();
-          }}
-          onPaste={handlePaste}
-          onKeyDown={handleKeyDown}
-          rows={1}
-          disabled={disabled}
-        />
+        <div className="chat-textarea-wrap">
+          <textarea
+            ref={textareaRef}
+            className="chat-textarea"
+            placeholder="Ask something..."
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setSelectedIdx(0);
+              handleMentionDetect(e.target.value);
+              adjustHeight();
+            }}
+            onPaste={handlePaste}
+            onKeyDown={handleKeyDown}
+            rows={1}
+            disabled={disabled}
+          />
+        </div>
         <div className="chat-composer-actions">
           <button
             className="chat-attach-btn"
@@ -291,11 +367,22 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
             title="Attach file (or type @ to mention)"
             disabled={disabled}
           >
-            <span aria-hidden="true">＋</span>
+            <span aria-hidden="true">+</span>
           </button>
+          {voiceSupported && (
+            <button
+              className={`chat-voice-btn${voiceActive ? ' active' : ''}`}
+              onClick={toggleVoiceInput}
+              type="button"
+              title={voiceActive ? 'Stop voice input' : 'Start voice input'}
+              disabled={disabled}
+            >
+              <span aria-hidden="true">🎙</span>
+            </button>
+          )}
           {streaming ? (
             <button className="chat-send-btn stop" onClick={onCancel} type="button" title="Stop response">
-              <span aria-hidden="true">■</span>
+              <span aria-hidden="true">[]</span>
             </button>
           ) : (
             <button
@@ -305,7 +392,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
               type="button"
               title="Send message"
             >
-              <span aria-hidden="true">↗</span>
+              <span aria-hidden="true">^</span>
             </button>
           )}
         </div>

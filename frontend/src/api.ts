@@ -1,4 +1,4 @@
-import type { AppConfig, BrowserState, BrowserTab, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, BrowserInspectResult, BrowserState, BrowserTab, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
 const RESTORE_REQUEST_TIMEOUT_MS = 8000;
 const RESUME_REQUEST_TIMEOUT_MS = 30000;
@@ -609,4 +609,30 @@ export async function deleteBrowserTab(tabId: string): Promise<void> {
     const message = await response.text();
     throw new Error(message || 'Failed to close browser tab');
   }
+}
+
+export async function startBrowserAutomation(): Promise<void> {
+  const response = await fetch('/api/browser/automation/start', {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to start browser automation');
+  }
+}
+
+export async function navigateBrowserAutomation(url: string): Promise<BrowserInspectResult> {
+  const response = await fetch('/api/browser/automation/navigate', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  return parseResponse<BrowserInspectResult>(response);
+}
+
+export async function inspectBrowserAutomation(): Promise<BrowserInspectResult> {
+  const response = await fetchWithTimeout('/api/browser/automation/inspect', { credentials: 'include' }, RESUME_REQUEST_TIMEOUT_MS);
+  return parseResponse<BrowserInspectResult>(response);
 }

@@ -108,6 +108,8 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
   const toggleIncludeIgnored = useChatStore((s) => s.toggleIncludeIgnored);
   const autoApprove = useChatStore((s) => s.autoApprove);
   const toggleAutoApprove = useChatStore((s) => s.toggleAutoApprove);
+  const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
+  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -153,6 +155,14 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
           onChange={toggleIncludeIgnored}
         />
         <span className="chat-config-toggle-label">@ ignored</span>
+      </label>
+      <label className="chat-config-toggle" title="Send the active in-app browser page as extra context to the agent">
+        <input
+          type="checkbox"
+          checked={useActiveBrowser}
+          onChange={toggleUseActiveBrowser}
+        />
+        <span className="chat-config-toggle-label">Browser</span>
       </label>
     </div>
   );

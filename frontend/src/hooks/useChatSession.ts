@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createChatWebSocket, getLiveChatSessions } from '../api';
+import { createChatWebSocket, getBrowserState, getLiveChatSessions, inspectBrowserAutomation, navigateBrowserAutomation, startBrowserAutomation } from '../api';
 import { useChatStore } from '../stores/chat';
 import type { Attachment } from '../components/chat/ChatInput';
 import type { ChatEvent, ChatSessionKind, CodeContext } from '../types';
@@ -11,7 +11,7 @@ const MAX_RECONNECT_ATTEMPTS = 6;
 const RECONNECT_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
 
 type UseChatSessionResult = {
-  sendMessage: (content: string, context?: CodeContext, attachments?: Attachment[]) => void;
+  sendMessage: (content: string, context?: CodeContext, attachments?: Attachment[]) => Promise<void>;
   cancel: () => void;
   setConfigOption: (configId: string, value: string) => void;
   respondPermission: (permissionId: string, optionId: string) => void;
@@ -41,9 +41,43 @@ function isConnectableSession(session: { kind: ChatSessionKind; status?: string 
   return session.kind !== 'archived' && session.status !== 'error';
 }
 
+async function buildActiveBrowserContext(): Promise<string | null> {
+  const state = await getBrowserState();
+  const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
+  if (!activeTab) {
+    return null;
+  }
+
+  const lines = [
+    '[Active browser context]',
+    `Title: ${activeTab.title || '(untitled)'}`,
+    `URL: ${activeTab.url}`,
+  ];
+
+  try {
+    await startBrowserAutomation();
+    let inspected = await navigateBrowserAutomation(activeTab.url);
+    if (!inspected.text) {
+      inspected = await inspectBrowserAutomation();
+    }
+    if (inspected.title && inspected.title !== activeTab.title) {
+      lines.push(`Automation title: ${inspected.title}`);
+    }
+    if (inspected.text) {
+      lines.push('Visible page text:');
+      lines.push(inspected.text.slice(0, 6000));
+    }
+  } catch (error) {
+    lines.push(`Browser inspect status: ${error instanceof Error ? error.message : 'unavailable'}`);
+  }
+
+  return lines.join('\n');
+}
+
 export function useChatSession(): UseChatSessionResult {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
+  const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const addMessage = useChatStore((s) => s.addMessage);
   const handleChatEvent = useChatStore((s) => s.handleChatEvent);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
@@ -67,7 +101,7 @@ export function useChatSession(): UseChatSessionResult {
   refreshSessionStateRef.current = refreshSessionState;
   const resumeSessionRef = useRef(resumeSession);
   resumeSessionRef.current = resumeSession;
-  const sendQueuedRef = useRef<((queued: QueuedMessage) => void) | null>(null);
+  const sendQueuedRef = useRef<((queued: QueuedMessage) => Promise<void>) | null>(null);
   const setSessionKindRef = useRef(setSessionKind);
   setSessionKindRef.current = setSessionKind;
   const upgradedRef = useRef<Set<string>>(new Set());
@@ -265,7 +299,7 @@ export function useChatSession(): UseChatSessionResult {
 
             const next = dequeueRef.current(sessionId);
             if (next && sendQueuedRef.current) {
-              setTimeout(() => sendQueuedRef.current?.(next), 100);
+              setTimeout(() => { void sendQueuedRef.current?.(next); }, 100);
             }
           }
         } catch {
@@ -346,7 +380,7 @@ export function useChatSession(): UseChatSessionResult {
   }, [stopConnection]);
 
   const sendMessage = useCallback(
-    (content: string, context?: CodeContext, attachments?: Attachment[]) => {
+    async (content: string, context?: CodeContext, attachments?: Attachment[]) => {
       if (!activeSessionId) return;
       const conn = connectionsRef.current.get(activeSessionId);
       if (!conn?.ws || conn.ws.readyState !== WebSocket.OPEN) return;
@@ -366,7 +400,18 @@ export function useChatSession(): UseChatSessionResult {
       addMessage(activeSessionId, userMessage);
       setSessionStatus(activeSessionId, 'streaming');
 
-      const payload: { type: string; content: string; context?: unknown; attachments?: Attachment[] } = { type: 'message', content };
+      let outboundContent = content;
+      if (useActiveBrowser) {
+        try {
+          const browserContext = await buildActiveBrowserContext();
+          if (browserContext) {
+            outboundContent = `${browserContext}\n\n[User request]\n${content}`;
+          }
+        } catch {
+        }
+      }
+
+      const payload: { type: string; content: string; context?: unknown; attachments?: Attachment[] } = { type: 'message', content: outboundContent };
       if (context) {
         payload.context = context;
       }
@@ -375,11 +420,11 @@ export function useChatSession(): UseChatSessionResult {
       }
       conn.ws.send(JSON.stringify(payload));
     },
-    [activeSessionId, addMessage, setSessionStatus],
+    [activeSessionId, addMessage, setSessionStatus, useActiveBrowser],
   );
 
-  sendQueuedRef.current = (queued: QueuedMessage) => {
-    sendMessage(queued.content, undefined, queued.attachments as Attachment[] | undefined);
+  sendQueuedRef.current = async (queued: QueuedMessage) => {
+    await sendMessage(queued.content, undefined, queued.attachments as Attachment[] | undefined);
   };
 
   const sendControl = useCallback((payload: unknown): boolean => {

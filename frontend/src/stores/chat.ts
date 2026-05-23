@@ -63,6 +63,7 @@ type ChatState = {
   queuedMessages: Record<string, QueuedMessage[]>;
   includeIgnoredInMentions: boolean;
   autoApprove: boolean;
+  useActiveBrowser: boolean;
   restoring: boolean;
   lastRestoreError: ChatRestoreError | null;
 
@@ -92,6 +93,7 @@ type ChatState = {
   clearQueue: (sessionId: string) => void;
   toggleIncludeIgnored: () => void;
   toggleAutoApprove: () => void;
+  toggleUseActiveBrowser: () => void;
 };
 
 function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: ChatSessionInfo) => ChatSessionInfo): ChatSessionInfo[] {
@@ -305,6 +307,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   queuedMessages: {},
   includeIgnoredInMentions: false,
   autoApprove: false,
+  useActiveBrowser: false,
   restoring: false,
   lastRestoreError: null,
 
@@ -896,4 +899,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   toggleAutoApprove: () =>
     set((state) => ({ autoApprove: !state.autoApprove })),
+
+  toggleUseActiveBrowser: () =>
+    set((state) => ({ useActiveBrowser: !state.useActiveBrowser })),
 }));
