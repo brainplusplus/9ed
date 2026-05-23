@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -129,6 +130,10 @@ func spaHandler(root string, mode string) http.Handler {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
+		if shouldBypassSPAFallback(r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 
 		fallback := "index.html"
 		if mode == "full" {
@@ -142,6 +147,15 @@ func spaHandler(root string, mode string) http.Handler {
 		setStaticCacheHeaders(w, fallbackPath)
 		http.ServeFile(w, r, fallbackPath)
 	})
+}
+
+func shouldBypassSPAFallback(requestPath string) bool {
+	cleanPath := path.Clean("/" + strings.TrimSpace(requestPath))
+	if strings.HasPrefix(cleanPath, "/assets/") {
+		return true
+	}
+	ext := strings.ToLower(path.Ext(cleanPath))
+	return ext != ""
 }
 
 func setStaticCacheHeaders(w http.ResponseWriter, path string) {

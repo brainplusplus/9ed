@@ -65,6 +65,26 @@ func TestServerHandlerServesSPAAndStaticAssetsWhenAuthenticated(t *testing.T) {
 	}
 }
 
+func TestServerHandlerReturns404ForMissingAssetInsteadOfSPAHTML(t *testing.T) {
+	root := setupTestDist(t)
+	withWorkingDirectory(t, root)
+
+	srv := New(config.Config{
+		Port:              "8080",
+		BasicAuthUsername: "alice",
+		BasicAuthPassword: "secret",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
+	req.SetBasicAuth("alice", "secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing asset, got %d with body %q", rec.Code, rec.Body.String())
+	}
+}
+
 func setupTestDist(t *testing.T) string {
 	t.Helper()
 

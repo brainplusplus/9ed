@@ -106,6 +106,7 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	proxyPrefix := browserProxyPrefix(tabID)
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := proxy.Director
@@ -116,6 +117,7 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		req.URL.Path = target.Path
 		req.URL.RawQuery = target.RawQuery
 		req.Host = target.Host
+		req.Header.Del("Accept-Encoding")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		resp.Header.Del("X-Frame-Options")
@@ -123,7 +125,7 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		resp.Header.Del("Content-Security-Policy-Report-Only")
 		resp.Header.Del("Cross-Origin-Opener-Policy")
 		resp.Header.Del("Cross-Origin-Embedder-Policy")
-		return nil
+		return rewriteProxyResponseBody(resp, proxyPrefix)
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
