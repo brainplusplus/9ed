@@ -12,7 +12,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-const proxyRuntimePatch = `(function(){if(window.__nineEDProxyPatched)return;window.__nineEDProxyPatched=true;var proxyBase=%q;var remotePath=%q;var tabId=%q;function normalize(input){try{var value=String(input);if(/^(data|blob|javascript|mailto|tel):/i.test(value))return value;if(value.startsWith("//"))return window.location.protocol+value;if(value.startsWith("/"))return proxyBase+value.slice(1);return value}catch{return input}}function notifyParent(type,payload){try{if(window.parent&&window.parent!==window){window.parent.postMessage(Object.assign({__nineBrowser:true,type:type,tabId:tabId},payload||{}),window.location.origin)}}catch{}}try{if(remotePath&&window.location.pathname!==remotePath.split(/[?#]/,1)[0]){window.history.replaceState(window.history.state,"",remotePath)}}catch{}var originalFetch=window.fetch;if(typeof originalFetch==="function"){window.fetch=function(input,init){if(typeof input==="string"){input=normalize(input)}else if(input instanceof Request){input=new Request(normalize(input.url),input)}return originalFetch.call(this,input,init)}}var originalOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url){if(arguments.length>1){arguments[1]=normalize(url)}return originalOpen.apply(this,arguments)};if(window.EventSource){var OriginalEventSource=window.EventSource;window.EventSource=function(url,config){return new OriginalEventSource(normalize(url),config)};window.EventSource.prototype=OriginalEventSource.prototype}if(navigator.serviceWorker&&typeof navigator.serviceWorker.register==="function"){var originalRegister=navigator.serviceWorker.register.bind(navigator.serviceWorker);navigator.serviceWorker.register=function(scriptURL,options){var nextOptions=options?Object.assign({},options):{};if(nextOptions.scope){nextOptions.scope=normalize(nextOptions.scope)}else{nextOptions.scope=proxyBase}return originalRegister(normalize(scriptURL),nextOptions)}}var nativeWindowOpen=window.open;window.open=function(url,target,features){var normalized=normalize(url||"about:blank");var targetName=String(target||"_blank").toLowerCase();if(targetName===""||targetName==="_blank"||targetName==="_new"||features){notifyParent("open-tab",{url:normalized,target:target||"_blank",features:features||""});return {closed:false,close:function(){notifyParent("close-tab",{})},focus:function(){notifyParent("focus-tab",{})},postMessage:function(message,origin){notifyParent("post-message",{message:message,origin:origin||"*"})},location:{href:normalized}}}return nativeWindowOpen.call(window,normalized,target,features)};var nativeClose=window.close;window.close=function(){notifyParent("close-tab",{});try{return nativeClose.call(window)}catch{return undefined}};document.addEventListener("click",function(event){var node=event.target;while(node&&node.nodeType===1){if(node.tagName==="A"&&node.href){var targetName=String(node.getAttribute("target")||"").toLowerCase();if(targetName==="_blank"||node.hasAttribute("download")){event.preventDefault();notifyParent("open-tab",{url:normalize(node.href),target:targetName||"_blank"});return}break}node=node.parentElement}},true);document.addEventListener("submit",function(event){var form=event.target;if(form&&form.tagName==="FORM"){var targetName=String(form.getAttribute("target")||"").toLowerCase();if(targetName==="_blank"){event.preventDefault();var action=form.getAttribute("action")||remotePath||"/";notifyParent("open-tab",{url:normalize(action),target:"_blank",method:String(form.getAttribute("method")||"get").toUpperCase()})}}},true)})();`
+const proxyRuntimePatch = `(function(){if(window.__nineEDProxyPatched)return;window.__nineEDProxyPatched=true;var proxyBase=%q;var remotePath=%q;var tabId=%q;function normalize(input){try{var value=String(input);if(/^(data|blob|javascript|mailto|tel):/i.test(value))return value;if(value.startsWith("//"))return value;if(value.startsWith(window.location.origin+"/")&&!value.startsWith(window.location.origin+proxyBase)){var parsed=new URL(value);return proxyBase+parsed.pathname.replace(/^\/+/,"")+(parsed.search||"")+(parsed.hash||"")}if(value.startsWith("/"))return proxyBase+value.slice(1);return value}catch{return input}}function notifyParent(type,payload){try{if(window.parent&&window.parent!==window){window.parent.postMessage(Object.assign({__nineBrowser:true,type:type,tabId:tabId},payload||{}),window.location.origin)}}catch{}}var originalFetch=window.fetch;if(typeof originalFetch==="function"){window.fetch=function(input,init){if(typeof input==="string"||input instanceof URL){input=normalize(input)}else if(input instanceof Request){input=new Request(normalize(input.url),input)}return originalFetch.call(this,input,init)}}var originalOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url){if(arguments.length>1){arguments[1]=normalize(url)}return originalOpen.apply(this,arguments)};if(window.EventSource){var OriginalEventSource=window.EventSource;window.EventSource=function(url,config){return new OriginalEventSource(normalize(url),config)};window.EventSource.prototype=OriginalEventSource.prototype}if(navigator.serviceWorker&&typeof navigator.serviceWorker.register==="function"){navigator.serviceWorker.register=function(){return Promise.resolve({active:null,installing:null,waiting:null,scope:proxyBase,update:function(){return Promise.resolve()},unregister:function(){return Promise.resolve(true)},addEventListener:function(){},removeEventListener:function(){}})}}var nativeWindowOpen=window.open;window.open=function(url,target,features){var normalized=normalize(url||"about:blank");var targetName=String(target||"_blank").toLowerCase();if(targetName===""||targetName==="_blank"||targetName==="_new"||features){notifyParent("open-tab",{url:normalized,target:target||"_blank",features:features||""});return {closed:false,close:function(){notifyParent("close-tab",{})},focus:function(){notifyParent("focus-tab",{})},postMessage:function(message,origin){notifyParent("post-message",{message:message,origin:origin||"*"})},location:{href:normalized}}}return nativeWindowOpen.call(window,normalized,target,features)};var nativeClose=window.close;window.close=function(){notifyParent("close-tab",{});try{return nativeClose.call(window)}catch{return undefined}};document.addEventListener("click",function(event){var node=event.target;while(node&&node.nodeType===1){if(node.tagName==="A"&&node.href){var targetName=String(node.getAttribute("target")||"").toLowerCase();if(targetName==="_blank"||node.hasAttribute("download")){event.preventDefault();notifyParent("open-tab",{url:normalize(node.href),target:targetName||"_blank"});return}break}node=node.parentElement}},true);document.addEventListener("submit",function(event){var form=event.target;if(form&&form.tagName==="FORM"){var targetName=String(form.getAttribute("target")||"").toLowerCase();if(targetName==="_blank"){event.preventDefault();var action=form.getAttribute("action")||remotePath||"/";notifyParent("open-tab",{url:normalize(action),target:"_blank",method:String(form.getAttribute("method")||"get").toUpperCase()})}}},true)})();`
 
 func rewriteProxyResponseBody(resp *http.Response, prefix string, remotePath string, tabID string) error {
 	if resp.Body == nil {
@@ -90,7 +90,7 @@ func rewriteProxyHTML(input []byte, prefix string, remotePath string, tabID stri
 	head := findElement(doc, "head")
 	body := findElement(doc, "body")
 	if head != nil {
-		ensureProxyBase(head, prefix)
+		ensureProxyBase(head, proxyDocumentBase(prefix, remotePath))
 		injectProxyRuntime(head, prefix, remotePath, tabID)
 	}
 
@@ -204,7 +204,7 @@ func rewriteProxyAttribute(value string, prefix string) string {
 		return value
 	}
 	if strings.HasPrefix(value, "//") {
-		return prefix + strings.TrimPrefix(value, "//")
+		return value
 	}
 	if strings.HasPrefix(value, "/") {
 		return prefix + strings.TrimPrefix(value, "/")
@@ -240,6 +240,18 @@ func ensureProxyBase(head *html.Node, prefix string) {
 		Attr: []html.Attribute{{Key: "href", Val: prefix}},
 	}
 	head.InsertBefore(base, head.FirstChild)
+}
+
+func proxyDocumentBase(prefix string, remotePath string) string {
+	remoteURL, err := url.Parse(remotePath)
+	if err != nil {
+		return prefix
+	}
+	remoteDir := path.Dir(remoteURL.Path)
+	if remoteDir == "." || remoteDir == "/" {
+		return prefix
+	}
+	return prefix + strings.Trim(remoteDir, "/") + "/"
 }
 
 func injectProxyRuntime(head *html.Node, prefix string, remotePath string, tabID string) {
@@ -309,7 +321,7 @@ func attrValue(node *html.Node, key string) string {
 }
 
 func browserProxyPrefix(tabID string) string {
-	return path.Join("/api/browser/proxy", tabID) + "/"
+	return path.Join("/browser", tabID) + "/"
 }
 
 func isJavaScriptContentType(contentType string) bool {

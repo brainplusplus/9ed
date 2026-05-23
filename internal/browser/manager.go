@@ -101,7 +101,7 @@ func (m *Manager) CreateTab(rawURL string) (Tab, error) {
 		ID:        id,
 		URL:       target.String(),
 		Title:     target.Host,
-		ProxyPath: "/api/browser/proxy/" + id + "/",
+		ProxyPath: "/browser/" + id + "/",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -174,7 +174,11 @@ func (m *Manager) ProxyTarget(id string, requestPath string, rawQuery string) (*
 		return nil, err
 	}
 	target := *base
-	target.Path = joinURLPath(base.Path, requestPath)
+	if requestPath == "" || requestPath == "/" {
+		target.Path = joinURLPath(base.Path, requestPath)
+	} else {
+		target.Path = requestPath
+	}
 	target.RawPath = ""
 	if rawQuery != "" {
 		target.RawQuery = rawQuery

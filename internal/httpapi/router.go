@@ -115,6 +115,7 @@ func (a *API) Handler() http.Handler {
 		mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)
 		mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
 		mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
+		mux.HandleFunc("/browser/", a.handleBrowserProxy)
 		mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
 		mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
 		mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)

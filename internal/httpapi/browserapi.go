@@ -102,7 +102,7 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rest := strings.TrimPrefix(r.URL.Path, "/api/browser/proxy/")
+	rest := browserProxyRest(r.URL.Path)
 	tabID, requestPath := splitBrowserProxyPath(rest)
 	if tabID == "" {
 		http.NotFound(w, r)
@@ -134,6 +134,8 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		req.Header.Del("Accept-Encoding")
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Set("Cache-Control", "no-store")
+		resp.Header.Set("Pragma", "no-cache")
 		resp.Header.Del("X-Frame-Options")
 		resp.Header.Del("Content-Security-Policy")
 		resp.Header.Del("Content-Security-Policy-Report-Only")
@@ -313,6 +315,13 @@ func splitBrowserTabPath(rest string) (string, string) {
 		return id, ""
 	}
 	return id, strings.Trim(action, "/")
+}
+
+func browserProxyRest(requestPath string) string {
+	if strings.HasPrefix(requestPath, "/browser/") {
+		return strings.TrimPrefix(requestPath, "/browser/")
+	}
+	return strings.TrimPrefix(requestPath, "/api/browser/proxy/")
 }
 
 func splitBrowserProxyPath(rest string) (string, string) {

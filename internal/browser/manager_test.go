@@ -59,3 +59,27 @@ func TestManagerTabsAndProxyTarget(t *testing.T) {
 		t.Fatalf("DeleteTab() error = %v", err)
 	}
 }
+
+func TestProxyTargetMapsInitialDocumentAndAbsoluteResources(t *testing.T) {
+	manager := NewManager()
+	tab, err := manager.CreateTab("https://example.com/docs/page")
+	if err != nil {
+		t.Fatalf("CreateTab() error = %v", err)
+	}
+
+	document, err := manager.ProxyTarget(tab.ID, "/", "")
+	if err != nil {
+		t.Fatalf("ProxyTarget(document) error = %v", err)
+	}
+	if document.String() != "https://example.com/docs/page" {
+		t.Fatalf("expected initial proxy request to load tab URL, got %q", document.String())
+	}
+
+	asset, err := manager.ProxyTarget(tab.ID, "/assets/app.js", "v=1")
+	if err != nil {
+		t.Fatalf("ProxyTarget(asset) error = %v", err)
+	}
+	if asset.String() != "https://example.com/assets/app.js?v=1" {
+		t.Fatalf("expected absolute asset path to stay root-relative, got %q", asset.String())
+	}
+}
