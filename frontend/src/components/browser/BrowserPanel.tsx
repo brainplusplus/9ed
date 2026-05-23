@@ -1,8 +1,16 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
 import type { BrowserAutomationStatus, BrowserTab } from '../../types';
 
 const DEFAULT_URL = 'localhost:3000';
+
+type BrowserProxyMessage = {
+  __nineBrowser: true;
+  type: 'open-tab' | 'close-tab' | 'focus-tab' | 'post-message';
+  tabId: string;
+  url?: string;
+  target?: string;
+};
 
 function displayTitle(tab: BrowserTab): string {
   return tab.title || tab.url.replace(/^https?:\/\//, '');
@@ -16,11 +24,16 @@ export function BrowserPanel() {
   const [error, setError] = useState<string | null>(null);
   const [automation, setAutomation] = useState<BrowserAutomationStatus | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const tabsRef = useRef<BrowserTab[]>([]);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null,
     [tabs, activeTabId],
   );
+
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
 
   useEffect(() => {
     let alive = true;
@@ -53,6 +66,45 @@ export function BrowserPanel() {
       setAddress(activeTab.url);
     }
   }, [activeTab?.id, activeTab?.url]);
+
+  useEffect(() => {
+    async function handleProxyMessage(event: MessageEvent<BrowserProxyMessage>) {
+      const data = event.data;
+      if (!data || data.__nineBrowser !== true || !data.tabId) {
+        return;
+      }
+
+      if (data.type === 'open-tab' && data.url) {
+        try {
+          setError(null);
+          const tab = await createBrowserTab(data.url);
+          setTabs((current) => [...current, tab]);
+          setActiveTabId(tab.id);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to open browser tab');
+        }
+        return;
+      }
+
+      if (data.type === 'close-tab') {
+        const existing = tabsRef.current.find((tab) => tab.id === data.tabId);
+        if (!existing) {
+          return;
+        }
+        await handleCloseTab(data.tabId);
+        return;
+      }
+
+      if (data.type === 'focus-tab') {
+        setActiveTabId(data.tabId);
+      }
+    }
+
+    window.addEventListener('message', handleProxyMessage);
+    return () => {
+      window.removeEventListener('message', handleProxyMessage);
+    };
+  }, [activeTabId]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -91,7 +143,7 @@ export function BrowserPanel() {
   }
 
   async function handleCloseTab(tabId: string) {
-    const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+    const nextTabs = tabsRef.current.filter((tab) => tab.id !== tabId);
     setTabs(nextTabs);
     if (activeTabId === tabId) {
       setActiveTabId(nextTabs[0]?.id ?? null);

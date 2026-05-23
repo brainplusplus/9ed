@@ -107,6 +107,13 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxyPrefix := browserProxyPrefix(tabID)
+	remotePath := target.Path
+	if remotePath == "" {
+		remotePath = "/"
+	}
+	if target.RawQuery != "" {
+		remotePath += "?" + target.RawQuery
+	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := proxy.Director
@@ -125,7 +132,7 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		resp.Header.Del("Content-Security-Policy-Report-Only")
 		resp.Header.Del("Cross-Origin-Opener-Policy")
 		resp.Header.Del("Cross-Origin-Embedder-Policy")
-		return rewriteProxyResponseBody(resp, proxyPrefix)
+		return rewriteProxyResponseBody(resp, proxyPrefix, remotePath, tabID)
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 		http.Error(w, err.Error(), http.StatusBadGateway)

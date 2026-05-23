@@ -12,9 +12,9 @@ import (
 	"golang.org/x/net/html"
 )
 
-const proxyRuntimePatch = `(function(){if(window.__nineEDProxyPatched)return;window.__nineEDProxyPatched=true;var proxyBase=%q;function normalize(input){try{var value=String(input);if(/^(data|blob|javascript|mailto|tel):/i.test(value))return value;if(value.startsWith("//"))return window.location.protocol+value;if(value.startsWith("/"))return proxyBase+value.slice(1);return value}catch{return input}}var originalFetch=window.fetch;if(typeof originalFetch==="function"){window.fetch=function(input,init){if(typeof input==="string"){input=normalize(input)}else if(input instanceof Request){input=new Request(normalize(input.url),input)}return originalFetch.call(this,input,init)}}var originalOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url){if(arguments.length>1){arguments[1]=normalize(url)}return originalOpen.apply(this,arguments)};if(window.EventSource){var OriginalEventSource=window.EventSource;window.EventSource=function(url,config){return new OriginalEventSource(normalize(url),config)};window.EventSource.prototype=OriginalEventSource.prototype}})();`
+const proxyRuntimePatch = `(function(){if(window.__nineEDProxyPatched)return;window.__nineEDProxyPatched=true;var proxyBase=%q;var remotePath=%q;var tabId=%q;function normalize(input){try{var value=String(input);if(/^(data|blob|javascript|mailto|tel):/i.test(value))return value;if(value.startsWith("//"))return window.location.protocol+value;if(value.startsWith("/"))return proxyBase+value.slice(1);return value}catch{return input}}function notifyParent(type,payload){try{if(window.parent&&window.parent!==window){window.parent.postMessage(Object.assign({__nineBrowser:true,type:type,tabId:tabId},payload||{}),window.location.origin)}}catch{}}try{if(remotePath&&window.location.pathname!==remotePath.split(/[?#]/,1)[0]){window.history.replaceState(window.history.state,"",remotePath)}}catch{}var originalFetch=window.fetch;if(typeof originalFetch==="function"){window.fetch=function(input,init){if(typeof input==="string"){input=normalize(input)}else if(input instanceof Request){input=new Request(normalize(input.url),input)}return originalFetch.call(this,input,init)}}var originalOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url){if(arguments.length>1){arguments[1]=normalize(url)}return originalOpen.apply(this,arguments)};if(window.EventSource){var OriginalEventSource=window.EventSource;window.EventSource=function(url,config){return new OriginalEventSource(normalize(url),config)};window.EventSource.prototype=OriginalEventSource.prototype}if(navigator.serviceWorker&&typeof navigator.serviceWorker.register==="function"){var originalRegister=navigator.serviceWorker.register.bind(navigator.serviceWorker);navigator.serviceWorker.register=function(scriptURL,options){return originalRegister(normalize(scriptURL),options)}}var nativeWindowOpen=window.open;window.open=function(url,target,features){var normalized=normalize(url||"about:blank");var targetName=String(target||"_blank").toLowerCase();if(targetName===""||targetName==="_blank"||targetName==="_new"||features){notifyParent("open-tab",{url:normalized,target:target||"_blank",features:features||""});return {closed:false,close:function(){notifyParent("close-tab",{})},focus:function(){notifyParent("focus-tab",{})},postMessage:function(message,origin){notifyParent("post-message",{message:message,origin:origin||"*"})},location:{href:normalized}}}return nativeWindowOpen.call(window,normalized,target,features)};var nativeClose=window.close;window.close=function(){notifyParent("close-tab",{});try{return nativeClose.call(window)}catch{return undefined}};document.addEventListener("click",function(event){var node=event.target;while(node&&node.nodeType===1){if(node.tagName==="A"&&node.href){var targetName=String(node.getAttribute("target")||"").toLowerCase();if(targetName==="_blank"||node.hasAttribute("download")){event.preventDefault();notifyParent("open-tab",{url:normalize(node.href),target:targetName||"_blank"});return}break}node=node.parentElement}},true);document.addEventListener("submit",function(event){var form=event.target;if(form&&form.tagName==="FORM"){var targetName=String(form.getAttribute("target")||"").toLowerCase();if(targetName==="_blank"){event.preventDefault();var action=form.getAttribute("action")||remotePath||"/";notifyParent("open-tab",{url:normalize(action),target:"_blank",method:String(form.getAttribute("method")||"get").toUpperCase()})}}},true)})();`
 
-func rewriteProxyResponseBody(resp *http.Response, prefix string) error {
+func rewriteProxyResponseBody(resp *http.Response, prefix string, remotePath string, tabID string) error {
 	if resp.Body == nil {
 		return nil
 	}
@@ -23,7 +23,8 @@ func rewriteProxyResponseBody(resp *http.Response, prefix string) error {
 		resp.Header.Set("Location", rewriteProxyLocation(location, prefix))
 	}
 
-	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "text/html") && !strings.Contains(contentType, "text/css") {
 		return nil
 	}
 
@@ -34,9 +35,14 @@ func rewriteProxyResponseBody(resp *http.Response, prefix string) error {
 	}
 	_ = resp.Body.Close()
 
-	rewritten, err := rewriteProxyHTML(body, prefix)
-	if err != nil {
-		return err
+	rewritten := body
+	if strings.Contains(contentType, "text/html") {
+		rewritten, err = rewriteProxyHTML(body, prefix, remotePath, tabID)
+		if err != nil {
+			return err
+		}
+	} else if strings.Contains(contentType, "text/css") {
+		rewritten = rewriteProxyCSS(body, prefix)
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
@@ -73,7 +79,7 @@ func rewriteProxyLocation(location string, prefix string) string {
 	return rewritten
 }
 
-func rewriteProxyHTML(input []byte, prefix string) ([]byte, error) {
+func rewriteProxyHTML(input []byte, prefix string, remotePath string, tabID string) ([]byte, error) {
 	doc, err := html.Parse(bytes.NewReader(input))
 	if err != nil {
 		return nil, err
@@ -83,7 +89,7 @@ func rewriteProxyHTML(input []byte, prefix string) ([]byte, error) {
 	body := findElement(doc, "body")
 	if head != nil {
 		ensureProxyBase(head, prefix)
-		injectProxyRuntime(head, prefix)
+		injectProxyRuntime(head, prefix, remotePath, tabID)
 	}
 
 	var walk func(*html.Node)
@@ -112,6 +118,53 @@ func rewriteProxyHTML(input []byte, prefix string) ([]byte, error) {
 		return nil, err
 	}
 	return output.Bytes(), nil
+}
+
+func rewriteProxyCSS(input []byte, prefix string) []byte {
+	css := string(input)
+	var output strings.Builder
+	output.Grow(len(css) + len(prefix)*2)
+
+	for i := 0; i < len(css); {
+		idx := strings.Index(strings.ToLower(css[i:]), "url(")
+		if idx < 0 {
+			output.WriteString(css[i:])
+			break
+		}
+		idx += i
+		output.WriteString(css[i:idx])
+
+		end := strings.IndexByte(css[idx:], ')')
+		if end < 0 {
+			output.WriteString(css[idx:])
+			break
+		}
+		end += idx
+
+		segment := css[idx : end+1]
+		rewritten := segment
+		open := strings.IndexByte(segment, '(')
+		close := strings.LastIndexByte(segment, ')')
+		if open >= 0 && close > open {
+			inner := strings.TrimSpace(segment[open+1 : close])
+			quote := ""
+			value := inner
+			if len(inner) >= 2 {
+				if (inner[0] == '\'' && inner[len(inner)-1] == '\'') || (inner[0] == '"' && inner[len(inner)-1] == '"') {
+					quote = inner[:1]
+					value = inner[1 : len(inner)-1]
+				}
+			}
+			lower := strings.ToLower(value)
+			if strings.HasPrefix(value, "/") && !strings.HasPrefix(lower, "//") {
+				rewritten = "url(" + quote + prefix + strings.TrimPrefix(value, "/") + quote + ")"
+			}
+		}
+		output.WriteString(rewritten)
+		i = end + 1
+	}
+
+	return []byte(output.String())
 }
 
 func rewriteProxyAttribute(value string, prefix string) string {
@@ -165,7 +218,7 @@ func ensureProxyBase(head *html.Node, prefix string) {
 	head.InsertBefore(base, head.FirstChild)
 }
 
-func injectProxyRuntime(head *html.Node, prefix string) {
+func injectProxyRuntime(head *html.Node, prefix string, remotePath string, tabID string) {
 	for child := head.FirstChild; child != nil; child = child.NextSibling {
 		if child.Type == html.ElementNode && child.Data == "script" && attrValue(child, "data-nine-proxy-runtime") == "true" {
 			return
@@ -179,7 +232,7 @@ func injectProxyRuntime(head *html.Node, prefix string) {
 	}
 	script.AppendChild(&html.Node{
 		Type: html.TextNode,
-		Data: fmt.Sprintf(proxyRuntimePatch, prefix),
+		Data: fmt.Sprintf(proxyRuntimePatch, prefix, remotePath, tabID),
 	})
 	if head.FirstChild != nil {
 		head.InsertBefore(script, head.FirstChild.NextSibling)

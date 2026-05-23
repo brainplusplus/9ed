@@ -12,7 +12,7 @@ import (
 func TestRewriteProxyHTMLRewritesRootRelativeAssetsAndInjectsRuntime(t *testing.T) {
 	input := []byte(`<!doctype html><html><head><script src="/assets/app.js"></script></head><body><img src="/hero.png"><a href="/docs">Docs</a></body></html>`)
 
-	output, err := rewriteProxyHTML(input, "/api/browser/proxy/browser-1/")
+	output, err := rewriteProxyHTML(input, "/api/browser/proxy/browser-1/", "/", "browser-1")
 	if err != nil {
 		t.Fatalf("rewriteProxyHTML() error = %v", err)
 	}
@@ -29,6 +29,12 @@ func TestRewriteProxyHTMLRewritesRootRelativeAssetsAndInjectsRuntime(t *testing.
 	}
 	if !strings.Contains(html, `data-nine-proxy-runtime="true"`) {
 		t.Fatalf("expected runtime patch to be injected, got %q", html)
+	}
+	if !strings.Contains(html, `var remotePath="/"`) {
+		t.Fatalf("expected runtime patch to receive remote path, got %q", html)
+	}
+	if !strings.Contains(html, `var tabId="browser-1"`) {
+		t.Fatalf("expected runtime patch to receive tab id, got %q", html)
 	}
 }
 
@@ -74,5 +80,18 @@ func TestHandleBrowserProxyRewritesHTMLResponses(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Frame-Options"); got != "" {
 		t.Fatalf("expected X-Frame-Options to be removed, got %q", got)
+	}
+}
+
+func TestRewriteProxyCSSRewritesRootRelativeURLs(t *testing.T) {
+	input := []byte(`@font-face{src:url('/cf-fonts/v/inter/normal.woff2')} .hero{background-image:url(/images/hero.png)}`)
+
+	output := string(rewriteProxyCSS(input, "/api/browser/proxy/browser-1/"))
+
+	if !strings.Contains(output, `url('/api/browser/proxy/browser-1/cf-fonts/v/inter/normal.woff2')`) {
+		t.Fatalf("expected font URL to be rewritten, got %q", output)
+	}
+	if !strings.Contains(output, `url(/api/browser/proxy/browser-1/images/hero.png)`) {
+		t.Fatalf("expected background URL to be rewritten, got %q", output)
 	}
 }
