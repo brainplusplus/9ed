@@ -177,10 +177,13 @@ func rewriteProxyJavaScript(input []byte, prefix string) []byte {
 	}{
 		{`"/assets/`, `"` + prefix + `assets/`},
 		{`'/assets/`, `'` + prefix + `assets/`},
+		{"`/assets/", "`" + prefix + "assets/"},
 		{`"/sw.js"`, `"` + prefix + `sw.js"`},
 		{`'/sw.js'`, `'` + prefix + `sw.js'`},
+		{"`/sw.js`", "`" + prefix + "sw.js`"},
 		{`scope:"/"`, `scope:"` + prefix + `"`},
 		{`scope:'/'`, `scope:'` + prefix + `'`},
+		{"scope:`/`", "scope:`" + prefix + "`"},
 	}
 	for _, replacement := range replacements {
 		script = strings.ReplaceAll(script, replacement.old, replacement.new)

@@ -97,7 +97,7 @@ func TestRewriteProxyCSSRewritesRootRelativeURLs(t *testing.T) {
 }
 
 func TestRewriteProxyJavaScriptRewritesRootRelativeAssetAndServiceWorkerPaths(t *testing.T) {
-	input := []byte(`const asset="/assets/chunk.js"; import("/assets/entry.js"); navigator.serviceWorker.register("/sw.js",{scope:"/"});`)
+	input := []byte("const asset=\"/assets/chunk.js\"; import(\"/assets/entry.js\"); const sw=`/sw.js`; navigator.serviceWorker.register(\"/sw.js\",{scope:\"/\"});")
 
 	output := string(rewriteProxyJavaScript(input, "/api/browser/proxy/browser-1/"))
 
@@ -106,6 +106,9 @@ func TestRewriteProxyJavaScriptRewritesRootRelativeAssetAndServiceWorkerPaths(t 
 	}
 	if !strings.Contains(output, `"/api/browser/proxy/browser-1/sw.js"`) {
 		t.Fatalf("expected service worker script rewrite, got %q", output)
+	}
+	if !strings.Contains(output, "`/api/browser/proxy/browser-1/sw.js`") {
+		t.Fatalf("expected template literal service worker rewrite, got %q", output)
 	}
 	if !strings.Contains(output, `scope:"/api/browser/proxy/browser-1/"`) {
 		t.Fatalf("expected service worker scope rewrite, got %q", output)

@@ -139,6 +139,9 @@ func (a *API) handleBrowserProxy(w http.ResponseWriter, r *http.Request) {
 		resp.Header.Del("Content-Security-Policy-Report-Only")
 		resp.Header.Del("Cross-Origin-Opener-Policy")
 		resp.Header.Del("Cross-Origin-Embedder-Policy")
+		if strings.HasSuffix(resp.Request.URL.Path, "/sw.js") || strings.HasSuffix(resp.Request.URL.Path, "sw.js") {
+			resp.Header.Set("Service-Worker-Allowed", proxyPrefix)
+		}
 		return rewriteProxyResponseBody(resp, proxyPrefix, remotePath, tabID)
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
