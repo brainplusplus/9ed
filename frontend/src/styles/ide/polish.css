@@ -518,6 +518,19 @@
   cursor: pointer;
 }
 
+.chat-voice-status {
+  padding: 6px 9px;
+  border-radius: 9px;
+  font-size: 0.76rem;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chat-voice-status.active {
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.12);
+}
+
 .chat-attachment-chip {
   padding: 4px 9px;
   border-radius: 999px;

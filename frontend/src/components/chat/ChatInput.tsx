@@ -48,6 +48,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const [mentionIdx, setMentionIdx] = useState(0);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
@@ -200,11 +201,13 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const toggleVoiceInput = useCallback(() => {
     const SpeechCtor = getSpeechRecognitionCtor();
     if (!SpeechCtor || disabled) {
+      setVoiceStatus('Voice input is unavailable in this browser.');
       return;
     }
 
     if (voiceActive) {
       speechRef.current?.stop();
+      setVoiceStatus('Stopping voice input...');
       return;
     }
 
@@ -214,6 +217,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     recognition.lang = 'id-ID';
     speechRef.current = recognition;
     setVoiceActive(true);
+    setVoiceStatus('Listening...');
 
     recognition.onresult = (event) => {
       let transcript = '';
@@ -232,12 +236,14 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
         return next;
       });
     };
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
       setVoiceActive(false);
+      setVoiceStatus(event.error ? `Voice input error: ${event.error}` : 'Voice input failed.');
     };
     recognition.onend = () => {
       setVoiceActive(false);
       speechRef.current = null;
+      setVoiceStatus((current) => (current === 'Listening...' || current === 'Stopping voice input...' ? null : current));
     };
     recognition.start();
   }, [adjustHeight, disabled, voiceActive]);
@@ -355,6 +361,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
               <button className="chat-attachment-remove" onClick={() => removeAttachment(i)} type="button">x</button>
             </span>
           ))}
+        </div>
+      )}
+      {voiceStatus && (
+        <div className={`chat-voice-status${voiceActive ? ' active' : ''}`}>
+          {voiceStatus}
         </div>
       )}
       <div className="chat-composer-shell">

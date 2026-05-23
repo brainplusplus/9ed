@@ -265,6 +265,14 @@
   cursor: pointer;
 }
 
+.browser-inspect-tip {
+  padding: 7px 10px;
+  font-size: 0.76rem;
+  color: #bfdbfe;
+  background: rgba(37, 99, 235, 0.14);
+  border-bottom: 1px solid rgba(96, 165, 250, 0.24);
+}
+
 .browser-frame-wrap {
   flex: 1;
   min-height: 0;

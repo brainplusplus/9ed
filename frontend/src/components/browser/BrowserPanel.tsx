@@ -481,6 +481,11 @@ export function BrowserPanel() {
           {error || automation?.lastError}
         </div>
       )}
+      {inspectMode && (
+        <div className="browser-inspect-tip">
+          Inspect mode active. Hover an element inside the page, then click to select it for chat context.
+        </div>
+      )}
       {browserSelection && (
         <div className="browser-selection-bar">
           <div className="browser-selection-copy">
