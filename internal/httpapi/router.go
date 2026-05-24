@@ -43,10 +43,12 @@ type Dependencies struct {
 	Mode               string
 	WorkspaceRoot      string
 	UseBrowser         bool
+	TerminalAIMaxLines int
 	Watcher            *watcher.FileWatcher
 	ChatSessionManager ChatRuntimeManager
 	ChatStore          *chat.ChatStore
 	Browser            *browser.Manager
+	TunnelURL          func() string // returns current tunnel URL (may change on restart)
 }
 
 type API struct {
@@ -56,11 +58,13 @@ type API struct {
 	mode               string
 	workspaceRoot      string
 	useBrowser         bool
+	terminalAiMaxLines int
 	watcher            *watcher.FileWatcher
 	chatSessionManager ChatRuntimeManager
 	chatStore          *chat.ChatStore
 	chatStreams        *chatStreamRegistry
 	browser            *browser.Manager
+	tunnelURL          func() string
 }
 
 func New(deps Dependencies) *API {
@@ -71,12 +75,19 @@ func New(deps Dependencies) *API {
 		mode:               deps.Mode,
 		workspaceRoot:      deps.WorkspaceRoot,
 		useBrowser:         deps.UseBrowser,
+		terminalAiMaxLines: deps.TerminalAIMaxLines,
 		watcher:            deps.Watcher,
 		chatSessionManager: deps.ChatSessionManager,
 		chatStore:          deps.ChatStore,
 		chatStreams:        newChatStreamRegistry(),
 		browser:            deps.Browser,
+		tunnelURL:          deps.TunnelURL,
 	}
+}
+
+// SetTunnelURL updates the tunnel URL provider (called after tunnel starts).
+func (a *API) SetTunnelURL(fn func() string) {
+	a.tunnelURL = fn
 }
 
 func (a *API) Handler() http.Handler {

@@ -40,11 +40,16 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusOK, configResponse{
-		Mode:          a.mode,
-		WorkspaceRoot: a.workspaceRoot,
-		UseBrowser:    a.useBrowser,
-	})
+	resp := configResponse{
+		Mode:               a.mode,
+		WorkspaceRoot:      a.workspaceRoot,
+		UseBrowser:         a.useBrowser,
+		TerminalAIMaxLines: a.terminalAiMaxLines,
+	}
+	if a.tunnelURL != nil {
+		resp.TunnelURL = a.tunnelURL()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *API) handleFileDrives(w http.ResponseWriter, r *http.Request) {

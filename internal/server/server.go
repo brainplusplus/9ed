@@ -23,9 +23,10 @@ import (
 )
 
 type Server struct {
-	Config config.Config
-	api    *httpapi.API
-	hs     *http.Server
+	Config   config.Config
+	api      *httpapi.API
+	hs       *http.Server
+	tunnelFn func() string
 }
 
 func New(cfg config.Config) *Server {
@@ -66,16 +67,25 @@ func New(cfg config.Config) *Server {
 		Mode:               cfg.Mode,
 		WorkspaceRoot:      cfg.WorkspaceRoot,
 		UseBrowser:         cfg.UseBrowser && cfg.Mode == "full",
+		TerminalAIMaxLines: cfg.TerminalAIMaxLines,
 		Watcher:            fw,
 		ChatSessionManager: chatSessionMgr,
 		ChatStore:          chatStore,
 		Browser:            browserMgr,
+		TunnelURL:          func() string { return "" }, // placeholder, set via SetTunnel
 	})
 
 	return &Server{
 		Config: cfg,
 		api:    api,
+		tunnelFn: func() string { return "" },
 	}
+}
+
+// SetTunnel injects the live tunnel URL provider after startup.
+func (s *Server) SetTunnel(tunnelURL func() string) {
+	s.tunnelFn = tunnelURL
+	s.api.SetTunnelURL(tunnelURL)
 }
 
 func (s *Server) Handler() http.Handler {

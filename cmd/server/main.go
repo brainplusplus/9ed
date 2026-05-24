@@ -41,6 +41,11 @@ func main() {
 
 	srv := server.New(cfg)
 
+	// Inject live tunnel URL into server (updates on watchdog restart).
+	if tn != nil {
+		srv.SetTunnel(tn.URL)
+	}
+
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
