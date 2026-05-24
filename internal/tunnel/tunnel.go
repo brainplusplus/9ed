@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brainplusplus/9ed/internal/debug"
@@ -21,30 +23,49 @@ import (
 
 var cloudflaredURLPattern = regexp.MustCompile(`https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com`)
 
-// Tunnel manages a tunnel subprocess.
+// Tunnel manages a tunnel subprocess with automatic restart on failure.
 type Tunnel struct {
-	cmd    *exec.Cmd
-	url    string
-	cancel context.CancelFunc
-	done   chan struct{}
-	engine string
+	engine      string
+	port        string
+	url         string
+	urlMu       sync.RWMutex
+	stopCh      chan struct{}
+	stopped     atomic.Bool
+	currentProc atomic.Pointer[tunnelProc]
 }
 
 // Start launches a tunnel using the specified engine ("bore" or "cloudflare") proxying to localhost:port.
+// The returned Tunnel automatically restarts the underlying subprocess if it exits unexpectedly.
+// Any orphan tunnel processes from a previous server instance are killed first.
 func Start(engine, port string) (*Tunnel, error) {
-	switch engine {
-	case "bore":
-		return startBore(port)
-	case "cloudflare":
-		return startCloudflare(port)
-	default:
-		return nil, fmt.Errorf("unknown tunnel engine: %s", engine)
+	killOrphanProcesses(engine)
+
+	t := &Tunnel{
+		engine: engine,
+		port:   port,
+		stopCh: make(chan struct{}),
 	}
+
+	if err := t.launch(); err != nil {
+		return nil, err
+	}
+
+	go t.watchdog()
+
+	return t, nil
 }
 
-// URL returns the public tunnel URL.
+// URL returns the current public tunnel URL (may change after automatic restarts).
 func (t *Tunnel) URL() string {
+	t.urlMu.RLock()
+	defer t.urlMu.RUnlock()
 	return t.url
+}
+
+func (t *Tunnel) setURL(u string) {
+	t.urlMu.Lock()
+	t.url = u
+	t.urlMu.Unlock()
 }
 
 // Engine returns the tunnel engine name.
@@ -52,40 +73,113 @@ func (t *Tunnel) Engine() string {
 	return t.engine
 }
 
-// Stop gracefully shuts down the tunnel process.
+// Stop gracefully shuts down the tunnel process and stops the restart watchdog.
 func (t *Tunnel) Stop() error {
-	if t.cmd == nil || t.cmd.Process == nil {
-		return nil
+	if !t.stopped.CompareAndSwap(false, true) {
+		return nil // already stopped
 	}
-	t.cancel()
-
-	stopProcess(t.cmd)
-
-	select {
-	case <-t.done:
-	case <-time.After(10 * time.Second):
-		_ = t.cmd.Process.Kill()
-		select {
-		case <-t.done:
-		case <-time.After(2 * time.Second):
-		}
+	close(t.stopCh)
+	if proc := t.currentProc.Load(); proc != nil {
+		proc.cancel()
+		stopProcess(proc.cmd)
 	}
+	return nil
+}
+
+// launch starts a single tunnel subprocess and waits for its URL.
+func (t *Tunnel) launch() error {
+	var proc *tunnelProc
+	var err error
+
+	switch t.engine {
+	case "bore":
+		proc, err = startBoreProc(t.port)
+	case "cloudflare":
+		proc, err = startCloudflareProc(t.port)
+	default:
+		return fmt.Errorf("unknown tunnel engine: %s", t.engine)
+	}
+	if err != nil {
+		return err
+	}
+
+	t.setURL(proc.url)
+	log.Printf("tunnel active: %s (%s)", proc.url, t.engine)
+
+	// Store proc so watchdog can wait on it.
+	t.currentProc.Store(proc)
 
 	return nil
 }
 
-func newTunnel(engine string, cmd *exec.Cmd, cancel context.CancelFunc) *Tunnel {
-	return &Tunnel{
-		cmd:    cmd,
-		cancel: cancel,
-		done:   make(chan struct{}),
-		engine: engine,
+// watchdog monitors the tunnel subprocess and restarts it on unexpected exit.
+func (t *Tunnel) watchdog() {
+	backoff := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second}
+
+	for {
+		proc := t.currentProc.Load()
+		if proc == nil {
+			return
+		}
+
+		// Wait for subprocess to exit.
+		select {
+		case <-proc.done:
+		case <-t.stopCh:
+			return
+		}
+
+		if t.stopped.Load() {
+			return
+		}
+
+		log.Printf("tunnel: %s subprocess exited, restarting...", t.engine)
+
+		// Restart with backoff.
+		var lastErr error
+		restarted := false
+		for i, delay := range backoff {
+			select {
+			case <-t.stopCh:
+				return
+			case <-time.After(delay):
+			}
+
+			if err := t.launch(); err != nil {
+				lastErr = err
+				log.Printf("tunnel: restart attempt %d failed: %v", i+1, err)
+				continue
+			}
+			restarted = true
+			break
+		}
+
+		if !restarted {
+			log.Printf("tunnel: gave up restarting after all attempts: %v", lastErr)
+			return
+		}
 	}
 }
 
-func (t *Tunnel) waitAndReap() {
-	_ = t.cmd.Wait()
-	close(t.done)
+// tunnelProc represents a single running tunnel subprocess.
+type tunnelProc struct {
+	cmd    *exec.Cmd
+	url    string
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func newTunnelProc(cmd *exec.Cmd, cancel context.CancelFunc) *tunnelProc {
+	return &tunnelProc{
+		cmd:    cmd,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+}
+
+func (p *tunnelProc) waitAndReap() {
+	_ = p.cmd.Wait()
+	close(p.done)
 }
 
 func scanLines(r io.Reader, prefix string, pattern *regexp.Regexp, urlCh chan<- string) {
@@ -104,20 +198,17 @@ func scanLines(r io.Reader, prefix string, pattern *regexp.Regexp, urlCh chan<- 
 	}
 }
 
-func waitForURL(urlCh <-chan string, timeout time.Duration, t *Tunnel, engine string) error {
+// recvURL waits for a tunnel URL from the channel with a timeout.
+func recvURL(urlCh <-chan string, timeout time.Duration) (string, error) {
 	select {
 	case url := <-urlCh:
 		if url == "" {
-			_ = t.Stop()
-			return fmt.Errorf("%s exited before publishing tunnel URL", engine)
+			return "", fmt.Errorf("exited before publishing tunnel URL")
 		}
-		t.url = url
-		log.Printf("tunnel active: %s", url)
+		return url, nil
 	case <-time.After(timeout):
-		_ = t.Stop()
-		return fmt.Errorf("timed out waiting for %s tunnel URL", engine)
+		return "", fmt.Errorf("timed out waiting for tunnel URL (%s)", timeout)
 	}
-	return nil
 }
 
 func findBinary(name string) (string, error) {
@@ -167,11 +258,11 @@ func installBinary(dest, toolName string) error {
 		repo = "cloudflare/cloudflared"
 		switch goos {
 		case "windows":
-			filename = fmt.Sprintf("cloudflared-%s-%s.zip", goos, goarch)
+			filename = fmt.Sprintf("cloudflared-%s-%s.exe", goos, goarch)
 		case "darwin":
-			filename = fmt.Sprintf("cloudflared-%s-%s", goos, goarch)
+			filename = fmt.Sprintf("cloudflared-%s-%s.tgz", goos, goarch)
 		default:
-			filename = fmt.Sprintf("cloudflared-%s-%s.tar.gz", goos, goarch)
+			filename = fmt.Sprintf("cloudflared-%s-%s", goos, goarch)
 		}
 	case "bore", "bore.exe":
 		repo = "ekzhang/bore"
@@ -248,12 +339,12 @@ func installBinary(dest, toolName string) error {
 		if err := extractZip(tmpPath, dest, toolName); err != nil {
 			return fmt.Errorf("extract zip: %w", err)
 		}
-	case strings.HasSuffix(filename, ".tar.gz"):
+	case strings.HasSuffix(filename, ".tar.gz"), strings.HasSuffix(filename, ".tgz"):
 		if err := extractTarGz(tmpPath, dest, toolName); err != nil {
 			return fmt.Errorf("extract tar.gz: %w", err)
 		}
 	default:
-		// Raw binary (e.g., cloudflared on macOS)
+		// Raw binary (e.g., cloudflared on Windows/macOS, cloudflared on Linux)
 		if err := os.Rename(tmpPath, dest); err != nil {
 			return fmt.Errorf("rename: %w", err)
 		}

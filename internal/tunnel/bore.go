@@ -15,7 +15,8 @@ import (
 
 var boreURLPattern = regexp.MustCompile(`bore\.pub:\d+`)
 
-func startBore(port string) (*Tunnel, error) {
+// startBoreProc starts a single bore subprocess, trying multiple ports if needed.
+func startBoreProc(port string) (*tunnelProc, error) {
 	bin, err := findBinary("bore")
 	if err != nil {
 		return nil, err
@@ -26,9 +27,9 @@ func startBore(port string) (*Tunnel, error) {
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		remotePort := basePort + attempt
-		t, err := tryBore(bin, port, remotePort)
+		proc, err := tryBoreProc(bin, port, remotePort)
 		if err == nil {
-			return t, nil
+			return proc, nil
 		}
 		if !isPortConflict(err) {
 			return nil, err
@@ -36,13 +37,13 @@ func startBore(port string) (*Tunnel, error) {
 		if attempt == 0 {
 			log.Printf("tunnel: port %d occupied, trying alternatives...", remotePort)
 		}
-		_ = t.Stop()
+		proc.cancel()
 	}
 
 	return nil, fmt.Errorf("bore: could not find available port after %d attempts starting from %d", maxRetries, basePort)
 }
 
-func tryBore(bin, localPort string, remotePort int) (*Tunnel, error) {
+func tryBoreProc(bin, localPort string, remotePort int) (*tunnelProc, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	args := []string{
@@ -65,9 +66,9 @@ func tryBore(bin, localPort string, remotePort int) (*Tunnel, error) {
 		return nil, fmt.Errorf("bore start: %w", err)
 	}
 
-	t := newTunnel("bore", cmd, cancel)
+	proc := newTunnelProc(cmd, cancel)
 
-	go t.waitAndReap()
+	go proc.waitAndReap()
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 
 	urlCh := make(chan string, 1)
@@ -80,11 +81,15 @@ func tryBore(bin, localPort string, remotePort int) (*Tunnel, error) {
 		}
 	}()
 
-	if err := waitForURL(urlCh, 30*time.Second, t, "bore"); err != nil {
-		return t, err
+	url, err := recvURL(urlCh, 30*time.Second)
+	if err != nil {
+		stopProcess(cmd)
+		cancel()
+		return proc, fmt.Errorf("bore: %w", err)
 	}
 
-	return t, nil
+	proc.url = url
+	return proc, nil
 }
 
 func isPortConflict(err error) bool {

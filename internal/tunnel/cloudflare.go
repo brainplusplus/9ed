@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-func startCloudflare(port string) (*Tunnel, error) {
+// startCloudflareProc starts a single cloudflared quick tunnel subprocess.
+func startCloudflareProc(port string) (*tunnelProc, error) {
 	bin, err := findBinary("cloudflared")
 	if err != nil {
 		return nil, err
@@ -36,17 +37,21 @@ func startCloudflare(port string) (*Tunnel, error) {
 		return nil, fmt.Errorf("cloudflared start: %w", err)
 	}
 
-	t := newTunnel("cloudflare", cmd, cancel)
+	proc := newTunnelProc(cmd, cancel)
 
-	go t.waitAndReap()
+	go proc.waitAndReap()
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 
 	urlCh := make(chan string, 1)
 	go scanLines(stderr, "cloudflared", cloudflaredURLPattern, urlCh)
 
-	if err := waitForURL(urlCh, 45*time.Second, t, "cloudflare"); err != nil {
-		return nil, err
+	url, err := recvURL(urlCh, 45*time.Second)
+	if err != nil {
+		stopProcess(cmd)
+		cancel()
+		return nil, fmt.Errorf("cloudflared: %w", err)
 	}
 
-	return t, nil
+	proc.url = url
+	return proc, nil
 }
