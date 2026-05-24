@@ -41,16 +41,21 @@ func main() {
 
 	srv := server.New(cfg)
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
+		// First signal: graceful shutdown
 		<-sigCh
 		log.Println("shutting down...")
 		if tn != nil {
 			tn.Stop()
 		}
 		srv.Shutdown()
-		os.Exit(0)
+
+		// Second signal: force exit (cleanup already done above)
+		<-sigCh
+		log.Println("forced shutdown")
+		os.Exit(1)
 	}()
 
 	printStartupInfo(cfg, tn)

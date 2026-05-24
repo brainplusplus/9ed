@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/brainplusplus/9ed/internal/debug"
@@ -32,18 +34,21 @@ type Tunnel struct {
 	stopCh      chan struct{}
 	stopped     atomic.Bool
 	currentProc atomic.Pointer[tunnelProc]
+	pidFile     string
 }
 
 // Start launches a tunnel using the specified engine ("bore" or "cloudflare") proxying to localhost:port.
 // The returned Tunnel automatically restarts the underlying subprocess if it exits unexpectedly.
-// Any orphan tunnel processes from a previous server instance are killed first.
+// Any orphan tunnel process from a previous server instance on the same port is killed first.
 func Start(engine, port string) (*Tunnel, error) {
-	killOrphanProcesses(engine)
+	pidFile := tunnelPIDFile(port)
+	killOrphanByPIDFile(pidFile)
 
 	t := &Tunnel{
-		engine: engine,
-		port:   port,
-		stopCh: make(chan struct{}),
+		engine:  engine,
+		port:    port,
+		stopCh:  make(chan struct{}),
+		pidFile: pidFile,
 	}
 
 	if err := t.launch(); err != nil {
@@ -83,6 +88,7 @@ func (t *Tunnel) Stop() error {
 		proc.cancel()
 		stopProcess(proc.cmd)
 	}
+	os.Remove(t.pidFile)
 	return nil
 }
 
@@ -108,6 +114,11 @@ func (t *Tunnel) launch() error {
 
 	// Store proc so watchdog can wait on it.
 	t.currentProc.Store(proc)
+
+	// Write tunnel subprocess PID to file for orphan cleanup on next start.
+	if proc.cmd.Process != nil {
+		writePIDFile(t.pidFile, proc.cmd.Process.Pid)
+	}
 
 	return nil
 }
@@ -209,6 +220,72 @@ func recvURL(urlCh <-chan string, timeout time.Duration) (string, error) {
 	case <-time.After(timeout):
 		return "", fmt.Errorf("timed out waiting for tunnel URL (%s)", timeout)
 	}
+}
+
+// tunnelPIDFile returns the path to the PID file for a given port.
+// File lives in ~/.9ed/tunnel-<port>.pid
+func tunnelPIDFile(port string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".9ed", "tunnel-"+port+".pid")
+}
+
+// writePIDFile atomically writes a tunnel subprocess PID to the file.
+func writePIDFile(path string, pid int) {
+	if path == "" {
+		return
+	}
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.WriteFile(path, []byte(fmt.Sprintf("%d", pid)), 0o644)
+}
+
+// killOrphanByPIDFile reads a PID file, checks if that process is still alive,
+// and kills it if so. Safe across OS — uses os.FindProcess + Signal/Kill.
+func killOrphanByPIDFile(path string) {
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // no PID file — nothing to clean up
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		// On Unix FindProcess always succeeds; on Windows it may fail for dead PIDs.
+		os.Remove(path)
+		return
+	}
+
+	// Check if process is actually alive.
+	// On Unix: Signal(0) succeeds if process exists.
+	// On Windows: FindProcess + Kill is the only reliable check.
+	if runtime.GOOS == "windows" {
+		// On Windows, try to open a handle — if process is dead, Kill returns error.
+		if err := proc.Kill(); err != nil {
+			// Process already dead — just clean up PID file.
+			os.Remove(path)
+			return
+		}
+		log.Printf("tunnel: killed orphan process (PID %d) from previous run", pid)
+	} else {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			// Process already dead.
+			os.Remove(path)
+			return
+		}
+		log.Printf("tunnel: killing orphan process (PID %d) from previous run", pid)
+		_ = proc.Kill()
+	}
+
+	os.Remove(path)
 }
 
 func findBinary(name string) (string, error) {
