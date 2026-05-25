@@ -56,9 +56,10 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
-export function createSessionWebSocket(sessionId: string): WebSocket {
+export function createSessionWebSocket(sessionId: string, includeReplay = true): WebSocket {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return new WebSocket(`${protocol}//${window.location.host}/ws/sessions/${sessionId}`);
+  const params = new URLSearchParams({ replay: includeReplay ? '1' : '0' });
+  return new WebSocket(`${protocol}//${window.location.host}/ws/sessions/${sessionId}?${params}`);
 }
 
 export async function getConfig(): Promise<AppConfig> {

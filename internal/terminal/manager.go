@@ -7,6 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const replayBufferMaxBytes = 200_000
+
 type ShellProfile struct {
 	ID      string   `json:"id"`
 	Label   string   `json:"label"`
@@ -27,9 +29,13 @@ type PtySession interface {
 type SpawnFunc func(profile ShellProfile) (PtySession, error)
 
 type ManagedSession struct {
-	ID      string       `json:"id"`
-	Profile ShellProfile `json:"profile"`
-	pty     PtySession
+	ID          string       `json:"id"`
+	Profile     ShellProfile `json:"profile"`
+	pty         PtySession
+	mu          sync.Mutex
+	replay      []byte
+	subscribers map[chan []byte]struct{}
+	closeOnce   sync.Once
 }
 
 func (s *ManagedSession) Read(p []byte) (int, error) {
@@ -45,7 +51,92 @@ func (s *ManagedSession) Resize(cols uint16, rows uint16) error {
 }
 
 func (s *ManagedSession) Close() error {
-	return s.pty.Close()
+	var err error
+	s.closeOnce.Do(func() {
+		err = s.pty.Close()
+		s.closeSubscribers()
+	})
+	return err
+}
+
+func (s *ManagedSession) Subscribe(includeReplay bool) (<-chan []byte, func()) {
+	ch := make(chan []byte, 128)
+
+	s.mu.Lock()
+	var replay []byte
+	if includeReplay && len(s.replay) > 0 {
+		replay = append([]byte(nil), s.replay...)
+	}
+	s.subscribers[ch] = struct{}{}
+	s.mu.Unlock()
+
+	if len(replay) > 0 {
+		ch <- replay
+	}
+
+	unsubscribe := func() {
+		s.mu.Lock()
+		if _, ok := s.subscribers[ch]; ok {
+			delete(s.subscribers, ch)
+			close(ch)
+		}
+		s.mu.Unlock()
+	}
+
+	return ch, unsubscribe
+}
+
+func (s *ManagedSession) startOutputPump() {
+	go func() {
+		buffer := make([]byte, 4096)
+		for {
+			count, err := s.pty.Read(buffer)
+			if count > 0 {
+				s.broadcast(buffer[:count])
+			}
+			if err != nil {
+				s.closeSubscribers()
+				return
+			}
+		}
+	}()
+}
+
+func (s *ManagedSession) broadcast(data []byte) {
+	chunk := append([]byte(nil), data...)
+
+	s.mu.Lock()
+	s.replay = append(s.replay, chunk...)
+	if len(s.replay) > replayBufferMaxBytes {
+		s.replay = append([]byte(nil), s.replay[len(s.replay)-replayBufferMaxBytes:]...)
+	}
+	for ch := range s.subscribers {
+		select {
+		case ch <- chunk:
+		default:
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *ManagedSession) closeSubscribers() {
+	s.mu.Lock()
+	for ch := range s.subscribers {
+		close(ch)
+		delete(s.subscribers, ch)
+	}
+	s.mu.Unlock()
+}
+
+func NewManagedSession(id string, profile ShellProfile, pty PtySession) *ManagedSession {
+	session := &ManagedSession{
+		ID:          id,
+		Profile:     profile,
+		pty:         pty,
+		subscribers: make(map[chan []byte]struct{}),
+	}
+	session.startOutputPump()
+	return session
 }
 
 type Manager struct {
@@ -76,11 +167,7 @@ func (m *Manager) Create(profile ShellProfile) (*ManagedSession, error) {
 		id = uuid.NewString()
 	}
 
-	session := &ManagedSession{
-		ID:      id,
-		Profile: ptySession.Profile(),
-		pty:     ptySession,
-	}
+	session := NewManagedSession(id, ptySession.Profile(), ptySession)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

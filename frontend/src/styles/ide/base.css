@@ -20,8 +20,11 @@
   box-sizing: border-box;
 }
 
+html,
 body {
+  height: 100%;
   margin: 0;
+  overflow: hidden;
   background: var(--editor-bg);
   color: var(--sidebar-fg);
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
@@ -29,10 +32,15 @@ body {
 
 #root {
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .ide-shell {
   display: flex;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
 }

@@ -1,6 +1,6 @@
 # 9ed
 
-Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), tunnel support, and responsive layout.
+Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), browser inspect, terminal↔chat integration, tunnel support, and responsive layout.
 
 ![Desktop - Explorer & Editor](docs/screenshots/desktop-explorer.png)
 ![Desktop - Git Diff View](docs/screenshots/desktop-git-diff.png)
@@ -50,14 +50,34 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), tunnel
 - **Auto-approve mode** — skip permission prompts for trusted environments
 - **Message queue** — type and queue messages while agent is streaming
 - **@ file mentions** — reference any project file with autocomplete (filename + directory path)
+- **Voice input** — dictate messages via Web Speech API with microphone access handling
+
+### Terminal ↔ Chat Integration
+- **Bidirectional terminal context**: AI agent receives live terminal scrollback as context
+- **Active terminal routing**: agent terminal commands execute directly in the active terminal session
+- **"Run in terminal" button**: shell code blocks in chat messages can be executed with one click
+- **Terminal-aware AI**: agent knows shell type (PowerShell, bash, zsh) and adapts commands
+- **Terminal scrollback replay**: backend buffers terminal output for reconnection and AI context
+- **Terminal tabs per project**: terminal state persisted in workspace, survives navigation
+
+### Browser Inspect (Element Inspector for AI)
+- **4-layer box model overlay**: margin, border, padding, content — color-coded canvas rendering
+- **Smart hit-test**: click any element in browser panel to inspect
+- **Rich tooltip**: shows tag, id, classes, dimensions, CSS properties
+- **Keyboard navigation**: Tab/Shift+Tab between elements, Escape to exit
+- **AI context injection**: selected element details auto-attached to chat messages
+- **Mini inspect panel**: Styles, Events, Accessibility tabs for selected element
+- **Ruler lines**: visual guides from selected element to viewport edges
 
 ![Mobile - Chat](docs/screenshots/mobile-chat.png)
 ![Mobile - Editor](docs/screenshots/mobile-editor.png)
 
 ### Responsive Layout
+- **Consistent state across all form factors** — desktop, tablet, and mobile share the same Zustand state
 - **Desktop** (≥1024px): Full panel layout with resizable sidebar, editor, terminal, chat
 - **Tablet** (768–1023px): Overlay sidebar and chat panels
 - **Mobile** (<768px): Single-panel view with bottom navigation
+- Responsive layout mode changes preserve panel state — no remounting or data loss
 - File/git click auto-switches to editor view on mobile/tablet
 - Floating save button on mobile/tablet
 
@@ -73,11 +93,22 @@ Browser-based IDE with terminal, git source control, AI chat (ACP + PTY), tunnel
 - Session cookie bridge for WebSocket authentication
 - Path traversal protection for filesystem operations
 
+### Browser Proxy
+- In-app browser panel with tab management
+- Full URL rewriting (HTML, CSS, JS, fetch, XHR, EventSource)
+- MutationObserver-based dynamic resource rewriting (script, link, iframe, img)
+- JavaScript property descriptor interception (HTMLScriptElement.src, HTMLLinkElement.href)
+- Service worker registration stubbing for proxied pages
+- Cross-tab navigation via postMessage protocol
+
 ### Tunnel
 - Auto-start tunnel for public access — no manual setup needed
 - **Cloudflare** (default): Quick tunnel via `cloudflared`, generates random public URL
 - **Bore**: Fixed port tunnel via `bore.pub`, auto-installs binary
 - Toggle with `TUNNEL=true/false`, select engine with `TUNNEL_ENGINE=cloudflare|bore`
+- **Auto-restart watchdog**: tunnel process auto-restarts on crash
+- **Graceful shutdown**: clean process termination with timeout
+- **Output recording**: tunnel logs captured for diagnostics
 - Auto-shutdown on server exit
 
 ## Requirements
@@ -122,7 +153,10 @@ npm run start
 | `AUTOKILL_PORT` | Kill existing process on port before start | `true` |
 | `TUNNEL` | Auto-start tunnel for public access | `true` |
 | `TUNNEL_ENGINE` | `cloudflare` (random URL via cloudflared) or `bore` (fixed port via bore.pub) | `cloudflare` |
+| `USE_BROWSER` | Enable in-app browser panel | `false` |
+| `TERMINAL_AI_MAX_LINES` | Max terminal lines sent to AI as context | `100` |
 | `DEBUG` | Enable verbose debug logging | `false` |
+| `DEBUG_WATCHER` | Enable watcher-specific debug logs (requires `DEBUG=true`) | `false` |
 
 ## AI Agent Support
 
@@ -185,12 +219,16 @@ frontend/src/
   components/
     editor/            — Monaco editor, diff view, tabs with context menu
     git/               — Git panel, status list, branch picker, stash, diff view
-    chat/              — Chat panel, messages, input, agent picker, permission dialog, queue
+    chat/              — Chat panel, messages, input, agent picker, permission dialog, queue, voice
+    browser/           — Browser panel, inspect overlay, element selection, hit-test
     sidebar/           — Activity bar (with badge), file tree (with context menu), search
-    terminal/          — Terminal panel (xterm.js)
+    terminal/          — Terminal panel (xterm.js), tabs per project
     shared/            — Bottom nav, shortcuts help, context menu
   stores/              — Zustand state (workspace, git, chat)
   hooks/               — Custom hooks (git status, gutter, chat, layout, workspace persistence)
+  terminalConnection.ts — WebSocket lifecycle for terminal sessions
+  terminalRegistry.ts  — Terminal handle registry (write/paste for chat→terminal routing)
+  terminalIntegration.ts — Shell language detection and command sanitization
 ```
 
 ## Development

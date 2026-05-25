@@ -10,8 +10,9 @@ import (
 type chatEventPersister func(chat.ChatEvent)
 
 type chatStreamRegistry struct {
-	mu      sync.Mutex
-	streams map[string]*chatStream
+	mu       sync.Mutex
+	streams  map[string]*chatStream
+	latestID string
 }
 
 func newChatStreamRegistry() *chatStreamRegistry {
@@ -23,6 +24,7 @@ func (r *chatStreamRegistry) GetOrCreate(sessionID string, session chat.ChatSess
 	defer r.mu.Unlock()
 
 	if stream, ok := r.streams[sessionID]; ok {
+		r.latestID = sessionID
 		debug.Printf("[chat/stream] reuse session=%s", sessionID)
 		return stream
 	}
@@ -36,9 +38,34 @@ func (r *chatStreamRegistry) GetOrCreate(sessionID string, session chat.ChatSess
 		r.mu.Unlock()
 	})
 	r.streams[sessionID] = stream
+	r.latestID = sessionID
 	debug.Printf("[chat/stream] create session=%s agent=%s mode=%s record=%s", sessionID, session.AgentID(), session.Mode(), session.ACPSessionID())
 	stream.Start()
 	return stream
+}
+
+func (r *chatStreamRegistry) Touch(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.streams[sessionID]; !ok {
+		return false
+	}
+	r.latestID = sessionID
+	return true
+}
+
+func (r *chatStreamRegistry) LatestID() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.latestID != "" {
+		if _, ok := r.streams[r.latestID]; ok {
+			return r.latestID, true
+		}
+	}
+	for id := range r.streams {
+		return id, true
+	}
+	return "", false
 }
 
 type chatSubscriber struct {

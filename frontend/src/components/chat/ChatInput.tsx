@@ -20,16 +20,35 @@ export type Attachment = {
   name: string;
 };
 
+type SpeechResultItem = {
+  transcript: string;
+};
+
+type SpeechResultList = ArrayLike<SpeechResultItem> & {
+  isFinal: boolean;
+};
+
 type SpeechRecognitionLike = {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
   start: () => void;
   stop: () => void;
-  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onresult: ((event: { results: ArrayLike<SpeechResultList> }) => void) | null;
   onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
 };
+
+function MicIcon() {
+  return (
+    <svg className="chat-action-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d="M10 3.25a2.25 2.25 0 0 0-2.25 2.25v4a2.25 2.25 0 0 0 4.5 0v-4A2.25 2.25 0 0 0 10 3.25Z" />
+      <path d="M5.75 9.25v.25a4.25 4.25 0 0 0 8.5 0v-.25" />
+      <path d="M10 13.75v2.5" />
+      <path d="M7.75 16.25h4.5" />
+    </svg>
+  );
+}
 
 function getSpeechRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
   const speechWindow = window as Window & {
@@ -37,6 +56,28 @@ function getSpeechRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
     webkitSpeechRecognition?: new () => SpeechRecognitionLike;
   };
   return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
+async function requestMicrophoneAccess(): Promise<{ ok: boolean; blocked: boolean; message?: string }> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return { ok: true, blocked: false };
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    return { ok: true, blocked: false };
+  } catch (err) {
+    const name = err instanceof DOMException ? err.name : '';
+    const blocked = name === 'NotAllowedError' || name === 'PermissionDeniedError';
+    return {
+      ok: false,
+      blocked,
+      message: blocked
+        ? 'Microphone permission is blocked. Allow it from the address bar, then click the mic again.'
+        : 'Microphone permission could not be requested.',
+    };
+  }
 }
 
 export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = true }: ChatInputProps) {
@@ -52,6 +93,10 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
+  const voiceBaseRef = useRef(''); // text before voice session started
+  const voiceSessionRef = useRef(0);
+  const voiceStartingRef = useRef(false);
+  const valueRef = useRef('');
 
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const commands = useChatStore((s) => {
@@ -79,13 +124,20 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const lastMentionProject = useRef('');
   const lastMentionIncludeIgnored = useRef(false);
 
+  // Keep valueRef in sync with value state for use in callbacks
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
   useEffect(() => {
     setVoiceSupported(Boolean(getSpeechRecognitionCtor()));
   }, []);
 
   useEffect(() => {
     return () => {
+      voiceSessionRef.current += 1;
       speechRef.current?.stop();
+      speechRef.current = null;
     };
   }, []);
 
@@ -173,9 +225,29 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, []);
 
+  const stopVoiceInput = useCallback((status: string | null = 'Stopping voice input...') => {
+    voiceSessionRef.current += 1;
+    const recognition = speechRef.current;
+    speechRef.current = null;
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try {
+        recognition.stop();
+      } catch {}
+    }
+    setVoiceActive(false);
+    setVoiceStatus(status);
+  }, []);
+
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if ((!trimmed && attachments.length === 0) || disabled || !canSend) return;
+
+    if (voiceActive) {
+      stopVoiceInput(null);
+    }
 
     if (streaming && activeSessionId) {
       const queuedMsg: QueuedMessage = {
@@ -196,9 +268,9 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [activeSessionId, attachments, canSend, disabled, enqueueMessage, onSend, streaming, value]);
+  }, [activeSessionId, attachments, canSend, disabled, enqueueMessage, onSend, stopVoiceInput, streaming, value, voiceActive]);
 
-  const toggleVoiceInput = useCallback(() => {
+  const toggleVoiceInput = useCallback(async () => {
     const SpeechCtor = getSpeechRecognitionCtor();
     if (!SpeechCtor || disabled) {
       setVoiceStatus('Voice input is unavailable in this browser.');
@@ -206,47 +278,104 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     }
 
     if (voiceActive) {
-      speechRef.current?.stop();
-      setVoiceStatus('Stopping voice input...');
+      stopVoiceInput();
+      return;
+    }
+
+    if (voiceStartingRef.current) {
+      return;
+    }
+
+    const requestId = voiceSessionRef.current + 1;
+    voiceSessionRef.current = requestId;
+    voiceStartingRef.current = true;
+    setVoiceStatus('Requesting microphone permission...');
+    const permission = await requestMicrophoneAccess();
+    voiceStartingRef.current = false;
+
+    if (voiceSessionRef.current !== requestId || disabled) {
+      return;
+    }
+
+    if (!permission.ok) {
+      setVoiceActive(false);
+      setVoiceStatus(permission.message ?? 'Microphone permission was not granted.');
       return;
     }
 
     const recognition = new SpeechCtor();
+    const sessionId = requestId;
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'id-ID';
     speechRef.current = recognition;
+
+    // Snapshot current text as the base; voice transcript appends after this
+    voiceBaseRef.current = valueRef.current;
+
     setVoiceActive(true);
     setVoiceStatus('Listening...');
 
     recognition.onresult = (event) => {
-      let transcript = '';
-      for (let i = 0; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result?.[0]?.transcript) {
-          transcript += result[0].transcript;
-        }
-      }
-      if (!transcript.trim()) {
+      if (speechRef.current !== recognition || voiceSessionRef.current !== sessionId) {
         return;
       }
-      setValue((current) => {
-        const next = current.trim().length > 0 ? `${current.trimEnd()} ${transcript.trim()}` : transcript.trim();
-        queueMicrotask(() => adjustHeight());
-        return next;
-      });
+
+      // Build transcript from ALL results (committed final + current interim)
+      // This avoids duplication: we replace the voice portion entirely each time
+      let committed = '';
+      let interim = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result?.[0]?.transcript ?? '';
+        if (result.isFinal) {
+          committed += text;
+        } else {
+          interim += text;
+        }
+      }
+
+      const transcript = (committed + interim).trim();
+      if (!transcript) {
+        return;
+      }
+
+      const base = voiceBaseRef.current;
+      const next = base.length > 0 ? `${base} ${transcript}` : transcript;
+      setValue(next);
+      queueMicrotask(() => adjustHeight());
     };
+
     recognition.onerror = (event) => {
+      if (speechRef.current !== recognition || voiceSessionRef.current !== sessionId) {
+        return;
+      }
       setVoiceActive(false);
+      speechRef.current = null;
       setVoiceStatus(event.error ? `Voice input error: ${event.error}` : 'Voice input failed.');
     };
+
     recognition.onend = () => {
+      if (speechRef.current !== recognition || voiceSessionRef.current !== sessionId) {
+        return;
+      }
+      // On end, commit whatever was interim by rebuilding from final results only
+      // (interim results become final or are lost — browser handles this)
       setVoiceActive(false);
       speechRef.current = null;
       setVoiceStatus((current) => (current === 'Listening...' || current === 'Stopping voice input...' ? null : current));
     };
-    recognition.start();
-  }, [adjustHeight, disabled, voiceActive]);
+
+    try {
+      recognition.start();
+    } catch {
+      if (speechRef.current === recognition) {
+        speechRef.current = null;
+      }
+      setVoiceActive(false);
+      setVoiceStatus('Voice input could not start.');
+    }
+  }, [adjustHeight, disabled, stopVoiceInput, voiceActive]);
 
   const selectCommand = useCallback((name: string) => {
     setValue(`/${name} `);
@@ -405,7 +534,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
               title={voiceActive ? 'Stop voice input' : 'Start voice input'}
               disabled={disabled}
             >
-              <span aria-hidden="true">🎙</span>
+              <MicIcon />
             </button>
           )}
           {streaming ? (

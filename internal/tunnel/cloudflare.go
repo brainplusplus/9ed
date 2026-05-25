@@ -42,14 +42,14 @@ func startCloudflareProc(port string) (*tunnelProc, error) {
 	go proc.waitAndReap()
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 
+	output := newOutputRecorder(20)
 	urlCh := make(chan string, 1)
-	go scanLines(stderr, "cloudflared", cloudflaredURLPattern, urlCh)
+	go scanLinesWithRecorder(stderr, "cloudflared", cloudflaredURLPattern, output, urlCh)
 
-	url, err := recvURL(urlCh, 45*time.Second)
+	url, err := recvProcURL(proc, urlCh, 45*time.Second, output)
 	if err != nil {
-		stopProcess(cmd)
-		cancel()
-		return nil, fmt.Errorf("cloudflared: %w", err)
+		proc.stop(5 * time.Second)
+		return proc, fmt.Errorf("cloudflared: %w", err)
 	}
 
 	proc.url = url

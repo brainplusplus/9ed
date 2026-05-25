@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -45,17 +46,32 @@ func TestManagerReturnsSpawnError(t *testing.T) {
 }
 
 type fakeSession struct {
-	id      string
-	profile ShellProfile
-	closed  bool
+	id         string
+	profile    ShellProfile
+	closed     chan struct{}
+	closedFlag bool
 }
 
-func (f *fakeSession) ID() string                            { return f.id }
-func (f *fakeSession) Profile() ShellProfile                 { return f.profile }
-func (f *fakeSession) Read(p []byte) (int, error)            { return 0, nil }
+func (f *fakeSession) ID() string            { return f.id }
+func (f *fakeSession) Profile() ShellProfile { return f.profile }
+func (f *fakeSession) Read(p []byte) (int, error) {
+	if f.closed == nil {
+		f.closed = make(chan struct{})
+	}
+	<-f.closed
+	return 0, io.EOF
+}
 func (f *fakeSession) Write(p []byte) (int, error)           { return len(p), nil }
 func (f *fakeSession) Resize(cols uint16, rows uint16) error { return nil }
 func (f *fakeSession) Close() error {
-	f.closed = true
+	if f.closed == nil {
+		f.closed = make(chan struct{})
+	}
+	select {
+	case <-f.closed:
+	default:
+		close(f.closed)
+	}
+	f.closedFlag = true
 	return nil
 }

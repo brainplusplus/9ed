@@ -448,6 +448,17 @@
   font-weight: 600;
 }
 
+.chat-action-icon {
+  width: 17px;
+  height: 17px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .chat-voice-btn.active {
   background: rgba(244, 63, 94, 0.18);
   color: #fecdd3;

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/brainplusplus/9ed/internal/config"
 	"github.com/brainplusplus/9ed/internal/debug"
@@ -25,6 +26,7 @@ func main() {
 	}
 
 	debug.Enable(cfg.Debug)
+	debug.SetWatcherEnabled(cfg.DebugWatcher)
 
 	if cfg.AutokillPort {
 		killProcessOnPort(cfg.Port)
@@ -115,6 +117,20 @@ func killProcessOnPort(port string) {
 		return
 	}
 	_ = proc.Kill()
+	waitForPortAvailable(port, 5*time.Second)
+}
+
+func waitForPortAvailable(port string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", ":"+port)
+		if err == nil {
+			ln.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	log.Printf("port %s still appears busy after %s; continuing startup", port, timeout)
 }
 
 func findPIDOnPort(port string) int {

@@ -85,8 +85,7 @@ func (t *Tunnel) Stop() error {
 	}
 	close(t.stopCh)
 	if proc := t.currentProc.Load(); proc != nil {
-		proc.cancel()
-		stopProcess(proc.cmd)
+		proc.stop(5 * time.Second)
 	}
 	os.Remove(t.pidFile)
 	return nil
@@ -178,6 +177,8 @@ type tunnelProc struct {
 	url    string
 	cancel context.CancelFunc
 	done   chan struct{}
+	errMu  sync.Mutex
+	err    error
 }
 
 func newTunnelProc(cmd *exec.Cmd, cancel context.CancelFunc) *tunnelProc {
@@ -189,24 +190,80 @@ func newTunnelProc(cmd *exec.Cmd, cancel context.CancelFunc) *tunnelProc {
 }
 
 func (p *tunnelProc) waitAndReap() {
-	_ = p.cmd.Wait()
+	err := p.cmd.Wait()
+	p.errMu.Lock()
+	p.err = err
+	p.errMu.Unlock()
 	close(p.done)
 }
 
+func (p *tunnelProc) waitError() error {
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	return p.err
+}
+
+func (p *tunnelProc) stop(timeout time.Duration) {
+	p.cancel()
+	stopProcess(p.cmd)
+	select {
+	case <-p.done:
+	case <-time.After(timeout):
+	}
+}
+
 func scanLines(r io.Reader, prefix string, pattern *regexp.Regexp, urlCh chan<- string) {
+	scanLinesWithRecorder(r, prefix, pattern, nil, urlCh)
+}
+
+func scanLinesWithRecorder(r io.Reader, prefix string, pattern *regexp.Regexp, recorder *outputRecorder, urlCh chan<- string) {
 	defer close(urlCh)
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	sentURL := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		debug.Printf("[%s] %s", prefix, line)
-		if pattern != nil {
+		if recorder != nil {
+			recorder.add(line)
+		}
+		if pattern != nil && !sentURL {
 			if match := pattern.FindString(line); match != "" {
 				urlCh <- match
-				return
+				sentURL = true
 			}
 		}
 	}
+}
+
+type outputRecorder struct {
+	mu    sync.Mutex
+	lines []string
+	max   int
+}
+
+func newOutputRecorder(max int) *outputRecorder {
+	return &outputRecorder{max: max}
+}
+
+func (r *outputRecorder) add(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.max <= 0 {
+		return
+	}
+	if len(r.lines) >= r.max {
+		copy(r.lines, r.lines[1:])
+		r.lines[len(r.lines)-1] = line
+		return
+	}
+	r.lines = append(r.lines, line)
+}
+
+func (r *outputRecorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.lines, "\n")
 }
 
 // recvURL waits for a tunnel URL from the channel with a timeout.
@@ -220,6 +277,37 @@ func recvURL(urlCh <-chan string, timeout time.Duration) (string, error) {
 	case <-time.After(timeout):
 		return "", fmt.Errorf("timed out waiting for tunnel URL (%s)", timeout)
 	}
+}
+
+func recvProcURL(proc *tunnelProc, urlCh <-chan string, timeout time.Duration, output *outputRecorder) (string, error) {
+	select {
+	case url := <-urlCh:
+		if url == "" {
+			return "", tunnelExitError(proc, "exited before publishing tunnel URL", output)
+		}
+		return url, nil
+	case <-proc.done:
+		return "", tunnelExitError(proc, "exited before publishing tunnel URL", output)
+	case <-time.After(timeout):
+		return "", tunnelExitError(proc, fmt.Sprintf("timed out waiting for tunnel URL (%s)", timeout), output)
+	}
+}
+
+func tunnelExitError(proc *tunnelProc, msg string, output *outputRecorder) error {
+	details := ""
+	if output != nil {
+		details = strings.TrimSpace(output.String())
+	}
+	if err := proc.waitError(); err != nil {
+		if details != "" {
+			return fmt.Errorf("%s: %w: %s", msg, err, details)
+		}
+		return fmt.Errorf("%s: %w", msg, err)
+	}
+	if details != "" {
+		return fmt.Errorf("%s: %s", msg, details)
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 // tunnelPIDFile returns the path to the PID file for a given port.
@@ -266,10 +354,8 @@ func killOrphanByPIDFile(path string) {
 
 	// Check if process is actually alive.
 	// On Unix: Signal(0) succeeds if process exists.
-	// On Windows: FindProcess + Kill is the only reliable check.
 	if runtime.GOOS == "windows" {
-		// On Windows, try to open a handle — if process is dead, Kill returns error.
-		if err := proc.Kill(); err != nil {
+		if err := killProcessTree(pid); err != nil {
 			// Process already dead — just clean up PID file.
 			os.Remove(path)
 			return
@@ -282,7 +368,7 @@ func killOrphanByPIDFile(path string) {
 			return
 		}
 		log.Printf("tunnel: killing orphan process (PID %d) from previous run", pid)
-		_ = proc.Kill()
+		_ = killProcessTree(pid)
 	}
 
 	os.Remove(path)

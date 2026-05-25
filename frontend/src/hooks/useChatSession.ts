@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createChatWebSocket, getBrowserState, getLiveChatSessions, inspectBrowserAutomation, navigateBrowserAutomation, startBrowserAutomation } from '../api';
+import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserAutomation, navigateBrowserAutomation, startBrowserAutomation } from '../api';
 import { useChatStore } from '../stores/chat';
+import { getTerminalHandle } from '../terminalRegistry';
+import { terminalCommandDialect, terminalShellLabel } from '../terminalIntegration';
 import type { Attachment } from '../components/chat/ChatInput';
-import type { BrowserElementSelection, ChatEvent, ChatSessionKind, CodeContext } from '../types';
+import type { BrowserElementSelection, ChatEvent, ChatSessionKind, CodeContext, TerminalContext } from '../types';
 import type { QueuedMessage } from '../stores/chat';
 
 const CONNECT_TIMEOUT_MS = 10000;
@@ -74,6 +76,9 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
   if (selection) {
     lines.push('[Selected browser element]');
     lines.push(`Selector: ${selection.selector}`);
+    if (selection.uniqueSelector) {
+      lines.push(`Unique selector: ${selection.uniqueSelector}`);
+    }
     lines.push(`Tag: ${selection.tagName}`);
     if (selection.role) {
       lines.push(`Role: ${selection.role}`);
@@ -81,8 +86,69 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
     if (selection.text) {
       lines.push(`Text: ${selection.text}`);
     }
+    if (selection.attributes && Object.keys(selection.attributes).length > 0) {
+      lines.push(`Attributes: ${Object.entries(selection.attributes).map(([k, v]) => `${k}="${v}"`).join(' ')}`);
+    }
+    if (selection.computedStyle) {
+      const cs = selection.computedStyle;
+      lines.push(`Computed: display=${cs.display}, position=${cs.position}, ${cs.width}×${cs.height}, visibility=${cs.visibility}`);
+    }
+    if (selection.boundingRect) {
+      lines.push(`Dimensions: ${selection.boundingRect.width}×${selection.boundingRect.height}px`);
+    }
+    if (selection.boxModel) {
+      const bm = selection.boxModel;
+      const m = bm.margin;
+      const p = bm.padding;
+      lines.push(`Box model: margin=${Math.round(m.top)} ${Math.round(m.right)} ${Math.round(m.bottom)} ${Math.round(m.left)}, padding=${Math.round(p.top)} ${Math.round(p.right)} ${Math.round(p.bottom)} ${Math.round(p.left)}, content=${Math.round(bm.contentRect.width)}×${Math.round(bm.contentRect.height)}`);
+    }
+    if (selection.parentChain && selection.parentChain.length > 0) {
+      const path = selection.parentChain.map((item) => {
+        let s = item.tagName;
+        if (item.id) s += `#${item.id}`;
+        if (item.classes.length > 0) s += `.${item.classes.slice(0, 2).join('.')}`;
+        return s;
+      }).join(' > ');
+      lines.push(`DOM path: ${path}`);
+    }
+    if (selection.accessibilityInfo) {
+      const a11y = selection.accessibilityInfo;
+      const parts: string[] = [];
+      if (a11y.role) parts.push(`role=${a11y.role}`);
+      if (a11y.label) parts.push(`label="${a11y.label}"`);
+      parts.push(`focusable=${a11y.focusable}`);
+      if (a11y.tabIndex !== undefined) parts.push(`tabIndex=${a11y.tabIndex}`);
+      if (parts.length > 0) lines.push(`Accessibility: ${parts.join(', ')}`);
+    }
+    if (selection.eventListeners && selection.eventListeners.length > 0) {
+      lines.push(`Events: ${selection.eventListeners.map((l) => l.type).join(', ')}`);
+    }
     lines.push('Outer HTML:');
     lines.push(selection.outerHTML.slice(0, 3000));
+  }
+
+  return lines.join('\n');
+}
+
+function buildActiveTerminalContext(context: TerminalContext): string {
+  const lines = [
+    '[Active terminal integration]',
+    'Status: enabled',
+    'Execution target: active visible terminal',
+    `Session ID: ${context.sessionId}`,
+    `Shell: ${terminalShellLabel(context.shellType)}`,
+    `Command dialect: ${terminalCommandDialect(context.shellType)}`,
+    `CWD: ${context.cwd || '(unknown)'}`,
+    'Use MCP tool active_terminal_run for terminal work so commands run in this active terminal. Send one command per tool call, do not repeat the same command, and end the turn when the requested terminal action is complete.',
+  ];
+
+  if (context.scrollback.trim()) {
+    lines.push('Recent terminal output:');
+    lines.push('```text');
+    lines.push(context.scrollback);
+    lines.push('```');
+  } else {
+    lines.push('Recent terminal output: (empty)');
   }
 
   return lines.join('\n');
@@ -93,6 +159,8 @@ export function useChatSession(): UseChatSessionResult {
   const sessions = useChatStore((s) => s.sessions);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const browserSelection = useChatStore((s) => s.browserSelection);
+  const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
+  const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const addMessage = useChatStore((s) => s.addMessage);
   const handleChatEvent = useChatStore((s) => s.handleChatEvent);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
@@ -426,6 +494,25 @@ export function useChatSession(): UseChatSessionResult {
         }
       }
 
+      // Append terminal context if active
+      if (useActiveTerminal && activeTerminalId) {
+        try {
+          const handle = getTerminalHandle(activeTerminalId);
+          if (handle) {
+            const maxLines = (await getConfig().catch(() => ({ terminalAiMaxLines: 100 }))).terminalAiMaxLines ?? 100;
+            const scrollback = handle.getScrollback(maxLines || 10000);
+            const terminalContext = buildActiveTerminalContext({
+              sessionId: activeTerminalId,
+              cwd: handle.cwd,
+              shellType: handle.shellType,
+              scrollback,
+            });
+            outboundContent = `${outboundContent}\n\n${terminalContext}`;
+          }
+        } catch {
+        }
+      }
+
       const payload: { type: string; content: string; context?: unknown; attachments?: Attachment[] } = { type: 'message', content: outboundContent };
       if (context) {
         payload.context = context;
@@ -435,7 +522,7 @@ export function useChatSession(): UseChatSessionResult {
       }
       conn.ws.send(JSON.stringify(payload));
     },
-    [activeSessionId, addMessage, browserSelection, setSessionStatus, useActiveBrowser],
+    [activeSessionId, addMessage, browserSelection, setSessionStatus, useActiveBrowser, useActiveTerminal, activeTerminalId],
   );
 
   sendQueuedRef.current = async (queued: QueuedMessage) => {
@@ -449,6 +536,13 @@ export function useChatSession(): UseChatSessionResult {
     ws.send(JSON.stringify(payload));
     return true;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    sendControl({
+      type: 'set_use_active_terminal',
+      useActiveTerminal: useActiveTerminal && !!activeTerminalId,
+    });
+  }, [activeTerminalId, connected, sendControl, useActiveTerminal]);
 
   const cancel = useCallback(() => {
     if (!activeSessionId) return;

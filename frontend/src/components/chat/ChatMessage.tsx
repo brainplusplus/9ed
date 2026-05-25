@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useChatStore } from '../../stores/chat';
+import { useWorkspaceStore } from '../../stores/workspace';
+import { getTerminalHandle } from '../../terminalRegistry';
+import { isShellLanguageCompatible } from '../../terminalIntegration';
 import type { ChatMessage as ChatMessageType } from '../../types';
 
 type ChatMessageProps = {
@@ -29,6 +33,80 @@ function ToolCallStatusIcon({ status }: { status: string }) {
     case 'in_progress': return <span className="tool-status tool-status-running">⟳</span>;
     default: return <span className="tool-status tool-status-pending">○</span>;
   }
+}
+
+/** Detect if language is terminal-runnable */
+/** Inline code — no run button */
+function MarkdownCode({ className, children, ...props }: React.ComponentProps<'code'> & { node?: unknown }) {
+  return <code className={className} {...props}>{children}</code>;
+}
+
+/** Block code (inside <pre>) — add "Run in terminal" button for shell languages */
+function MarkdownPre({ children }: React.ComponentProps<'pre'> & { node?: unknown }) {
+  const [ran, setRan] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const activeTerminalId = useChatStore((s) => s.activeTerminalId);
+  const autoApprove = useChatStore((s) => s.autoApprove);
+  const terminalHandle = activeTerminalId ? getTerminalHandle(activeTerminalId) : null;
+
+  // Extract code text and language from ReactMarkdown children
+  let lang: string | undefined;
+  let codeText = '';
+  const child = children as React.ReactElement<React.HTMLAttributes<HTMLElement>> | undefined;
+  if (child?.props) {
+    const cls = (child.props.className as string) || '';
+    const m = cls.match(/language-(\w+)/);
+    if (m) lang = m[1];
+    codeText = String(child.props.children ?? '');
+  }
+
+  const canRun = !!terminalHandle && isShellLanguageCompatible(lang, terminalHandle.shellType);
+
+  const executeRun = () => {
+    if (!terminalHandle) return;
+    // Strip leading `$ ` or `> ` prompts from each line
+    const cleaned = codeText
+      .split('\n')
+      .map((l) => l.replace(/^\$\s*|^>\s*/, ''))
+      .join('\n')
+      .trim();
+    // Reveal terminal panel before sending the command.
+    useWorkspaceStore.getState().showTerminal();
+    terminalHandle.sendCommand(cleaned);
+    setRan(true);
+    setConfirming(false);
+    setTimeout(() => setRan(false), 2000);
+  };
+
+  const handleClick = () => {
+    if (autoApprove) {
+      executeRun();
+    } else if (confirming) {
+      executeRun();
+    } else {
+      setConfirming(true);
+      // Auto-cancel confirmation after 5s
+      setTimeout(() => setConfirming(false), 5000);
+    }
+  };
+
+  const label = ran ? '✓ Sent' : confirming ? '⚠ Confirm?' : '▶ Run';
+
+  return (
+    <div className="chat-code-block-wrapper">
+      <pre className="chat-code-block">{children}</pre>
+      {canRun && (
+        <button
+          type="button"
+          className={`chat-code-run-btn${ran ? ' ran' : ''}${confirming ? ' confirm' : ''}`}
+          onClick={handleClick}
+          title={confirming ? 'Click again to confirm execution' : 'Run in active terminal'}
+        >
+          {label}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function ChatMessage({ message, streaming }: ChatMessageProps) {
@@ -92,7 +170,10 @@ export function ChatMessage({ message, streaming }: ChatMessageProps) {
           streaming ? (
             <pre className="chat-streaming-text">{message.content}</pre>
           ) : (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{ code: MarkdownCode, pre: MarkdownPre }}
+            >{message.content}</ReactMarkdown>
           )
         ) : message.role === 'assistant' ? (
           <span className="chat-typing-indicator"><span /><span /><span /></span>

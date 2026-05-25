@@ -320,6 +320,7 @@ type ToolCallStatusUpdate struct {
 	SessionUpdate SessionUpdateType `json:"sessionUpdate"` // "tool_call_update"
 	ToolCallID    string            `json:"toolCallId"`
 	Status        ToolCallStatus    `json:"status,omitempty"`
+	Kind          ToolKind          `json:"kind,omitempty"`
 	Title         string            `json:"title,omitempty"`
 	Content       []ToolCallContent `json:"content,omitempty"`
 	Locations     []ToolCallLocation `json:"locations,omitempty"`

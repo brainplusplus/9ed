@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { BrowserElementSelection, ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
 import { getChatHistory, getChatSessionState, saveChatMessage, deleteChatHistory, getRestorableChatSession, resumeChatSession } from '../api';
+import { getTerminalHandle } from '../terminalRegistry';
+import { useWorkspaceStore } from './workspace';
 
 export type ChatRestoreError = {
   sessionId: string;
@@ -16,6 +18,8 @@ export type QueuedMessage = {
 
 const resumeRequests = new Map<string, Promise<boolean>>();
 const CHAT_AGENTS_STORAGE_KEY = '9ed.chatAgents.v1';
+const recentlyRoutedTerminalCommands = new Map<string, number>();
+const TERMINAL_COMMAND_DEDUPE_MS = 1500;
 
 function chatStorage(): Storage | null {
   if (typeof window === 'undefined') return null;
@@ -65,6 +69,8 @@ type ChatState = {
   autoApprove: boolean;
   useActiveBrowser: boolean;
   browserSelection: BrowserElementSelection | null;
+  useActiveTerminal: boolean;
+  activeTerminalId: string | null;
   restoring: boolean;
   lastRestoreError: ChatRestoreError | null;
 
@@ -96,6 +102,8 @@ type ChatState = {
   toggleAutoApprove: () => void;
   toggleUseActiveBrowser: () => void;
   setBrowserSelection: (selection: BrowserElementSelection | null) => void;
+  toggleUseActiveTerminal: () => void;
+  setActiveTerminalId: (id: string | null) => void;
 };
 
 function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: ChatSessionInfo) => ChatSessionInfo): ChatSessionInfo[] {
@@ -118,6 +126,25 @@ function fallbackTitle(agentId: string, title?: string): string {
   };
   const agentLabel = agentLabels[agentId] ?? agentId ?? 'Chat';
   return title && title.trim() ? title : agentLabel;
+}
+
+function routeCommandToActiveTerminal(getState: () => ChatState, command: string): void {
+  const cmd = command.trim();
+  if (!cmd) return;
+
+  const state = getState();
+  if (!state.useActiveTerminal || !state.activeTerminalId) return;
+
+  const now = Date.now();
+  const lastRoutedAt = recentlyRoutedTerminalCommands.get(cmd) ?? 0;
+  if (now - lastRoutedAt < TERMINAL_COMMAND_DEDUPE_MS) return;
+  recentlyRoutedTerminalCommands.set(cmd, now);
+
+  const handle = getTerminalHandle(state.activeTerminalId);
+  if (!handle) return;
+
+  useWorkspaceStore.getState().showTerminal();
+  handle.sendCommand(cmd);
 }
 
 function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
@@ -184,6 +211,7 @@ export function replayTranscriptToMessages(events: TranscriptEventRecord[]): Rep
           kind: payload.toolKind ?? '',
           status: payload.toolStatus ?? 'pending',
           locations: payload.toolLocations,
+          rawInput: payload.toolRawInput,
         };
         msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall: tc, timestamp: evt.timestamp });
         break;
@@ -310,6 +338,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   includeIgnoredInMentions: false,
   autoApprove: false,
   useActiveBrowser: false,
+  useActiveTerminal: false,
+  activeTerminalId: null,
   browserSelection: null,
   restoring: false,
   lastRestoreError: null,
@@ -404,6 +434,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               kind: event.toolKind ?? '',
               status: event.toolStatus ?? 'pending',
               locations: event.toolLocations,
+              rawInput: event.toolRawInput,
             };
             msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall: tc, timestamp: Date.now() });
             break;
@@ -421,6 +452,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   status: event.toolStatus ?? tc.status,
                   title: event.toolTitle ?? tc.title,
                   content: event.toolContent ?? tc.content,
+                  rawInput: event.toolRawInput ?? tc.rawInput,
                 },
               };
             }
@@ -478,6 +510,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case 'done':
             return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined };
+
+          case 'terminal_execute': {
+            if (event.terminalCommand) {
+              routeCommandToActiveTerminal(get, event.terminalCommand);
+            }
+            const toolCallId = event.toolCallId || `active-terminal-${Date.now().toString(36)}`;
+            const idx = findLastIndex(msgs, (m: ChatMessage) => m.role === 'tool_call' && m.toolCall?.toolCallId === toolCallId);
+            const toolCall: ToolCallInfo = {
+              toolCallId,
+              title: event.toolTitle || 'active_terminal_run',
+              kind: event.toolKind || 'execute',
+              status: 'completed',
+              content: event.terminalCommand ? `Sent to active terminal:\n${event.terminalCommand}` : undefined,
+              rawInput: event.toolRawInput,
+            };
+            if (idx >= 0) {
+              msgs[idx] = { ...msgs[idx], toolCall: { ...msgs[idx].toolCall!, ...toolCall } };
+            } else {
+              msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall, timestamp: Date.now() });
+            }
+            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined };
+          }
 
           case 'error': {
             if (last && last.role === 'assistant') {
@@ -908,4 +962,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setBrowserSelection: (selection) =>
     set({ browserSelection: selection }),
+
+  toggleUseActiveTerminal: () =>
+    set((state) => ({ useActiveTerminal: !state.useActiveTerminal })),
+
+  setActiveTerminalId: (id) =>
+    set({ activeTerminalId: id }),
 }));

@@ -73,16 +73,96 @@ type chatWSInbound struct {
 	Value       string           `json:"value,omitempty"`
 	Attachments []chatAttachment `json:"attachments,omitempty"`
 
-	PermissionID string `json:"permissionId,omitempty"`
-	OptionID     string `json:"optionId,omitempty"`
-	Cancelled    bool   `json:"cancelled,omitempty"`
-	AutoApprove  bool   `json:"autoApprove,omitempty"`
+	PermissionID      string `json:"permissionId,omitempty"`
+	OptionID          string `json:"optionId,omitempty"`
+	Cancelled         bool   `json:"cancelled,omitempty"`
+	AutoApprove       bool   `json:"autoApprove,omitempty"`
+	UseActiveTerminal bool   `json:"useActiveTerminal,omitempty"`
 }
 
 type chatAttachment struct {
 	Type string `json:"type"`
 	Path string `json:"path"`
 	Name string `json:"name"`
+}
+
+type chatTerminalRunRequest struct {
+	SessionID string `json:"sessionId"`
+	Command   string `json:"command"`
+}
+
+func (a *API) handleChatTerminalRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	if a.terminalMCPToken == "" || r.Header.Get("X-9ed-MCP-Token") != a.terminalMCPToken {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req chatTerminalRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Command = strings.TrimSpace(req.Command)
+	if req.Command == "" {
+		http.Error(w, "command is required", http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == "" {
+		if latestID, ok := a.chatStreams.LatestID(); ok {
+			req.SessionID = latestID
+		}
+	}
+	if req.SessionID == "" {
+		http.Error(w, "no active chat stream", http.StatusBadRequest)
+		return
+	}
+	if a.isDuplicateTerminalRun(req.SessionID, req.Command) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate_ignored"})
+		return
+	}
+	if a.chatSessionManager == nil {
+		http.Error(w, "chat not available", http.StatusServiceUnavailable)
+		return
+	}
+	session, ok := a.chatSessionManager.Get(req.SessionID)
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	stream := a.chatStreams.GetOrCreate(req.SessionID, session, a.newChatEventPersister(req.SessionID))
+	stream.publish(chat.ChatEvent{
+		Type:            "terminal_execute",
+		TerminalCommand: req.Command,
+		ToolTitle:       "active_terminal_run",
+		ToolKind:        "execute",
+	})
+	stream.publish(chat.ChatEvent{Type: "done", StopReason: "terminal_command_sent"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+}
+
+func (a *API) isDuplicateTerminalRun(sessionID, command string) bool {
+	const window = 10 * time.Second
+	key := sessionID + "\x00" + command
+	now := time.Now()
+
+	a.terminalRunMu.Lock()
+	defer a.terminalRunMu.Unlock()
+
+	for k, ts := range a.terminalRuns {
+		if now.Sub(ts) > window {
+			delete(a.terminalRuns, k)
+		}
+	}
+	if ts, ok := a.terminalRuns[key]; ok && now.Sub(ts) <= window {
+		return true
+	}
+	a.terminalRuns[key] = now
+	return false
 }
 
 func (a *API) handleChatAgents(w http.ResponseWriter, r *http.Request) {
@@ -375,6 +455,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	stream := a.chatStreams.GetOrCreate(sessionID, session, a.newChatEventPersister(sessionID))
+	a.chatStreams.Touch(sessionID)
 	sub := stream.Subscribe()
 	defer stream.Unsubscribe(sub)
 
@@ -404,6 +485,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		switch msg.Type {
 		case "message":
+			a.chatStreams.Touch(sessionID)
 			content := msg.Content
 			if msg.Context != nil && len(msg.Context) > 0 {
 				content = formatContextMessage(msg.Content, msg.Context)
@@ -434,6 +516,9 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		case "set_auto_approve":
 			session.SetAutoApprove(msg.AutoApprove)
+
+		case "set_use_active_terminal":
+			session.SetUseActiveTerminal(msg.UseActiveTerminal)
 
 		default:
 			stream.publish(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})

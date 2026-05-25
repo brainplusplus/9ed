@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ type ChatEvent struct {
 	ToolKind      string             `json:"toolKind,omitempty"`
 	ToolStatus    string             `json:"toolStatus,omitempty"`
 	ToolContent   string             `json:"toolContent,omitempty"`
+	ToolRawInput  string             `json:"toolRawInput,omitempty"`
 	ToolLocations []ToolLocation     `json:"toolLocations,omitempty"`
 	DiffPath      string             `json:"diffPath,omitempty"`
 	DiffOldText   string             `json:"diffOldText,omitempty"`
@@ -41,6 +43,8 @@ type ChatEvent struct {
 	PermissionID      string             `json:"permissionId,omitempty"`
 	PermissionTitle   string             `json:"permissionTitle,omitempty"`
 	PermissionOptions []PermissionOption `json:"permissionOptions,omitempty"`
+
+	TerminalCommand string `json:"terminalCommand,omitempty"`
 }
 
 type PermissionOption struct {
@@ -95,6 +99,7 @@ type ChatSession interface {
 	Mode() SessionMode
 	RespondPermission(resp PermissionResponse)
 	SetAutoApprove(enabled bool)
+	SetUseActiveTerminal(enabled bool)
 	ACPSessionID() string
 	IsResumed() bool
 }
@@ -118,6 +123,12 @@ type AgentDescriptor struct {
 	Available      bool     `json:"available"`
 	SupportsACP    bool     `json:"supportsAcp"`
 	ACPInstallable bool     `json:"acpInstallable,omitempty"`
+}
+
+var activeTerminalMCPServers []acp.MCPServer
+
+func SetActiveTerminalMCPServers(servers []acp.MCPServer) {
+	activeTerminalMCPServers = servers
 }
 
 // NewChatSession creates a ChatSession using ACP if supported, falling back to PTY.
@@ -154,21 +165,29 @@ type PermissionResponse struct {
 	Cancelled    bool   `json:"cancelled"`
 }
 
+type acpTerminal struct {
+	id      string
+	command string
+}
+
 type acpSession struct {
-	id           string
-	agentID      string
-	workDir      string
-	adapter      *acp.Adapter
-	sessionID    string
-	ctx          context.Context
-	events       chan ChatEvent
-	done         chan struct{}
-	cancelFn     context.CancelFunc
-	promptDone   chan *acp.SessionPromptResult
-	textBuf      strings.Builder
-	permissionCh chan PermissionResponse
-	autoApprove  bool
-	resumed      bool
+	id                string
+	agentID           string
+	workDir           string
+	adapter           *acp.Adapter
+	sessionID         string
+	ctx               context.Context
+	events            chan ChatEvent
+	done              chan struct{}
+	cancelFn          context.CancelFunc
+	promptDone        chan *acp.SessionPromptResult
+	textBuf           strings.Builder
+	permissionCh      chan PermissionResponse
+	autoApprove       bool
+	useActiveTerminal bool
+	resumed           bool
+	terminals         map[string]*acpTerminal
+	routedToolCalls   map[string]bool
 }
 
 func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (*acpSession, error) {
@@ -184,9 +203,10 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 	}
 
 	cfg := acp.AdapterConfig{
-		Command: acpCommand,
-		Args:    agent.ACPArgs,
-		WorkDir: workDir,
+		Command:    acpCommand,
+		Args:       agent.ACPArgs,
+		WorkDir:    workDir,
+		MCPServers: activeTerminalMCPServers,
 	}
 
 	adapter, err := acp.NewAdapter(acpCtx, cfg)
@@ -203,17 +223,19 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 	}
 
 	s := &acpSession{
-		id:           result.SessionID,
-		agentID:      agent.ID,
-		workDir:      workDir,
-		adapter:      adapter,
-		sessionID:    result.SessionID,
-		ctx:          acpCtx,
-		events:       make(chan ChatEvent, 128),
-		done:         make(chan struct{}),
-		cancelFn:     cancel,
-		promptDone:   make(chan *acp.SessionPromptResult, 1),
-		permissionCh: make(chan PermissionResponse, 1),
+		id:              result.SessionID,
+		agentID:         agent.ID,
+		workDir:         workDir,
+		adapter:         adapter,
+		sessionID:       result.SessionID,
+		ctx:             acpCtx,
+		events:          make(chan ChatEvent, 128),
+		done:            make(chan struct{}),
+		cancelFn:        cancel,
+		promptDone:      make(chan *acp.SessionPromptResult, 1),
+		permissionCh:    make(chan PermissionResponse, 1),
+		terminals:       make(map[string]*acpTerminal),
+		routedToolCalls: make(map[string]bool),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -237,9 +259,10 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 	}
 
 	cfg := acp.AdapterConfig{
-		Command: acpCommand,
-		Args:    agent.ACPArgs,
-		WorkDir: workDir,
+		Command:    acpCommand,
+		Args:       agent.ACPArgs,
+		WorkDir:    workDir,
+		MCPServers: activeTerminalMCPServers,
 	}
 
 	adapter, err := acp.NewAdapter(acpCtx, cfg)
@@ -256,18 +279,20 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 	}
 
 	s := &acpSession{
-		id:           result.SessionID,
-		agentID:      agent.ID,
-		workDir:      workDir,
-		adapter:      adapter,
-		sessionID:    result.SessionID,
-		ctx:          acpCtx,
-		events:       make(chan ChatEvent, 128),
-		done:         make(chan struct{}),
-		cancelFn:     cancel,
-		promptDone:   make(chan *acp.SessionPromptResult, 1),
-		permissionCh: make(chan PermissionResponse, 1),
-		resumed:      true,
+		id:              result.SessionID,
+		agentID:         agent.ID,
+		workDir:         workDir,
+		adapter:         adapter,
+		sessionID:       result.SessionID,
+		ctx:             acpCtx,
+		events:          make(chan ChatEvent, 128),
+		done:            make(chan struct{}),
+		cancelFn:        cancel,
+		promptDone:      make(chan *acp.SessionPromptResult, 1),
+		permissionCh:    make(chan PermissionResponse, 1),
+		resumed:         true,
+		terminals:       make(map[string]*acpTerminal),
+		routedToolCalls: make(map[string]bool),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -303,6 +328,10 @@ func (s *acpSession) RespondPermission(resp PermissionResponse) {
 
 func (s *acpSession) SetAutoApprove(enabled bool) {
 	s.autoApprove = enabled
+}
+
+func (s *acpSession) SetUseActiveTerminal(enabled bool) {
+	s.useActiveTerminal = enabled
 }
 
 func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string) error {
@@ -423,12 +452,16 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 	case acp.UpdateToolCall:
 		var update acp.ToolCallUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
+			if s.redirectToolCallToActiveTerminal(update) {
+				return
+			}
 			evt := ChatEvent{
-				Type:       "tool_call",
-				ToolCallID: update.ToolCallID,
-				ToolTitle:  update.Title,
-				ToolKind:   string(update.Kind),
-				ToolStatus: string(update.Status),
+				Type:         "tool_call",
+				ToolCallID:   update.ToolCallID,
+				ToolTitle:    update.Title,
+				ToolKind:     string(update.Kind),
+				ToolStatus:   string(update.Status),
+				ToolRawInput: string(update.RawInput),
 			}
 			if len(update.Locations) > 0 {
 				locs := make([]ToolLocation, len(update.Locations))
@@ -443,6 +476,18 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 	case acp.UpdateToolCallUpdate:
 		var update acp.ToolCallStatusUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
+			if update.Status != acp.ToolStatusCompleted && update.Status != acp.ToolStatusFailed {
+				tool := acp.ToolCallUpdate{
+					ToolCallID: update.ToolCallID,
+					Title:      update.Title,
+					Kind:       update.Kind,
+					Status:     update.Status,
+					RawInput:   update.RawInput,
+				}
+				if s.redirectToolCallToActiveTerminal(tool) {
+					return
+				}
+			}
 			var contentParts []string
 			for _, c := range update.Content {
 				switch c.Type {
@@ -464,10 +509,11 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 				}
 			}
 			evt := ChatEvent{
-				Type:       "tool_call_update",
-				ToolCallID: update.ToolCallID,
-				ToolTitle:  update.Title,
-				ToolStatus: string(update.Status),
+				Type:         "tool_call_update",
+				ToolCallID:   update.ToolCallID,
+				ToolTitle:    update.Title,
+				ToolStatus:   string(update.Status),
+				ToolRawInput: string(update.RawInput),
 			}
 			if len(contentParts) > 0 {
 				evt.ToolContent = strings.Join(contentParts, "\n")
@@ -576,6 +622,24 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 			return
 		}
 
+		if s.useActiveTerminal {
+			if cmd := commandFromToolCall(params.ToolCall); cmd != "" {
+				debug.Printf("[ACP] redirect execute permission to active terminal: %q", cmd)
+				s.events <- ChatEvent{
+					Type:            "terminal_execute",
+					TerminalCommand: cmd,
+					ToolCallID:      params.ToolCall.ToolCallID,
+					ToolTitle:       params.ToolCall.Title,
+					ToolKind:        string(params.ToolCall.Kind),
+					ToolRawInput:    string(params.ToolCall.RawInput),
+				}
+				_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
+					Outcome: acp.PermissionOutcome{Outcome: "cancelled"},
+				}, nil)
+				return
+			}
+		}
+
 		if s.autoApprove {
 			optionID := ""
 			for _, opt := range params.Options {
@@ -670,10 +734,69 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 		}
 		if err := writeFileContent(params.Path, params.Text); err != nil {
 			_ = s.adapter.Respond(req.ID, nil, &acp.RPCError{
-				Code:    -32603,
+				Code:    -32003,
 				Message: err.Error(),
 			})
 			return
+		}
+		_ = s.adapter.Respond(req.ID, nil, nil)
+
+	// --- Terminal methods: redirect commands to user's active terminal ---
+	case acp.MethodTerminalCreate:
+		var params acp.TerminalCreateParams
+		if jsonUnmarshal(req.Params, &params) != nil {
+			_ = s.adapter.Respond(req.ID, nil, &acp.RPCError{
+				Code:    -32602,
+				Message: "invalid params",
+			})
+			return
+		}
+		// Build full command string
+		cmd := params.Command
+		if len(params.Args) > 0 {
+			cmd = cmd + " " + strings.Join(params.Args, " ")
+		}
+		termID := fmt.Sprintf("term_%d", req.ID)
+		s.terminals[termID] = &acpTerminal{id: termID, command: cmd}
+
+		// Emit event to frontend so it can type the command into the user's terminal
+		if cmd != "" {
+			debug.Printf("[ACP] terminal/create → redirect to user terminal: %q", cmd)
+			s.events <- ChatEvent{
+				Type:            "terminal_execute",
+				TerminalCommand: cmd,
+			}
+		}
+
+		// Return a fake terminal ID — the AI will use it for output/release
+		_ = s.adapter.Respond(req.ID, acp.TerminalCreateResult{TerminalID: termID}, nil)
+
+	case acp.MethodTerminalOutput:
+		// AI asks for terminal output — we don't have the real output since
+		// it ran in the user's terminal, not ours. Return empty.
+		// The AI gets the actual command output via its internal tool result.
+		_ = s.adapter.Respond(req.ID, acp.TerminalOutputResult{Output: ""}, nil)
+
+	case acp.MethodTerminalRelease:
+		var params struct {
+			TerminalID string `json:"terminalId"`
+		}
+		if jsonUnmarshal(req.Params, &params) == nil {
+			delete(s.terminals, params.TerminalID)
+		}
+		_ = s.adapter.Respond(req.ID, nil, nil)
+
+	case acp.MethodTerminalWaitExit:
+		// Pretend the terminal exited successfully immediately
+		exitCode := 0
+		_ = s.adapter.Respond(req.ID, acp.TerminalOutputResult{ExitCode: &exitCode}, nil)
+
+	case acp.MethodTerminalKill:
+		var params struct {
+			TerminalID string `json:"terminalId"`
+		}
+		if jsonUnmarshal(req.Params, &params) == nil {
+			delete(s.terminals, params.TerminalID)
 		}
 		_ = s.adapter.Respond(req.ID, nil, nil)
 
@@ -683,6 +806,80 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 			Message: "method not supported: " + req.Method,
 		})
 	}
+}
+
+func commandFromToolCall(tool acp.ToolCallUpdate) string {
+	kind := strings.ToLower(string(tool.Kind))
+	if kind != string(acp.ToolKindExecute) && kind != "shell" && kind != "bash" && kind != "powershell" && kind != "pwsh" && kind != "cmd" {
+		return ""
+	}
+	return commandFromRawInput(tool.RawInput)
+}
+
+func (s *acpSession) redirectToolCallToActiveTerminal(tool acp.ToolCallUpdate) bool {
+	if !s.useActiveTerminal || tool.ToolCallID == "" || s.routedToolCalls[tool.ToolCallID] {
+		return false
+	}
+	if tool.Status == acp.ToolStatusCompleted || tool.Status == acp.ToolStatusFailed {
+		return false
+	}
+	cmd := commandFromToolCall(tool)
+	if cmd == "" {
+		return false
+	}
+	s.routedToolCalls[tool.ToolCallID] = true
+	debug.Printf("[ACP] redirect tool call to active terminal and cancel turn: id=%s command=%q", tool.ToolCallID, cmd)
+	s.events <- ChatEvent{
+		Type:            "terminal_execute",
+		TerminalCommand: cmd,
+		ToolCallID:      tool.ToolCallID,
+		ToolTitle:       tool.Title,
+		ToolKind:        string(tool.Kind),
+		ToolRawInput:    string(tool.RawInput),
+	}
+	s.events <- ChatEvent{Type: "done", StopReason: "terminal_command_sent"}
+	_ = s.adapter.Cancel(s.sessionID)
+	return true
+}
+
+func commandFromRawInput(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+
+	for _, key := range []string{"command", "cmd", "script", "code", "input"} {
+		if value, ok := obj[key].(string); ok && strings.TrimSpace(value) != "" {
+			cmd := strings.TrimSpace(value)
+			if args, ok := obj["args"].([]any); ok && len(args) > 0 {
+				var parts []string
+				parts = append(parts, cmd)
+				for _, arg := range args {
+					parts = append(parts, quoteCommandArg(fmt.Sprint(arg)))
+				}
+				return strings.Join(parts, " ")
+			}
+			return cmd
+		}
+	}
+
+	return ""
+}
+
+func quoteCommandArg(arg string) string {
+	if !strings.ContainsAny(arg, " \t\"") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(arg, `\`, `\\`), `"`, `\"`) + `"`
 }
 
 func toFloat(v any) (float64, bool) {

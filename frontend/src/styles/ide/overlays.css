@@ -46,7 +46,7 @@
   bottom: 0;
   width: min(720px, calc(100vw - 52px));
   z-index: 100;
-  background: #111827;
+  background: var(--editor-bg);
   border-left: 1px solid var(--border-color);
   transform: translateX(100%);
   transition: transform 0.2s ease;
@@ -70,12 +70,42 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
 }
 
 .mobile-panel {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
+  position: relative;
+}
+
+.mobile-view {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.mobile-view.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.mobile-view-fill {
+  height: 100%;
+  min-height: 0;
+}
+
+.mobile-view-column {
+  display: flex;
+  flex-direction: column;
 }
 
 .bottom-nav {
@@ -117,6 +147,8 @@
 .tablet-shell {
   display: flex;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -124,5 +156,232 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
+}
+
+/* Unified responsive workspace.
+   The same panel instances stay mounted across desktop, tablet, and mobile. */
+.workspace-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--editor-bg);
+}
+
+.workspace-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+}
+
+.workspace-center {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) minmax(180px, 38%);
+}
+
+.workspace-editor,
+.workspace-browser {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-editor {
+  z-index: 1;
+}
+
+.workspace-browser {
+  z-index: 2;
+  display: none;
+  flex-direction: column;
+  background: var(--editor-bg);
+}
+
+.browser-open .workspace-browser {
+  display: flex;
+}
+
+.workspace-terminal {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace-sidebar {
+  width: 28%;
+  min-width: 240px;
+  max-width: 520px;
+  flex: 0 0 28%;
+}
+
+.workspace-chat {
+  width: 25%;
+  min-width: 300px;
+  max-width: 520px;
+  flex: 0 0 25%;
+}
+
+.bottom-nav {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .workspace-shell .activity-bar {
+    display: flex;
+  }
+
+  .sidebar-closed .workspace-sidebar,
+  .chat-closed .workspace-chat,
+  .terminal-closed .workspace-terminal,
+  .browser-closed .workspace-browser,
+  .browser-disabled .workspace-browser {
+    display: none;
+  }
+
+  .terminal-closed .workspace-center {
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .workspace-shell .activity-bar {
+    display: flex;
+  }
+
+  .workspace-main {
+    flex: 1;
+  }
+
+  .workspace-center {
+    width: 100%;
+    grid-template-rows: minmax(0, 1fr) minmax(160px, 38%);
+  }
+
+  .terminal-closed .workspace-center {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .terminal-closed .workspace-terminal {
+    display: none;
+  }
+
+  .workspace-sidebar,
+  .workspace-chat,
+  .workspace-browser {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    min-width: 0;
+    max-width: none;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.2s ease;
+  }
+
+  .workspace-sidebar {
+    left: 52px;
+    width: 300px;
+    flex-basis: auto;
+    transform: translateX(-100%);
+  }
+
+  .sidebar-open .workspace-sidebar {
+    transform: translateX(0);
+  }
+
+  .workspace-chat {
+    right: 0;
+    width: 320px;
+    flex-basis: auto;
+    transform: translateX(100%);
+  }
+
+  .chat-open .workspace-chat {
+    transform: translateX(0);
+  }
+
+  .workspace-browser {
+    right: 0;
+    width: min(720px, calc(100vw - 52px));
+    transform: translateX(100%);
+  }
+
+  .browser-open .workspace-browser {
+    transform: translateX(0);
+  }
+
+  .browser-closed .workspace-browser,
+  .browser-disabled .workspace-browser {
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .workspace-shell {
+    flex-direction: column;
+  }
+
+  .workspace-shell .activity-bar {
+    display: none;
+  }
+
+  .workspace-main {
+    flex: 1;
+  }
+
+  .workspace-center {
+    position: absolute;
+    inset: 0;
+    display: block;
+  }
+
+  .workspace-sidebar,
+  .workspace-editor,
+  .workspace-terminal,
+  .workspace-chat,
+  .workspace-browser {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .mobile-view-explorer .workspace-sidebar,
+  .mobile-view-git .workspace-sidebar,
+  .mobile-view-editor .workspace-editor,
+  .mobile-view-terminal .workspace-terminal,
+  .mobile-view-chat .workspace-chat,
+  .mobile-view-browser.browser-enabled .workspace-browser {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .bottom-nav {
+    display: flex;
+  }
 }

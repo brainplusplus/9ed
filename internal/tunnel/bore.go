@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"log"
 	"os/exec"
 	"regexp"
@@ -37,7 +36,9 @@ func startBoreProc(port string) (*tunnelProc, error) {
 		if attempt == 0 {
 			log.Printf("tunnel: port %d occupied, trying alternatives...", remotePort)
 		}
-		proc.cancel()
+		if proc != nil {
+			proc.stop(5 * time.Second)
+		}
 	}
 
 	return nil, fmt.Errorf("bore: could not find available port after %d attempts starting from %d", maxRetries, basePort)
@@ -59,7 +60,11 @@ func tryBoreProc(bin, localPort string, remotePort int) (*tunnelProc, error) {
 		cancel()
 		return nil, fmt.Errorf("bore stdout pipe: %w", err)
 	}
-	stderr, _ := cmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("bore stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -69,7 +74,7 @@ func tryBoreProc(bin, localPort string, remotePort int) (*tunnelProc, error) {
 	proc := newTunnelProc(cmd, cancel)
 
 	go proc.waitAndReap()
-	go func() { _, _ = io.Copy(io.Discard, stderr) }()
+	output := newOutputRecorder(20)
 
 	urlCh := make(chan string, 1)
 	go func() {
@@ -80,11 +85,12 @@ func tryBoreProc(bin, localPort string, remotePort int) (*tunnelProc, error) {
 			urlCh <- "http://" + url
 		}
 	}()
+	stderrCh := make(chan string, 1)
+	go scanLinesWithRecorder(stderr, "bore", nil, output, stderrCh)
 
-	url, err := recvURL(urlCh, 30*time.Second)
+	url, err := recvProcURL(proc, urlCh, 30*time.Second, output)
 	if err != nil {
-		stopProcess(cmd)
-		cancel()
+		proc.stop(5 * time.Second)
 		return proc, fmt.Errorf("bore: %w", err)
 	}
 

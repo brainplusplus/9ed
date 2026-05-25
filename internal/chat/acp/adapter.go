@@ -11,10 +11,11 @@ import (
 
 // AdapterConfig configures how to spawn an ACP agent subprocess.
 type AdapterConfig struct {
-	Command string
-	Args    []string
-	WorkDir string
-	Env     []string
+	Command    string
+	Args       []string
+	WorkDir    string
+	Env        []string
+	MCPServers []MCPServer
 }
 
 // Adapter manages an ACP agent subprocess and provides high-level protocol methods.
@@ -113,7 +114,7 @@ func (a *Adapter) NewSession(ctx context.Context, cwd string) (*SessionNewResult
 
 	params := SessionNewParams{
 		CWD:        cwd,
-		MCPServers: []MCPServer{},
+		MCPServers: a.cfg.MCPServers,
 	}
 
 	raw, err := a.client.Call(ctx, MethodSessionNew, params)
@@ -148,7 +149,7 @@ func (a *Adapter) ResumeSession(ctx context.Context, sessionID, cwd string) (*Se
 	params := SessionResumeParams{
 		SessionID:  sessionID,
 		CWD:        cwd,
-		MCPServers: []MCPServer{},
+		MCPServers: a.cfg.MCPServers,
 	}
 
 	raw, err := a.client.Call(ctx, MethodSessionResume, params)

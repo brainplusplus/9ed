@@ -173,12 +173,12 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 		return
 	}
 
-	debug.Printf("[watcher] fsnotify event: op=%s type=%s path=%s", fsEvent.Op, eventType, path)
+	debug.WatcherPrintf("[watcher] fsnotify event: op=%s type=%s path=%s", fsEvent.Op, eventType, path)
 
 	if fsEvent.Op.Has(fsnotify.Create) {
 		if info, err := os.Stat(path); err == nil && info.IsDir() && !shouldSkipDir(info.Name()) {
 			_ = fw.addWatch(path)
-			debug.Printf("[watcher] Auto-watching new dir: %s", path)
+			debug.WatcherPrintf("[watcher] Auto-watching new dir: %s", path)
 		}
 	}
 
@@ -209,7 +209,7 @@ func (fw *FileWatcher) handleEvent(fsEvent fsnotify.Event) {
 			}
 		}
 		fw.mu.RUnlock()
-		debug.Printf("[watcher] Dispatched event: type=%s name=%s subscribers=%d sent=%d", eventType, filepath.Base(path), subCount, sent)
+		debug.WatcherPrintf("[watcher] Dispatched event: type=%s name=%s subscribers=%d sent=%d", eventType, filepath.Base(path), subCount, sent)
 	})
 	fw.debounceMu.Unlock()
 }

@@ -110,6 +110,9 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
   const toggleAutoApprove = useChatStore((s) => s.toggleAutoApprove);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
+  const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
+  const toggleUseActiveTerminal = useChatStore((s) => s.toggleUseActiveTerminal);
+  const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -163,6 +166,18 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
           onChange={toggleUseActiveBrowser}
         />
         <span className="chat-config-toggle-label">Browser</span>
+      </label>
+      <label
+        className={`chat-config-toggle${!activeTerminalId ? ' disabled' : ''}`}
+        title={activeTerminalId ? 'Send active terminal scrollback as context to the agent' : 'No terminal active'}
+      >
+        <input
+          type="checkbox"
+          checked={useActiveTerminal && !!activeTerminalId}
+          onChange={toggleUseActiveTerminal}
+          disabled={!activeTerminalId}
+        />
+        <span className="chat-config-toggle-label">Terminal</span>
       </label>
     </div>
   );

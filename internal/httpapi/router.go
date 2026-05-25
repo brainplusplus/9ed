@@ -3,12 +3,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/brainplusplus/9ed/internal/browser"
 	"github.com/brainplusplus/9ed/internal/chat"
@@ -49,6 +48,7 @@ type Dependencies struct {
 	ChatStore          *chat.ChatStore
 	Browser            *browser.Manager
 	TunnelURL          func() string // returns current tunnel URL (may change on restart)
+	TerminalMCPToken   string
 }
 
 type API struct {
@@ -65,6 +65,9 @@ type API struct {
 	chatStreams        *chatStreamRegistry
 	browser            *browser.Manager
 	tunnelURL          func() string
+	terminalMCPToken   string
+	terminalRunMu      sync.Mutex
+	terminalRuns       map[string]time.Time
 }
 
 func New(deps Dependencies) *API {
@@ -82,6 +85,8 @@ func New(deps Dependencies) *API {
 		chatStreams:        newChatStreamRegistry(),
 		browser:            deps.Browser,
 		tunnelURL:          deps.TunnelURL,
+		terminalMCPToken:   deps.TerminalMCPToken,
+		terminalRuns:       make(map[string]time.Time),
 	}
 }
 
@@ -119,6 +124,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/history/", a.handleChatHistoryByID)
 	mux.HandleFunc("/api/chat/state/", a.handleChatStateByID)
 	mux.HandleFunc("/api/chat/install-acp", a.handleChatInstallACP)
+	mux.HandleFunc("/api/chat/terminal/run", a.handleChatTerminalRun)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
 	if a.useBrowser {
@@ -236,7 +242,6 @@ func (a *API) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-	defer a.sessions.Remove(id)
 
 	var once sync.Once
 	writeError := func(message string) {
@@ -245,19 +250,13 @@ func (a *API) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	includeReplay := r.URL.Query().Get("replay") != "0"
+	output, unsubscribe := session.Subscribe(includeReplay)
+	defer unsubscribe()
+
 	go func() {
-		buffer := make([]byte, 4096)
-		for {
-			count, readErr := session.Read(buffer)
-			if count > 0 {
-				if err := conn.WriteJSON(wsOutboundMessage{Type: "output", Data: string(buffer[:count])}); err != nil {
-					return
-				}
-			}
-			if readErr != nil {
-				if !errors.Is(readErr, io.EOF) {
-					writeError(readErr.Error())
-				}
+		for data := range output {
+			if err := conn.WriteJSON(wsOutboundMessage{Type: "output", Data: string(data)}); err != nil {
 				return
 			}
 		}

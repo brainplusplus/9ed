@@ -38,6 +38,31 @@ func TestChatStreamBroadcastsToSubscribersAndPersistsOnce(t *testing.T) {
 	}
 }
 
+func TestChatStreamRegistryLatestTracksTouchedStream(t *testing.T) {
+	registry := newChatStreamRegistry()
+	sessionA := &fakeChatSession{events: make(chan chat.ChatEvent), done: make(chan struct{})}
+	sessionB := &fakeChatSession{events: make(chan chat.ChatEvent), done: make(chan struct{})}
+
+	registry.GetOrCreate("session-a", sessionA, nil)
+	registry.GetOrCreate("session-b", sessionB, nil)
+
+	if latest, ok := registry.LatestID(); !ok || latest != "session-b" {
+		t.Fatalf("expected latest session-b after create, got %q ok=%v", latest, ok)
+	}
+	if !registry.Touch("session-a") {
+		t.Fatal("expected touch session-a to succeed")
+	}
+	if latest, ok := registry.LatestID(); !ok || latest != "session-a" {
+		t.Fatalf("expected latest session-a after touch, got %q ok=%v", latest, ok)
+	}
+	if registry.Touch("missing") {
+		t.Fatal("expected touch missing to fail")
+	}
+
+	close(sessionA.done)
+	close(sessionB.done)
+}
+
 func readChatEvent(t *testing.T, ch <-chan chat.ChatEvent) chat.ChatEvent {
 	t.Helper()
 	select {
@@ -68,3 +93,4 @@ func (s *fakeChatSession) ACPSessionID() string                                 
 func (s *fakeChatSession) IsResumed() bool                                       { return false }
 func (s *fakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *fakeChatSession) SetAutoApprove(bool)                                   {}
+func (s *fakeChatSession) SetUseActiveTerminal(bool)                             {}

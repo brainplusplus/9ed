@@ -2,6 +2,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -236,14 +237,29 @@
 }
 
 .terminal-panel-body {
+  --terminal-bottom-gutter: 16px;
   flex: 1;
   position: relative;
+  min-height: 0;
   overflow: hidden;
 }
 
 .terminal-panel-body .terminal-panel {
+  position: absolute;
+  inset: 0 0 var(--terminal-bottom-gutter) 0;
+  display: none;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
   height: 100%;
   min-height: 0;
+  max-height: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+.terminal-panel-body .terminal-panel.visible {
+  display: flex;
 }
 
 .terminal-panel-body .terminal-meta {
@@ -251,9 +267,20 @@
 }
 
 .terminal-panel-body .terminal-host {
+  flex: 1;
   border-radius: 0;
+  box-shadow: none;
   height: 100%;
   min-height: 0;
+  max-height: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+.terminal-panel-body .terminal-host .xterm,
+.terminal-panel-body .terminal-host .xterm-screen,
+.terminal-panel-body .terminal-host .xterm-viewport {
+  height: 100%;
 }
 
 .terminal-empty {

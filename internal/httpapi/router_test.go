@@ -99,7 +99,7 @@ func TestRouterCreatesAndDeletesSession(t *testing.T) {
 	}
 }
 
-func TestWebSocketDisconnectRemovesSession(t *testing.T) {
+func TestWebSocketDisconnectKeepsSessionAlive(t *testing.T) {
 	manager := terminal.NewManager(func(profile terminal.ShellProfile) (terminal.PtySession, error) {
 		return &blockingSession{id: "session-1", profile: profile, closed: make(chan struct{})}, nil
 	})
@@ -123,15 +123,14 @@ func TestWebSocketDisconnectRemovesSession(t *testing.T) {
 		t.Fatalf("Close returned error: %v", err)
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if _, ok := manager.Get(session.ID); !ok {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	if _, ok := manager.Get(session.ID); !ok {
+		t.Fatal("expected session to stay alive after websocket disconnect")
 	}
 
-	t.Fatal("expected session to be removed after websocket disconnect")
+	if err := manager.Remove(session.ID); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
 }
 
 func TestUpgraderRejectsDifferentOrigin(t *testing.T) {
@@ -579,6 +578,7 @@ func (s *apiFakeChatSession) ACPSessionID() string                              
 func (s *apiFakeChatSession) IsResumed() bool                                       { return false }
 func (s *apiFakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *apiFakeChatSession) SetAutoApprove(bool)                                   {}
+func (s *apiFakeChatSession) SetUseActiveTerminal(bool)                             {}
 
 type fakeManager struct {
 	removedID string

@@ -1,6 +1,7 @@
 .ide-main {
   flex: 1;
   display: flex;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -9,6 +10,7 @@
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -31,12 +33,14 @@
 .ide-content {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
 .ide-editor-area {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -44,6 +48,7 @@
   border-top: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
 }
 

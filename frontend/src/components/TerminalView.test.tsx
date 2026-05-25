@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TerminalView } from './TerminalView';
+import { disposeTerminalConnection } from '../terminalConnection';
 import type { SessionTab } from '../types';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -115,6 +116,7 @@ describe('TerminalView', () => {
     act(() => {
       root.unmount();
     });
+    disposeTerminalConnection('session-1');
     container.remove();
     vi.useRealTimers();
   });
@@ -183,5 +185,27 @@ describe('TerminalView', () => {
 
     expect(terminalClear).toHaveBeenCalled();
     expect(terminalWrite).toHaveBeenCalled();
+  });
+
+  it('waits for backend replay instead of writing client scrollback on remount', () => {
+    createSessionWebSocket.mockReturnValue(new FakeWebSocket());
+
+    const tab: SessionTab = {
+      id: 'session-1',
+      profile: {
+        id: 'pwsh',
+        label: 'PowerShell 7',
+        command: 'pwsh.exe',
+        args: [],
+      },
+      status: 'ready',
+      scrollback: 'dir\r\npackage.json\r\nPS D:\\golang\\go-webttyd> ',
+    };
+
+    act(() => {
+      root.render(<TerminalView tab={tab} active onStatusChange={() => undefined} />);
+    });
+
+    expect(terminalWrite).not.toHaveBeenCalledWith(tab.scrollback);
   });
 });

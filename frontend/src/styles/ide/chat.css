@@ -82,6 +82,13 @@
 .chat-markdown a { color: #7c9dff; text-decoration: none; }
 .chat-markdown a:hover { text-decoration: underline; }
 .chat-markdown strong { color: var(--sidebar-fg); }
+.chat-code-block-wrapper { position: relative; }
+.chat-code-block-wrapper .chat-code-block { margin: 0; }
+.chat-code-run-btn { position: absolute; top: 4px; right: 4px; background: rgba(255,255,255,0.1); border: 1px solid var(--border-color); color: var(--sidebar-fg); font-size: 0.7rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.chat-code-block-wrapper:hover .chat-code-run-btn { opacity: 1; }
+.chat-code-run-btn:hover { background: rgba(255,255,255,0.2); }
+.chat-code-run-btn.ran { opacity: 1; color: #a6e3a1; }
+.chat-code-run-btn.confirm { opacity: 1; color: #f9e2af; border-color: #f9e2af; }
 .chat-typing-indicator { display: inline-flex; gap: 4px; padding: 4px 0; }
 .chat-typing-indicator span { width: 6px; height: 6px; border-radius: 50%; background: var(--activity-fg); animation: typing-bounce 1.4s infinite ease-in-out both; }
 .chat-typing-indicator span:nth-child(1) { animation-delay: 0s; }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatStore } from './chat';
+import { registerTerminal, unregisterTerminal } from '../terminalRegistry';
 import type { HistoryMessageRecord, HistorySessionRecord } from '../types';
 import { replayTranscriptToMessages, parseSnapshotJson } from './chat';
 
@@ -35,6 +36,10 @@ function resetChatStore() {
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,
+    useActiveBrowser: false,
+    browserSelection: null,
+    useActiveTerminal: false,
+    activeTerminalId: null,
     restoring: false,
     lastRestoreError: null,
   });
@@ -470,6 +475,52 @@ describe('replayTranscriptToMessages', () => {
     expect(result.messages[0].content).toBe('Pakai mode normal dulu ya?');
     expect(result.messages[1].role).toBe('assistant');
     expect(result.messages[1].content).toBe('Siap, tunggu instruksi selanjutnya.');
+  });
+});
+
+describe('active terminal routing', () => {
+  beforeEach(() => {
+    resetChatStore();
+    unregisterTerminal('term-1');
+  });
+
+  it('sends routed terminal commands instantly instead of typing characters', () => {
+    const sendCommand = vi.fn();
+    registerTerminal('term-1', {
+      getScrollback: () => '',
+      sendCommand,
+      cwd: '/repo',
+      shellType: 'powershell',
+    });
+
+    useChatStore.setState({
+      sessions: [{
+        id: 's',
+        recordId: 's',
+        agentId: 'opencode',
+        title: 'Terminal',
+        messages: [],
+        status: 'streaming',
+        createdAt: 1,
+        kind: 'live',
+      }],
+      activeSessionId: 's',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-1',
+    });
+
+    useChatStore.getState().handleChatEvent('s', {
+      type: 'terminal_execute',
+      terminalCommand: 'Get-ChildItem',
+      toolCallId: 'tc1',
+      toolTitle: 'active_terminal_run',
+      toolKind: 'execute',
+    });
+
+    expect(sendCommand).toHaveBeenCalledWith('Get-ChildItem');
+    expect(useChatStore.getState().sessions[0].status).toBe('idle');
+
+    unregisterTerminal('term-1');
   });
 });
 

@@ -3,31 +3,43 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-import { createSessionWebSocket } from '../api';
-import type { SessionTab, TerminalAction, WebSocketIncomingMessage, WebSocketOutgoingMessage } from '../types';
+import { getTerminalConnection } from '../terminalConnection';
+import { registerTerminal, unregisterTerminal } from '../terminalRegistry';
+import type { SessionTab, TerminalAction, WebSocketOutgoingMessage } from '../types';
 
 const TERMINAL_INITIAL_CONNECT_DELAY_MS = 450;
-const TERMINAL_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000];
 
 type TerminalViewProps = {
   tab: SessionTab;
   active: boolean;
   action?: TerminalAction | null;
+  cwd?: string;
   onStatusChange: (sessionId: string, status: SessionTab['status'], errorMessage?: string) => void;
+  onScrollbackSnapshot?: (sessionId: string, scrollback: string) => void;
+  onTerminalOutput?: (sessionId: string, data: string) => void;
 };
 
 export function TerminalView(props: TerminalViewProps) {
-  const { tab, active, action, onStatusChange } = props;
+  const { tab, active, action, cwd, onStatusChange, onScrollbackSnapshot, onTerminalOutput } = props;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionRef = useRef<ReturnType<typeof getTerminalConnection> | null>(null);
   const onStatusChangeRef = useRef(onStatusChange);
+  const onScrollbackSnapshotRef = useRef(onScrollbackSnapshot);
+  const onTerminalOutputRef = useRef(onTerminalOutput);
 
   useEffect(() => {
     onStatusChangeRef.current = onStatusChange;
   }, [onStatusChange]);
+
+  useEffect(() => {
+    onScrollbackSnapshotRef.current = onScrollbackSnapshot;
+  }, [onScrollbackSnapshot]);
+
+  useEffect(() => {
+    onTerminalOutputRef.current = onTerminalOutput;
+  }, [onTerminalOutput]);
 
   const statusText = useMemo(() => {
     if (tab.status === 'error' && tab.errorMessage) {
@@ -35,6 +47,23 @@ export function TerminalView(props: TerminalViewProps) {
     }
     return tab.status;
   }, [tab.errorMessage, tab.status]);
+
+  const readScrollback = (maxLines: number) => {
+    const terminal = terminalRef.current;
+    if (!terminal) return '';
+
+    const buf = terminal.buffer.active;
+    const start = Math.max(0, buf.length - maxLines);
+    const lines: string[] = [];
+    for (let i = start; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (line) {
+        lines.push(line.translateToString(true));
+      }
+    }
+
+    return lines.join('\r\n').trimStart();
+  };
 
   useEffect(() => {
     if (!hostRef.current || terminalRef.current) {
@@ -59,77 +88,31 @@ export function TerminalView(props: TerminalViewProps) {
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    fitAddon.fit();
 
-    let disposed = false;
-    let reconnectAttempt = 0;
+    const connection = getTerminalConnection(tab.id);
+    connectionRef.current = connection;
 
     const sendMessage = (message: WebSocketOutgoingMessage) => {
-      const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(message));
-      }
-    };
-
-    const connect = () => {
-      if (disposed) return;
-      const socket = createSessionWebSocket(tab.id);
-      socketRef.current = socket;
-
-      socket.addEventListener('open', () => {
-        if (disposed || socketRef.current !== socket) return;
-        reconnectAttempt = 0;
-        onStatusChangeRef.current(tab.id, 'ready');
-        fitAddon.fit();
-        sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
-      });
-
-      socket.addEventListener('message', (event) => {
-        if (disposed || socketRef.current !== socket) return;
-        const message = JSON.parse(String(event.data)) as WebSocketIncomingMessage;
-        if (message.type === 'output') {
-          terminal.write(message.data);
-          return;
-        }
-
-        if (message.type === 'error') {
-          onStatusChangeRef.current(tab.id, 'error', message.data);
-        }
-      });
-
-      const scheduleReconnect = () => {
-        if (disposed || reconnectTimerRef.current) return;
-        if (reconnectAttempt >= TERMINAL_RECONNECT_DELAYS_MS.length) {
-          onStatusChangeRef.current(tab.id, 'error', 'Terminal connection failed');
-          return;
-        }
-        onStatusChangeRef.current(tab.id, 'disconnected');
-        const delay = TERMINAL_RECONNECT_DELAYS_MS[reconnectAttempt];
-        reconnectAttempt += 1;
-        reconnectTimerRef.current = setTimeout(() => {
-          reconnectTimerRef.current = null;
-          connect();
-        }, delay);
-      };
-
-      socket.addEventListener('close', () => {
-        if (disposed || socketRef.current !== socket) return;
-        scheduleReconnect();
-      });
-
-      socket.addEventListener('error', () => {
-        if (disposed || socketRef.current !== socket) return;
-        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-          socket.close();
-        } else {
-          scheduleReconnect();
-        }
-      });
+      connection.send(message);
     };
 
     const initialTimer = setTimeout(() => {
-      onStatusChangeRef.current(tab.id, 'connecting');
-      connect();
+      sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
     }, TERMINAL_INITIAL_CONNECT_DELAY_MS);
+
+    const unsubscribeStatus = connection.subscribeStatus((status, errorMessage) => {
+      onStatusChangeRef.current(tab.id, status, errorMessage);
+      if (status === 'ready') {
+        fitAddon.fit();
+        sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
+      }
+    });
+
+    const unsubscribeOutput = connection.subscribeOutput((data) => {
+      terminal.write(data);
+      onTerminalOutputRef.current?.(tab.id, data);
+    });
 
     const disposable = terminal.onData((data) => {
       sendMessage({ type: 'input', data });
@@ -140,40 +123,63 @@ export function TerminalView(props: TerminalViewProps) {
       sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
     };
 
+    let resizeFrame: number | null = null;
+    const scheduleResize = () => {
+      if (resizeFrame !== null) return;
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        handleResize();
+      });
+    };
+
+    const ResizeObserverCtor = window.ResizeObserver;
+    const resizeObserver = ResizeObserverCtor ? new ResizeObserverCtor(scheduleResize) : null;
+    resizeObserver?.observe(hostRef.current);
+
     window.addEventListener('resize', handleResize);
 
+    // Register terminal in the global registry for AI chat integration.
+    const shellType = tab.profile.command?.split(/[/\\]/).pop()?.replace('.exe', '') ?? 'shell';
+    registerTerminal(tab.id, {
+      getScrollback: (maxLines: number) => {
+        return readScrollback(maxLines).replace(/\r\n/g, '\n');
+      },
+      sendCommand: (command: string) => {
+        sendMessage({ type: 'input', data: command + '\r' });
+      },
+      cwd: cwd ?? '',
+      shellType,
+    });
+
     return () => {
-      disposed = true;
+      unregisterTerminal(tab.id);
       clearTimeout(initialTimer);
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
+      unsubscribeStatus();
+      unsubscribeOutput();
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
       }
+      resizeObserver?.disconnect();
       window.removeEventListener('resize', handleResize);
       disposable.dispose();
-      socketRef.current?.close();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
-      socketRef.current = null;
+      connectionRef.current = null;
     };
-  }, [tab.id]);
+  }, [tab.id, cwd, tab.profile.command]);
 
   useEffect(() => {
-    if (!active || !terminalRef.current || !fitAddonRef.current || !socketRef.current) {
+    if (!active || !terminalRef.current || !fitAddonRef.current || !connectionRef.current) {
       return;
     }
 
     fitAddonRef.current.fit();
-    if (socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(
-        JSON.stringify({
-          type: 'resize',
-          cols: terminalRef.current.cols,
-          rows: terminalRef.current.rows,
-        } satisfies WebSocketOutgoingMessage),
-      );
-    }
+    connectionRef.current.send({
+      type: 'resize',
+      cols: terminalRef.current.cols,
+      rows: terminalRef.current.rows,
+    } satisfies WebSocketOutgoingMessage);
   }, [active]);
 
   useEffect(() => {
@@ -219,10 +225,12 @@ export function TerminalView(props: TerminalViewProps) {
         terminal.write(lineText);
         // Position cursor at end of prompt line
         terminal.write(`\x1b[${lineText.length + 1}G`);
+        onScrollbackSnapshotRef.current?.(tab.id, lineText);
       } else {
         // No prompt (process running or ambiguous) — clear everything
         terminal.clear();
         terminal.write('\x1b[2J\x1b[3J\x1b[H');
+        onScrollbackSnapshotRef.current?.(tab.id, '');
       }
       return;
     }

@@ -25,6 +25,8 @@ function resetStores() {
       name: 'repo',
       openFiles: [],
       activeFileId: null,
+      terminalTabs: [],
+      activeTerminalTabId: null,
       terminalSessions: [],
     }],
     activeProjectId: 'project-1',

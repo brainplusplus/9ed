@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ActivePanel, FileTab, Project } from '../types';
+import type { ActivePanel, FileTab, Project, SessionTab } from '../types';
 import { saveRecentProject } from '../api';
 
 type WorkspaceState = {
@@ -20,6 +20,7 @@ type WorkspaceState = {
   setActivePanel: (panel: ActivePanel) => void;
   toggleSidebar: () => void;
   toggleTerminal: () => void;
+  showTerminal: () => void;
   toggleChat: () => void;
   toggleBrowser: () => void;
   setBrowserEnabled: (enabled: boolean) => void;
@@ -42,6 +43,10 @@ type WorkspaceState = {
 
   addTerminalSession: (projectId: string, sessionId: string) => void;
   removeTerminalSession: (projectId: string, sessionId: string) => void;
+  addTerminalTab: (projectId: string, tab: SessionTab) => void;
+  updateTerminalTab: (projectId: string, sessionId: string, patch: Partial<SessionTab>) => void;
+  setActiveTerminalTab: (projectId: string, sessionId: string | null) => void;
+  removeTerminalTab: (projectId: string, sessionId: string) => void;
 };
 
 type StoredActiveProject = {
@@ -113,6 +118,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     name: initialActiveProject.name,
     openFiles: [],
     activeFileId: null,
+    terminalTabs: [],
+    activeTerminalTabId: null,
     terminalSessions: [],
   }] : [],
   activeProjectId: initialActiveProject?.id ?? null,
@@ -137,7 +144,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           };
         }
         const id = generateId();
-        const project = { id, path, name, openFiles: [], activeFileId: null, terminalSessions: [] };
+        const project = { id, path, name, openFiles: [], activeFileId: null, terminalTabs: [], activeTerminalTabId: null, terminalSessions: [] };
         writeStoredActiveProject(project);
         return {
           projects: [...state.projects, project],
@@ -181,6 +188,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         name: stored.name,
         openFiles: [],
         activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
         terminalSessions: [],
       }],
       activeProjectId: stored.id,
@@ -194,11 +203,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   toggleTerminal: () => set((state) => ({ terminalVisible: !state.terminalVisible })),
 
+  showTerminal: () => set({ terminalVisible: true }),
+
   toggleChat: () => set((state) => ({ chatVisible: !state.chatVisible })),
 
   toggleBrowser: () => set((state) => ({ browserVisible: !state.browserVisible })),
 
-  setBrowserEnabled: (enabled) => set({ browserEnabled: enabled, browserVisible: enabled ? false : false }),
+  setBrowserEnabled: (enabled) => set({ browserEnabled: enabled }),
 
   setShowPicker: (show) => set({ showPicker: show }),
 
@@ -356,5 +367,49 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         ...p,
         terminalSessions: p.terminalSessions.filter((s) => s !== sessionId),
       })),
+    })),
+
+  addTerminalTab: (projectId, tab) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        terminalTabs: [...p.terminalTabs, tab],
+        activeTerminalTabId: tab.id,
+      })),
+    })),
+
+  updateTerminalTab: (projectId, sessionId, patch) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        terminalTabs: p.terminalTabs.map((tab) => (tab.id === sessionId ? { ...tab, ...patch } : tab)),
+      })),
+    })),
+
+  setActiveTerminalTab: (projectId, sessionId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({
+        ...p,
+        activeTerminalTabId: sessionId,
+      })),
+    })),
+
+  removeTerminalTab: (projectId, sessionId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const idx = p.terminalTabs.findIndex((tab) => tab.id === sessionId);
+        const nextTabs = p.terminalTabs.filter((tab) => tab.id !== sessionId);
+        let nextActiveId = p.activeTerminalTabId;
+        if (p.activeTerminalTabId === sessionId) {
+          const fallback = nextTabs[idx] ?? nextTabs[idx - 1] ?? null;
+          nextActiveId = fallback?.id ?? null;
+        }
+        return {
+          ...p,
+          terminalTabs: nextTabs,
+          activeTerminalTabId: nextActiveId,
+          terminalSessions: p.terminalSessions.filter((s) => s !== sessionId),
+        };
+      }),
     })),
 }));

@@ -1,7 +1,9 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { activateBrowserTab, createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
 import { useChatStore } from '../../stores/chat';
-import type { BrowserAutomationStatus, BrowserElementSelection, BrowserTab } from '../../types';
+import type { BrowserAutomationStatus, BrowserTab } from '../../types';
+import { useInspectMode } from './useInspectMode';
+import { InspectOverlay, SelectedHighlight, InspectMiniPanel } from './InspectOverlay';
 
 const DEFAULT_URL = 'localhost:3000';
 const VIEWPORT_PRESETS = {
@@ -26,15 +28,92 @@ function displayTitle(tab: BrowserTab): string {
   return tab.title || tab.url.replace(/^https?:\/\//, '');
 }
 
+/* ── Inline SVG icon components ── */
+
+function IconChevronLeft() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 3L5 8l5 5" />
+    </svg>
+  );
+}
+
+function IconChevronRight() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 3l5 5-5 5" />
+    </svg>
+  );
+}
+
+function IconReload() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 8a5.5 5.5 0 0 1 9.3-3.95M13.5 8a5.5 5.5 0 0 1-9.3 3.95" />
+      <path d="M12 1.5v2.55h-2.55M4 14.5v-2.55h2.55" />
+    </svg>
+  );
+}
+
+function IconInspect() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6.5 2a4.5 4.5 0 0 1 3.4 7.45l3.55 3.55-1.05 1.05-3.55-3.55A4.5 4.5 0 1 1 6.5 2z" />
+      <circle cx="6.5" cy="6.5" r="2" />
+    </svg>
+  );
+}
+
+function IconPlus() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+function IconClose() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  );
+}
+
+function IconExpand() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 10v4h4M14 6V2h-4M2 14l5-5M14 2l-5 5" />
+    </svg>
+  );
+}
+
+function IconShrink() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2v4H2M10 14v-4h4M6 6L2 2M10 10l4 4" />
+    </svg>
+  );
+}
+
+function IconGlobe() {
+  return (
+    <svg aria-hidden="true" className="browser-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10A15 15 0 0 1 12 2z" />
+    </svg>
+  );
+}
+
 export function BrowserPanel() {
   const panelRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const cleanupInspectRef = useRef<(() => void) | null>(null);
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [address, setAddress] = useState(DEFAULT_URL);
   const [loading, setLoading] = useState(false);
+  const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [automation, setAutomation] = useState<BrowserAutomationStatus | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -44,17 +123,22 @@ export function BrowserPanel() {
   const [customHeight, setCustomHeight] = useState(720);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [inspectMode, setInspectMode] = useState(false);
-  const [inspectRect, setInspectRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const [showMiniPanel, setShowMiniPanel] = useState(false);
+  const addressEditingRef = useRef(false);
   const browserSelection = useChatStore((s) => s.browserSelection);
-  const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
-  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
-  const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null,
     [tabs, activeTabId],
   );
+
+  // Inspect mode hook (Tier 1-4)
+  const {
+    inspectState,
+    inspectMode,
+    toggleInspectMode,
+    clearSelection,
+  } = useInspectMode(iframeRef, stageRef, activeTab);
   const viewport = useMemo(() => {
     if (viewportMode === 'custom') {
       return {
@@ -144,17 +228,21 @@ export function BrowserPanel() {
       })
       .catch((err: Error) => {
         if (alive) setError(err.message);
+      })
+      .finally(() => {
+        if (alive) setInitializing(false);
       });
     return () => {
       alive = false;
     };
   }, []);
 
+  // Sync address from active tab — skip while user is editing
   useEffect(() => {
-    if (activeTab) {
+    if (activeTab && !addressEditingRef.current) {
       setAddress(activeTab.url);
     }
-  }, [activeTab?.id, activeTab?.url]);
+  }, [activeTab]);
 
   useEffect(() => {
     async function handleProxyMessage(event: MessageEvent<BrowserProxyMessage>) {
@@ -274,101 +362,25 @@ export function BrowserPanel() {
     }
   }
 
-  useEffect(() => {
-    if (!inspectMode) {
-      cleanupInspectRef.current?.();
-      cleanupInspectRef.current = null;
-      setInspectRect(null);
-      return;
-    }
+  const handleAddressFocus = useCallback(() => {
+    addressEditingRef.current = true;
+  }, []);
 
-    const iframe = iframeRef.current;
-    const stage = stageRef.current;
-    if (!iframe || !stage) {
-      return;
-    }
+  const handleAddressBlur = useCallback(() => {
+    addressEditingRef.current = false;
+  }, []);
 
-    const bindInspect = () => {
-      try {
-        const frameWindow = iframe.contentWindow;
-        const doc = iframe.contentDocument;
-        if (!frameWindow || !doc) {
-          return;
-        }
-
-        const updateRect = (element: Element | null) => {
-          if (!element) {
-            setInspectRect(null);
-            return;
-          }
-          const elementRect = element.getBoundingClientRect();
-          const iframeRect = iframe.getBoundingClientRect();
-          const stageRect = stage.getBoundingClientRect();
-          const scaleX = iframeRect.width / Math.max(1, iframe.clientWidth);
-          const scaleY = iframeRect.height / Math.max(1, iframe.clientHeight);
-          setInspectRect({
-            left: iframeRect.left - stageRect.left + elementRect.left * scaleX,
-            top: iframeRect.top - stageRect.top + elementRect.top * scaleY,
-            width: Math.max(1, elementRect.width * scaleX),
-            height: Math.max(1, elementRect.height * scaleY),
-          });
-        };
-
-        const handleMove = (event: MouseEvent) => {
-          updateRect(event.target instanceof Element ? event.target : null);
-        };
-
-        const handleLeave = () => {
-          setInspectRect(null);
-        };
-
-        const handleClick = (event: MouseEvent) => {
-          const element = event.target instanceof Element ? event.target : null;
-          if (!element || !activeTab) {
-            return;
-          }
-          event.preventDefault();
-          event.stopPropagation();
-          const selection = createBrowserSelection(activeTab, element);
-          setBrowserSelection(selection);
-          if (!useActiveBrowser) {
-            toggleUseActiveBrowser();
-          }
-          updateRect(element);
-          setInspectMode(false);
-        };
-
-        doc.body.style.cursor = 'crosshair';
-        doc.addEventListener('mousemove', handleMove, true);
-        doc.addEventListener('mouseleave', handleLeave, true);
-        doc.addEventListener('click', handleClick, true);
-        cleanupInspectRef.current = () => {
-          doc.body.style.cursor = '';
-          doc.removeEventListener('mousemove', handleMove, true);
-          doc.removeEventListener('mouseleave', handleLeave, true);
-          doc.removeEventListener('click', handleClick, true);
-        };
-      } catch {
-        setError('Inspect mode is unavailable for this page');
-        setInspectMode(false);
-      }
-    };
-
-    if (iframe.contentDocument?.readyState === 'complete') {
-      bindInspect();
-    } else {
-      const handleLoad = () => {
-        bindInspect();
-      };
-      iframe.addEventListener('load', handleLoad, { once: true });
-      cleanupInspectRef.current = () => iframe.removeEventListener('load', handleLoad);
-    }
-
-    return () => {
-      cleanupInspectRef.current?.();
-      cleanupInspectRef.current = null;
-    };
-  }, [activeTab, inspectMode, setBrowserSelection, toggleUseActiveBrowser, useActiveBrowser]);
+  // ── Loading state ──
+  if (initializing) {
+    return (
+      <section className="browser-panel">
+        <div className="browser-loading">
+          <div className="browser-loading-spinner" />
+          <span className="browser-loading-text">Loading browser…</span>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section ref={panelRef} className={`browser-panel${isFullscreen ? ' fullscreen' : ''}`}>
@@ -380,43 +392,45 @@ export function BrowserPanel() {
               <span className="browser-tab-title">{displayTitle(tab)}</span>
             </button>
             <button className="browser-tab-close" type="button" onClick={() => handleCloseTab(tab.id)} aria-label={`Close ${displayTitle(tab)}`}>
-              x
+              <IconClose />
             </button>
           </div>
         ))}
         <button className="browser-icon-btn" type="button" onClick={handleNewTab} title="New tab">
-          +
+          <IconPlus />
         </button>
       </div>
 
       <form className="browser-toolbar" onSubmit={handleSubmit}>
         <button className="browser-icon-btn" type="button" title="Back" disabled>
-          &lt;
+          <IconChevronLeft />
         </button>
         <button className="browser-icon-btn" type="button" title="Forward" disabled>
-          &gt;
+          <IconChevronRight />
         </button>
         <button className="browser-icon-btn" type="button" title="Reload" onClick={handleReload} disabled={!activeTab}>
-          R
+          <IconReload />
         </button>
         <button
           className={`browser-icon-btn${inspectMode ? ' active' : ''}`}
           type="button"
           title="Inspect element"
-          onClick={() => setInspectMode((value) => !value)}
+          onClick={() => toggleInspectMode()}
           disabled={!activeTab}
         >
-          I
+          <IconInspect />
         </button>
         <input
           className="browser-address"
           value={address}
           onChange={(event) => setAddress(event.target.value)}
+          onFocus={handleAddressFocus}
+          onBlur={handleAddressBlur}
           spellCheck={false}
-          placeholder="localhost:3000"
+          placeholder="Enter URL…"
         />
         <button className="browser-go-btn" type="submit" disabled={loading}>
-          {loading ? 'Opening' : 'Go'}
+          {loading ? '…' : 'Go'}
         </button>
       </form>
 
@@ -471,7 +485,7 @@ export function BrowserPanel() {
             />
           </label>
           <button className="browser-viewport-fullscreen" type="button" onClick={handleFullscreenToggle}>
-            {isFullscreen ? 'Exit Full' : 'Full'}
+            {isFullscreen ? <IconShrink /> : <IconExpand />}
           </button>
         </div>
       </div>
@@ -483,17 +497,22 @@ export function BrowserPanel() {
       )}
       {inspectMode && (
         <div className="browser-inspect-tip">
-          Inspect mode active. Hover an element inside the page, then click to select it for chat context.
+          <span>Inspect mode — hover and click to select for AI chat. Press Esc to cancel.</span>
+          <span className="kbd-hint">
+            <kbd>↑↓</kbd> navigate
+            <kbd>Enter</kbd> select
+            <kbd>Esc</kbd> cancel
+          </span>
         </div>
       )}
       {browserSelection && (
-        <div className="browser-selection-bar">
-          <div className="browser-selection-copy">
-            <strong>Selection</strong>
-            <span>{browserSelection.selector}</span>
-          </div>
-          <button type="button" className="browser-selection-clear" onClick={() => setBrowserSelection(null)}>Clear</button>
-        </div>
+        <BrowserSelectionBar
+          selection={browserSelection}
+          onClear={clearSelection}
+          onReselect={toggleInspectMode}
+          onTogglePanel={() => setShowMiniPanel((v) => !v)}
+          showPanel={showMiniPanel}
+        />
       )}
 
       <div ref={stageRef} className={`browser-frame-wrap${viewportMode === 'responsive' ? ' responsive' : ''}`}>
@@ -504,16 +523,42 @@ export function BrowserPanel() {
                 ref={iframeRef}
                 key={`${activeTab.id}-${reloadNonce}`}
                 className={`browser-frame${viewportMode === 'responsive' ? ' responsive' : ''}`}
-                style={frameStyle}
+                style={{ ...frameStyle, pointerEvents: inspectMode ? 'none' : 'auto' }}
                 src={activeTab.proxyPath}
                 title={displayTitle(activeTab)}
                 sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
               />
-              {inspectRect && <div className="browser-inspect-highlight" style={inspectRect} />}
+              {/* Event-capture overlay — catches mouse events when iframe has pointer-events:none */}
+              {inspectMode && (
+                <div className="browser-inspect-hitlayer" />
+              )}
+              {/* Canvas overlay for inspect highlight (Tier 1-2) */}
+              <InspectOverlay
+                boxModel={inspectState.hoveredBoxModel}
+                outerRect={inspectState.hoveredRect}
+                tooltip={inspectState.tooltip}
+                iframeRef={iframeRef}
+                inspectMode={inspectMode}
+                selection={browserSelection}
+              />
+              {/* Persistent selected element highlight */}
+              {!inspectMode && browserSelection && (
+                <SelectedHighlight
+                  selection={browserSelection}
+                  iframeRef={iframeRef}
+                />
+              )}
+              {/* Mini panel for detailed inspect (Tier 4) */}
+              <InspectMiniPanel
+                selection={browserSelection}
+                visible={showMiniPanel}
+                onClose={() => setShowMiniPanel(false)}
+              />
             </div>
           </div>
         ) : (
           <div className="browser-empty">
+            <IconGlobe />
             <button className="browser-go-btn" type="button" onClick={handleNewTab}>
               Open Browser
             </button>
@@ -524,35 +569,47 @@ export function BrowserPanel() {
   );
 }
 
-function createBrowserSelection(tab: BrowserTab, element: Element): BrowserElementSelection {
-  const text = element.textContent?.trim().replace(/\s+/g, ' ') ?? '';
-  return {
-    url: tab.url,
-    title: tab.title,
-    tagName: element.tagName,
-    role: element.getAttribute('role') ?? undefined,
-    text: text.slice(0, 160) || undefined,
-    selector: buildElementSelector(element),
-    outerHTML: element.outerHTML.slice(0, 3000),
-  };
-}
+/* ── Selection bar with chat indicator (Tier 3) ── */
 
-function buildElementSelector(element: Element): string {
-  const parts: string[] = [];
-  let current: Element | null = element;
-  while (current && parts.length < 4) {
-    let part = current.tagName.toLowerCase();
-    if (current.id) {
-      part += `#${current.id}`;
-      parts.unshift(part);
-      break;
-    }
-    const className = (current.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.');
-    if (className) {
-      part += `.${className}`;
-    }
-    parts.unshift(part);
-    current = current.parentElement;
-  }
-  return parts.join(' > ');
+function BrowserSelectionBar({
+  selection,
+  onClear,
+  onReselect,
+  onTogglePanel,
+  showPanel,
+}: {
+  selection: { selector: string };
+  onClear: () => void;
+  onReselect: () => void;
+  onTogglePanel: () => void;
+  showPanel: boolean;
+}) {
+  const linked = useChatStore((s) => s.useActiveBrowser);
+
+  return (
+    <div className={`browser-selection-bar${linked ? ' linked' : ''}`}>
+      <div className="browser-selection-copy">
+        <strong>
+          Selection
+          {linked && <span className="chat-linked-badge">→ linked to chat</span>}
+        </strong>
+        <span>{selection.selector}</span>
+      </div>
+      <div className="browser-selection-actions">
+        <button type="button" className="browser-selection-reselect" onClick={onReselect}>
+          Re-select
+        </button>
+        <button
+          type="button"
+          className={`browser-selection-panel${showPanel ? ' active' : ''}`}
+          onClick={onTogglePanel}
+        >
+          Inspect
+        </button>
+        <button type="button" className="browser-selection-clear" onClick={onClear}>
+          Clear
+        </button>
+      </div>
+    </div>
+  );
 }

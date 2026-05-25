@@ -47,7 +47,7 @@ go test ./internal/chat/ -run TestCreateAndListSessions
 | `chat/acp/` | ACP (Agent Client Protocol) — JSON-RPC 2.0 over stdio. `protocol.go` = types, `client.go` = transport, `adapter.go` = subprocess lifecycle. |
 | `chat/acpinstall/` | Auto-installs ACP adapters via npm/pip. |
 | `chat/agentconfig/` | Detects agent config files for models/providers per agent type. |
-| `chat/` | Unified `ChatSession` interface (ACP + PTY fallback). `store.go` = SQLite persistence (chat history, workspace state). |
+| `chat/` | Unified `ChatSession` interface (ACP + PTY fallback). `store.go` = SQLite persistence (chat history, workspace state). `agent.go` = active terminal routing, terminal command execution. |
 | `httpapi/` | REST API + WebSocket handlers. All routes registered in `router.go`. |
 | `server/` | HTTP assembly, static file serving (SPA handler), wires all dependencies. |
 | `tunnel/` | Tunnel subprocess lifecycle — supports `bore` (fixed port via bore.pub) and `cloudflare` (quick tunnel). Auto-installs binaries. |
@@ -62,7 +62,8 @@ go test ./internal/chat/ -run TestCreateAndListSessions
 | `components/git/` | Git panel, status, branches, stash, diff |
 | `components/chat/` | Chat UI, agent picker, permission dialog, message queue |
 | `components/sidebar/` | File tree, search, activity bar |
-| `components/terminal/` | xterm.js terminal panel |
+| `components/terminal/` | xterm.js terminal panel, tabs per project with scrollback replay |
+| `components/browser/` | Browser panel, inspect overlay (4-layer box model), element selection |
 | `stores/` | Zustand stores (workspace, git, chat) |
 | `hooks/` | Custom hooks |
 | `config/` | Monaco language setup (TS/JS diagnostics, Vue/Svelte) |
@@ -90,9 +91,12 @@ Vite builds two entry points: `frontend/index.html` (terminal) and `frontend/ide
 | `MODE` | No | `simple` | `simple` or `full` |
 | `WORKSPACE_ROOT` | No | cwd | Default workspace directory |
 | `AUTOKILL_PORT` | No | `true` | Kill existing process on port before start |
-| `TUNNEL` | No | `true` | Auto-start cloudflared tunnel for public access. Requires `cloudflared` binary on PATH |
+| `TUNNEL` | No | `true` | Auto-start tunnel for public access. Requires `cloudflared` or `bore` binary |
 | `TUNNEL_ENGINE` | No | `bore` | Tunnel engine: `bore` (fixed port) or `cloudflare` (random URL) |
+| `USE_BROWSER` | No | `false` | Enable in-app browser panel (requires Chrome/Edge/Chromium) |
+| `TERMINAL_AI_MAX_LINES` | No | `100` | Max terminal lines sent to AI as context |
 | `DEBUG` | No | `false` | Enable verbose debug logging (watcher events, WebSocket, cloudflared output) |
+| `DEBUG_WATCHER` | No | `false` | Enable watcher-specific debug logs (requires DEBUG=true) |
 
 ## Conventions
 

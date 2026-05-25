@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -20,6 +21,8 @@ type Config struct {
 	TunnelEngine      string
 	UseBrowser        bool
 	Debug             bool
+	DebugWatcher      bool
+	TerminalAIMaxLines int
 }
 
 func LoadFromEnv() (Config, error) {
@@ -30,6 +33,15 @@ func LoadFromEnv() (Config, error) {
 	tunnelEngine := strings.TrimSpace(strings.ToLower(os.Getenv("TUNNEL_ENGINE")))
 	useBrowser := strings.TrimSpace(strings.ToLower(os.Getenv("USE_BROWSER")))
 	dbg := strings.TrimSpace(strings.ToLower(os.Getenv("DEBUG")))
+	dbgWatcher := strings.TrimSpace(strings.ToLower(os.Getenv("DEBUG_WATCHER")))
+	termAILines := strings.TrimSpace(os.Getenv("TERMINAL_AI_MAX_LINES"))
+
+	termAIMaxLines := 100
+	if termAILines != "" {
+		if v, err := strconv.Atoi(termAILines); err == nil {
+			termAIMaxLines = v
+		}
+	}
 
 	cfg := Config{
 		Port:              strings.TrimSpace(os.Getenv("PORT")),
@@ -42,6 +54,8 @@ func LoadFromEnv() (Config, error) {
 		TunnelEngine:      tunnelEngine,
 		UseBrowser:        useBrowser == "" || useBrowser == "true" || useBrowser == "1",
 		Debug:             dbg == "true" || dbg == "1",
+		DebugWatcher:      dbgWatcher == "true" || dbgWatcher == "1",
+		TerminalAIMaxLines: termAIMaxLines,
 	}
 
 	if cfg.Port == "" {

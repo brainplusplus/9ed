@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"github.com/brainplusplus/9ed/internal/auth"
 	"github.com/brainplusplus/9ed/internal/browser"
 	"github.com/brainplusplus/9ed/internal/chat"
+	"github.com/brainplusplus/9ed/internal/chat/acp"
 	"github.com/brainplusplus/9ed/internal/config"
 	"github.com/brainplusplus/9ed/internal/httpapi"
 	"github.com/brainplusplus/9ed/internal/shells"
@@ -46,6 +49,19 @@ func New(cfg config.Config) *Server {
 	if cfg.Mode == "full" {
 		chatSessionMgr = chat.NewSessionManager()
 	}
+	terminalMCPToken := randomToken()
+	if cfg.Mode == "full" {
+		cwd, _ := os.Getwd()
+		chat.SetActiveTerminalMCPServers([]acp.MCPServer{{
+			Name:    "9ed-active-terminal",
+			Command: "go",
+			Args:    []string{"run", filepath.Join(cwd, "cmd", "active-terminal-mcp")},
+			Env: []acp.EnvVariable{
+				{Name: "NINE_ED_MCP_ENDPOINT", Value: "http://127.0.0.1:" + cfg.Port + "/api/chat/terminal/run"},
+				{Name: "NINE_ED_MCP_TOKEN", Value: terminalMCPToken},
+			},
+		}})
+	}
 
 	var chatStore *chat.ChatStore
 	if cfg.Mode == "full" {
@@ -73,13 +89,22 @@ func New(cfg config.Config) *Server {
 		ChatStore:          chatStore,
 		Browser:            browserMgr,
 		TunnelURL:          func() string { return "" }, // placeholder, set via SetTunnel
+		TerminalMCPToken:   terminalMCPToken,
 	})
 
 	return &Server{
-		Config: cfg,
-		api:    api,
+		Config:   cfg,
+		api:      api,
 		tunnelFn: func() string { return "" },
 	}
+}
+
+func randomToken() string {
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // SetTunnel injects the live tunnel URL provider after startup.
@@ -95,7 +120,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/browser/", s.api.Handler())
 	mux.Handle("/", spaHandler(distDir(), s.Config.Mode))
 
-	return auth.Middleware(s.Config.BasicAuthUsername, s.Config.BasicAuthPassword)(mux)
+	protected := auth.Middleware(s.Config.BasicAuthUsername, s.Config.BasicAuthPassword)(mux)
+
+	outer := http.NewServeMux()
+	outer.Handle("/api/chat/terminal/run", s.api.Handler())
+	outer.Handle("/", protected)
+	return outer
 }
 
 func (s *Server) Addr() string {

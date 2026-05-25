@@ -15,6 +15,7 @@ export type SessionTab = {
   profile: ShellProfile;
   status: 'connecting' | 'ready' | 'disconnected' | 'error';
   errorMessage?: string;
+  scrollback?: string;
 };
 
 export type TerminalAction = {
@@ -69,6 +70,8 @@ export type Project = {
   name: string;
   openFiles: FileTab[];
   activeFileId: string | null;
+  terminalTabs: SessionTab[];
+  activeTerminalTabId: string | null;
   terminalSessions: string[];
 };
 
@@ -78,6 +81,7 @@ export type AppConfig = {
   mode: 'simple' | 'full';
   workspaceRoot: string;
   useBrowser: boolean;
+  terminalAiMaxLines: number;
 };
 
 export type BrowserTab = {
@@ -102,6 +106,26 @@ export type BrowserInspectResult = {
   textBytes: number;
 };
 
+export type BoxModelEdges = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+};
+
+export type BoxModelLayers = {
+  margin: BoxModelEdges;
+  border: BoxModelEdges;
+  padding: BoxModelEdges;
+  contentRect: { x: number; y: number; width: number; height: number };
+};
+
+export type ParentChainItem = {
+  tagName: string;
+  id?: string;
+  classes: string[];
+};
+
 export type BrowserElementSelection = {
   url: string;
   title: string;
@@ -109,7 +133,61 @@ export type BrowserElementSelection = {
   role?: string;
   text?: string;
   selector: string;
+  uniqueSelector?: string;
   outerHTML: string;
+  attributes?: Record<string, string>;
+  computedStyle?: {
+    display: string;
+    position: string;
+    width: string;
+    height: string;
+    color: string;
+    backgroundColor: string;
+    fontSize: string;
+    fontFamily: string;
+    fontWeight: string;
+    lineHeight: string;
+    textAlign: string;
+    margin: string;
+    padding: string;
+    border: string;
+    borderRadius: string;
+    overflow: string;
+    opacity: string;
+    visibility: string;
+    zIndex: string;
+    flex?: string;
+    grid?: string;
+    gap?: string;
+    top?: string;
+    left?: string;
+    right?: string;
+    bottom?: string;
+  };
+  boundingRect?: {
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+  };
+  boxModel?: BoxModelLayers;
+  parentChain?: ParentChainItem[];
+  accessibilityInfo?: {
+    role?: string;
+    label?: string;
+    tabIndex?: number;
+    focusable: boolean;
+    contrastRatio?: string;
+  };
+  eventListeners?: Array<{ type: string; handlerBody: string }>;
+};
+
+/** Terminal context sent to AI chat when terminal integration is active. */
+export type TerminalContext = {
+  sessionId: string;
+  cwd: string;
+  shellType: string;
+  scrollback: string;
 };
 
 export type BrowserState = {
@@ -203,6 +281,7 @@ export type ToolCallInfo = {
   status: string;
   content?: string;
   locations?: ToolCallLocation[];
+  rawInput?: string;
 };
 
 export type DiffInfo = {
@@ -267,6 +346,8 @@ export type ChatEvent = {
   toolStatus?: string;
   toolContent?: string;
   toolLocations?: ToolCallLocation[];
+  toolRawInput?: string;
+  terminalCommand?: string;
   diffPath?: string;
   diffOldText?: string;
   diffNewText?: string;

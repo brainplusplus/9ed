@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Group, Panel, Separator } from 'react-resizable-panels';
 
 import { useWorkspaceStore } from '../../stores/workspace';
 import { useFileWatcher } from '../../hooks/useFileWatcher';
@@ -92,30 +91,9 @@ export function IDEWorkspace() {
   const editorAreaRef = useRef<HTMLDivElement>(null);
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
 
-  const [tabletSidebarOpen, setTabletSidebarOpen] = useState(false);
-  const [tabletChatOpen, setTabletChatOpen] = useState(false);
-  const [tabletBrowserOpen, setTabletBrowserOpen] = useState(false);
   const [mobileView, setMobileView] = useState<MobileView>('editor');
   const [showHelp, setShowHelp] = useState(false);
   const pendingDiffRef = useRef<{ filePath: string; original: string; modified: string; language: string } | null>(null);
-
-  useEffect(() => {
-    if (layoutMode === 'tablet') {
-      setTabletSidebarOpen(sidebarVisible);
-    }
-  }, [layoutMode, sidebarVisible]);
-
-  useEffect(() => {
-    if (layoutMode === 'tablet') {
-      setTabletChatOpen(chatVisible);
-    }
-  }, [layoutMode, chatVisible]);
-
-  useEffect(() => {
-    if (layoutMode === 'tablet') {
-      setTabletBrowserOpen(browserVisible);
-    }
-  }, [layoutMode, browserVisible]);
 
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const markFileSaved = useWorkspaceStore((s) => s.markFileSaved);
@@ -191,12 +169,12 @@ export function IDEWorkspace() {
       openFile(activeProjectId, tab);
       if (layoutMode !== 'desktop') {
         setMobileView('editor');
-        setTabletSidebarOpen(false);
+        if (layoutMode === 'tablet' && sidebarVisible) toggleSidebar();
       }
     } catch (err) {
       console.error('Failed to open file:', err);
     }
-  }, [activeProjectId, openFile, layoutMode]);
+  }, [activeProjectId, openFile, layoutMode, sidebarVisible, toggleSidebar]);
 
   const handleOpenDiff = useCallback((filePath: string, original: string, modified: string, language: string) => {
     const el = editorAreaRef.current?.querySelector('[data-has-diff-support]') as
@@ -208,9 +186,9 @@ export function IDEWorkspace() {
     }
     if (layoutMode !== 'desktop') {
       setMobileView('editor');
-      setTabletSidebarOpen(false);
+      if (layoutMode === 'tablet' && sidebarVisible) toggleSidebar();
     }
-  }, [layoutMode]);
+  }, [layoutMode, sidebarVisible, toggleSidebar]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -276,148 +254,61 @@ export function IDEWorkspace() {
   }, [mobileView]);
 
   const helpOverlay = showHelp ? <ShortcutsHelp onClose={() => setShowHelp(false)} /> : null;
-
-  if (layoutMode === 'mobile') {
-    return (
-      <div className="mobile-shell">
-        <div className="mobile-panel">
-          {mobileView === 'explorer' && activeProject && (
-            <div className="ide-sidebar" style={{ height: '100%' }}>
-              {sidebarContent}
-            </div>
-          )}
-          {mobileView === 'git' && activeProject && (
-            <div className="ide-sidebar" style={{ height: '100%' }}>
-              <div className="sidebar-header"><strong>Git</strong></div>
-              <GitPanel projectPath={activeProject.path} onOpenDiff={handleOpenDiff} />
-            </div>
-          )}
-          {mobileView === 'editor' && (
-            <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-              <EditorArea />
-            </div>
-          )}
-          {mobileView === 'terminal' && (
-            <div style={{ height: '100%' }}>
-              <TerminalPanel />
-            </div>
-          )}
-          {mobileView === 'chat' && (
-            <div style={{ height: '100%' }}>
-              <ChatPanel />
-            </div>
-          )}
-          {mobileView === 'browser' && browserEnabled && (
-            <div style={{ height: '100%' }}>
-              <BrowserPanel />
-            </div>
-          )}
-        </div>
-        <BottomNav activeView={mobileView} onViewChange={(view) => {
-          setMobileView(view);
-          if (view === 'explorer') setActivePanel('explorer');
-          if (view === 'git') setActivePanel('git');
-        }} />
-        {helpOverlay}
-      </div>
-    );
-  }
-
-  if (layoutMode === 'tablet') {
-    return (
-      <div className="tablet-shell">
-        <ActivityBar />
-        <div className="tablet-main">
-          <Group orientation="vertical" style={{ height: '100%' }}>
-            <Panel minSize="15%" className="ide-editor-area">
-              <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-                <EditorArea />
-              </div>
-            </Panel>
-            {terminalVisible && (
-              <>
-                <Separator className="resize-handle-v" style={{ cursor: 'row-resize' }} />
-                <Panel defaultSize="38%" minSize="10%" maxSize="70%" className="ide-terminal-area">
-                  <TerminalPanel />
-                </Panel>
-              </>
-            )}
-          </Group>
-        </div>
-
-        {tabletSidebarOpen && (
-          <>
-            <div className="overlay-backdrop" onClick={() => setTabletSidebarOpen(false)} />
-            <div className="sidebar-overlay open">
-              {sidebarContent}
-            </div>
-          </>
-        )}
-
-        {tabletChatOpen && (
-          <>
-            <div className="overlay-backdrop" onClick={() => setTabletChatOpen(false)} />
-            <div className="chat-overlay open">
-              <ChatPanel />
-            </div>
-          </>
-        )}
-        {tabletBrowserOpen && browserEnabled && (
-          <>
-            <div className="overlay-backdrop" onClick={() => setTabletBrowserOpen(false)} />
-            <div className="browser-overlay open">
-              <BrowserPanel />
-            </div>
-          </>
-        )}
-        {helpOverlay}
-      </div>
-    );
-  }
+  const overlayOpen = layoutMode === 'tablet' && (
+    sidebarVisible ||
+    chatVisible ||
+    (browserVisible && browserEnabled)
+  );
+  const shellClass = [
+    'workspace-shell',
+    `workspace-${layoutMode}`,
+    `mobile-view-${mobileView}`,
+    sidebarVisible ? 'sidebar-open' : 'sidebar-closed',
+    terminalVisible ? 'terminal-open' : 'terminal-closed',
+    chatVisible ? 'chat-open' : 'chat-closed',
+    browserVisible && browserEnabled ? 'browser-open' : 'browser-closed',
+    browserEnabled ? 'browser-enabled' : 'browser-disabled',
+  ].join(' ');
 
   return (
-    <div className="ide-shell">
+    <div className={shellClass}>
       <ActivityBar />
-      <Group orientation="horizontal" className="ide-main">
-        {sidebarVisible && (
-          <>
-            <Panel defaultSize="28%" minSize="15%" maxSize="50%" className="ide-sidebar">
-              {sidebarContent}
-            </Panel>
-            <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
-          </>
-        )}
-        <Panel minSize="20%" className="ide-content">
-          <Group orientation="vertical" style={{ height: '100%' }}>
-            <Panel minSize="15%" className="ide-editor-area">
-              <div ref={editorAreaRef} style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
-                <EditorArea />
-                {browserVisible && browserEnabled && (
-                  <div className="browser-editor-overlay">
-                    <BrowserPanel />
-                  </div>
-                )}
-              </div>
-            </Panel>
-            {terminalVisible && (
-              <>
-                <Separator className="resize-handle-v" style={{ cursor: 'row-resize' }} />
-                <Panel defaultSize="38%" minSize="10%" maxSize="70%" className="ide-terminal-area">
-                  <TerminalPanel />
-                </Panel>
-              </>
-            )}
-          </Group>
-        </Panel>
-        {chatVisible && (
-          <>
-            <Separator className="resize-handle-h" style={{ cursor: 'col-resize' }} />
-            <Panel defaultSize="25%" minSize="15%" maxSize="40%" className="ide-chat-area">
-              <ChatPanel />
-            </Panel>
-          </>
-        )}
-      </Group>
+      {overlayOpen && (
+        <button
+          className="overlay-backdrop"
+          type="button"
+          aria-label="Close overlay"
+          onClick={() => {
+            if (sidebarVisible) toggleSidebar();
+            if (chatVisible) toggleChat();
+            if (browserVisible) toggleBrowser();
+          }}
+        />
+      )}
+      <div className="workspace-main ide-main">
+        <aside className="workspace-sidebar ide-sidebar" aria-hidden={layoutMode === 'mobile' && mobileView !== 'explorer' && mobileView !== 'git'}>
+          {sidebarContent}
+        </aside>
+        <main className="workspace-center ide-content">
+          <section ref={editorAreaRef} className="workspace-editor ide-editor-area" aria-hidden={layoutMode === 'mobile' && mobileView !== 'editor'}>
+            <EditorArea />
+          </section>
+          <section className="workspace-browser" aria-hidden={layoutMode === 'mobile' ? mobileView !== 'browser' : !browserVisible}>
+            {browserEnabled && <BrowserPanel />}
+          </section>
+          <section className="workspace-terminal ide-terminal-area" aria-hidden={layoutMode === 'mobile' && mobileView !== 'terminal'}>
+            <TerminalPanel />
+          </section>
+        </main>
+        <aside className="workspace-chat ide-chat-area" aria-hidden={layoutMode === 'mobile' && mobileView !== 'chat'}>
+          <ChatPanel />
+        </aside>
+      </div>
+      <BottomNav activeView={mobileView} onViewChange={(view) => {
+        setMobileView(view);
+        if (view === 'explorer') setActivePanel('explorer');
+        if (view === 'git') setActivePanel('git');
+      }} />
       {helpOverlay}
     </div>
   );

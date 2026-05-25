@@ -129,21 +129,70 @@ func TestRewriteProxyCSSRewritesRootRelativeURLs(t *testing.T) {
 	}
 }
 
-func TestRewriteProxyJavaScriptRewritesRootRelativeAssetAndServiceWorkerPaths(t *testing.T) {
-	input := []byte("const asset=\"/assets/chunk.js\"; import(\"/assets/entry.js\"); const sw=`/sw.js`; navigator.serviceWorker.register(\"/sw.js\",{scope:\"/\"});")
+func TestRewriteProxyHTMLRewritesInlineStyleContent(t *testing.T) {
+	input := []byte(`<!doctype html><html><head></head><body><style>@font-face{src:url('/cf-fonts/v/inter/normal.woff2')} .bg{background:url(/images/hero.png)}</style></body></html>`)
+
+	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/", "browser-1")
+	if err != nil {
+		t.Fatalf("rewriteProxyHTML() error = %v", err)
+	}
+	html := string(output)
+
+	if !strings.Contains(html, `url('/browser/browser-1/cf-fonts/v/inter/normal.woff2')`) {
+		t.Fatalf("expected inline style font URL to be rewritten, got %q", html)
+	}
+	if !strings.Contains(html, `url(/browser/browser-1/images/hero.png)`) {
+		t.Fatalf("expected inline style background URL to be rewritten, got %q", html)
+	}
+}
+
+func TestRewriteProxyJavaScriptRewritesRootRelativeURLs(t *testing.T) {
+	input := []byte("const asset=\"/assets/chunk.js\"; import(\"/assets/entry.js\"); const sw=`/sw.js`; navigator.serviceWorker.register(\"/sw.js\",{scope:\"/\"}); const icon='/images/logo.svg'; const preloaded=\"/_next/static/chunk.js\"; const font=\"/cf-fonts/v/inter/normal.woff2\";")
 
 	output := string(rewriteProxyJavaScript(input, "/browser/browser-1/"))
 
 	if !strings.Contains(output, `"/browser/browser-1/assets/chunk.js"`) {
 		t.Fatalf("expected asset string rewrite, got %q", output)
 	}
-	if !strings.Contains(output, `"/browser/browser-1/sw.js"`) {
-		t.Fatalf("expected service worker script rewrite, got %q", output)
+	if !strings.Contains(output, `"/browser/browser-1/assets/entry.js"`) {
+		t.Fatalf("expected dynamic import rewrite, got %q", output)
 	}
 	if !strings.Contains(output, "`/browser/browser-1/sw.js`") {
 		t.Fatalf("expected template literal service worker rewrite, got %q", output)
 	}
-	if !strings.Contains(output, `scope:"/browser/browser-1/"`) {
-		t.Fatalf("expected service worker scope rewrite, got %q", output)
+	if !strings.Contains(output, `"/browser/browser-1/sw.js"`) {
+		t.Fatalf("expected service worker script rewrite, got %q", output)
+	}
+	if !strings.Contains(output, `'/browser/browser-1/images/logo.svg'`) {
+		t.Fatalf("expected single-quoted path rewrite, got %q", output)
+	}
+	if !strings.Contains(output, `"/browser/browser-1/_next/static/chunk.js"`) {
+		t.Fatalf("expected _next path rewrite, got %q", output)
+	}
+	if !strings.Contains(output, `"/browser/browser-1/cf-fonts/v/inter/normal.woff2"`) {
+		t.Fatalf("expected cf-fonts path rewrite, got %q", output)
+	}
+	// scope:"/" should NOT be rewritten — bare "/" is not a URL path
+	if !strings.Contains(output, `scope:"/"`) {
+		t.Fatalf("scope:/ must not be rewritten (it's not a URL), got %q", output)
+	}
+}
+
+func TestRewriteProxyJavaScriptSkipsNonPathStrings(t *testing.T) {
+	input := []byte(`const a="//cdn.example.com/file.js"; const b="data:text/plain,hello"; const c="already ok"; const d="mailto:test@test.com"; const e="/"; const f="/x";`)
+
+	output := string(rewriteProxyJavaScript([]byte(input), "/browser/browser-1/"))
+
+	if strings.Contains(output, "/browser/browser-1/cdn.example") {
+		t.Fatalf("protocol-relative URL should not be rewritten, got %q", output)
+	}
+	if strings.Contains(output, "/browser/browser-1/data:") {
+		t.Fatalf("data URI should not be rewritten, got %q", output)
+	}
+	if strings.Contains(output, "/browser/browser-1/mailto:") {
+		t.Fatalf("mailto URI should not be rewritten, got %q", output)
+	}
+	if strings.Contains(output, `/browser/browser-1/"`) {
+		t.Fatalf(`bare "/" should not be rewritten, got %q`, output)
 	}
 }
