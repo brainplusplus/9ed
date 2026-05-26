@@ -1,4 +1,8 @@
 :root {
+  --app-viewport-height: 100vh;
+  --app-viewport-width: 100vw;
+  --app-viewport-top: 0px;
+  --app-viewport-left: 0px;
   --sidebar-bg: #1e1e2e;
   --sidebar-fg: #cdd6f4;
   --sidebar-hover: #313244;
@@ -31,16 +35,18 @@ body {
 }
 
 #root {
-  height: 100vh;
-  height: 100dvh;
+  position: fixed;
+  top: var(--app-viewport-top);
+  left: var(--app-viewport-left);
+  width: var(--app-viewport-width);
+  height: var(--app-viewport-height);
   min-height: 0;
   overflow: hidden;
 }
 
 .ide-shell {
   display: flex;
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-viewport-height);
   min-height: 0;
   overflow: hidden;
 }

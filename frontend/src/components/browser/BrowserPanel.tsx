@@ -15,6 +15,8 @@ const VIEWPORT_PRESETS = {
 } as const;
 
 type ViewportMode = keyof typeof VIEWPORT_PRESETS;
+const FIXED_VIEWPORT_STAGE_X_PADDING = 36;
+const RESPONSIVE_FIT_MIN_WIDTH = 1024;
 
 type BrowserProxyMessage = {
   __nineBrowser: true;
@@ -105,6 +107,52 @@ function IconGlobe() {
   );
 }
 
+function ViewportModeIcon({ mode }: { mode: ViewportMode }) {
+  if (mode === 'responsive') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 8h10" />
+        <path d="M5.5 5.5 3 8l2.5 2.5M10.5 5.5 13 8l-2.5 2.5" />
+        <rect x="1.75" y="3" width="12.5" height="10" rx="1.5" />
+      </svg>
+    );
+  }
+
+  if (mode === 'desktop') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.3" />
+        <path d="M6.25 13.5h3.5M8 11v2.5" />
+      </svg>
+    );
+  }
+
+  if (mode === 'tablet') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3.5" y="1.5" width="9" height="13" rx="1.5" />
+        <path d="M7.25 12.5h1.5" />
+      </svg>
+    );
+  }
+
+  if (mode === 'mobile') {
+    return (
+      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="5" y="1.5" width="6" height="13" rx="1.4" />
+        <path d="M7.35 12.25h1.3" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3h10v10H3z" />
+      <path d="M5 1.75h6M5 14.25h6M1.75 5v6M14.25 5v6" />
+    </svg>
+  );
+}
+
 export function BrowserPanel() {
   const panelRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -122,6 +170,7 @@ export function BrowserPanel() {
   const [customWidth, setCustomWidth] = useState(1280);
   const [customHeight, setCustomHeight] = useState(720);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const [autoContentSize, setAutoContentSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showMiniPanel, setShowMiniPanel] = useState(false);
   const addressEditingRef = useRef(false);
@@ -131,6 +180,22 @@ export function BrowserPanel() {
     () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null,
     [tabs, activeTabId],
   );
+
+  const updateStageSize = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage) {
+      return;
+    }
+    const rect = stage.getBoundingClientRect();
+    const width = Math.floor(rect.width);
+    const height = Math.floor(rect.height);
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    setStageSize((current) => (
+      current.width === width && current.height === height ? current : { width, height }
+    ));
+  }, []);
 
   // Inspect mode hook (Tier 1-4)
   const {
@@ -150,30 +215,81 @@ export function BrowserPanel() {
     return VIEWPORT_PRESETS[viewportMode];
   }, [customHeight, customWidth, viewportMode]);
   const viewportScale = useMemo(() => {
-    if (viewportMode === 'responsive' || stageSize.width === 0 || stageSize.height === 0) {
+    if (stageSize.width === 0 || stageSize.height === 0) {
       return 1;
     }
-    return Math.min(stageSize.width / viewport.width, stageSize.height / viewport.height, 1);
-  }, [stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode]);
+    if (viewportMode === 'responsive') {
+      const contentWidth = Math.max(stageSize.width, autoContentSize.width, RESPONSIVE_FIT_MIN_WIDTH);
+      return Math.min(stageSize.width / contentWidth, 1);
+    }
+    const availableWidth = Math.max(1, stageSize.width - FIXED_VIEWPORT_STAGE_X_PADDING);
+    return Math.min(availableWidth / viewport.width, 1);
+  }, [autoContentSize.width, stageSize.height, stageSize.width, viewport.width, viewportMode]);
   const scaledViewportStyle = useMemo(() => {
     if (viewportMode === 'responsive') {
-      return undefined;
+      if (stageSize.width === 0 || stageSize.height === 0) {
+        return undefined;
+      }
+      const contentWidth = Math.max(stageSize.width, autoContentSize.width, RESPONSIVE_FIT_MIN_WIDTH);
+      return {
+        width: `${Math.max(1, Math.round(contentWidth * viewportScale))}px`,
+        height: `${Math.max(1, stageSize.height)}px`,
+      };
     }
     return {
       width: `${Math.max(1, Math.round(viewport.width * viewportScale))}px`,
       height: `${Math.max(1, Math.round(viewport.height * viewportScale))}px`,
     };
-  }, [viewport.height, viewport.width, viewportMode, viewportScale]);
+  }, [autoContentSize.width, stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode, viewportScale]);
   const frameStyle = useMemo(() => {
     if (viewportMode === 'responsive') {
-      return undefined;
+      if (stageSize.width === 0 || stageSize.height === 0) {
+        return undefined;
+      }
+      const contentWidth = Math.max(stageSize.width, autoContentSize.width, RESPONSIVE_FIT_MIN_WIDTH);
+      return {
+        width: `${Math.max(1, Math.round(contentWidth))}px`,
+        height: `${Math.max(1, Math.round(stageSize.height / viewportScale))}px`,
+        transform: `scale(${viewportScale})`,
+      };
     }
     return {
       width: `${viewport.width}px`,
       height: `${viewport.height}px`,
       transform: `scale(${viewportScale})`,
     };
-  }, [viewport.height, viewport.width, viewportMode, viewportScale]);
+  }, [autoContentSize.width, stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode, viewportScale]);
+
+  const updateAutoContentSize = useCallback(() => {
+    if (viewportMode !== 'responsive') {
+      return;
+    }
+    try {
+      const doc = iframeRef.current?.contentDocument;
+      if (!doc) {
+        return;
+      }
+      const body = doc.body;
+      const root = doc.documentElement;
+      const width = Math.ceil(Math.max(
+        root?.scrollWidth ?? 0,
+        root?.offsetWidth ?? 0,
+        body?.scrollWidth ?? 0,
+        body?.offsetWidth ?? 0,
+      ));
+      const height = Math.ceil(Math.max(
+        root?.scrollHeight ?? 0,
+        root?.offsetHeight ?? 0,
+        body?.scrollHeight ?? 0,
+        body?.offsetHeight ?? 0,
+      ));
+      setAutoContentSize((current) => (
+        current.width === width && current.height === height ? current : { width, height }
+      ));
+    } catch {
+      setAutoContentSize({ width: 0, height: 0 });
+    }
+  }, [viewportMode]);
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -185,6 +301,9 @@ export function BrowserPanel() {
       return;
     }
 
+    updateStageSize();
+    const frame = window.requestAnimationFrame(updateStageSize);
+    const interval = window.setInterval(updateStageSize, 500);
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) {
@@ -196,8 +315,22 @@ export function BrowserPanel() {
       });
     });
     observer.observe(stage);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearInterval(interval);
+      observer.disconnect();
+    };
+  }, [activeTab, updateStageSize, viewportMode]);
+
+  useEffect(() => {
+    if (viewportMode !== 'responsive' || !activeTab) {
+      return;
+    }
+
+    updateAutoContentSize();
+    const interval = window.setInterval(updateAutoContentSize, 700);
+    return () => window.clearInterval(interval);
+  }, [activeTab, reloadNonce, updateAutoContentSize, viewportMode]);
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -333,6 +466,7 @@ export function BrowserPanel() {
   }
 
   function handleReload() {
+    setAutoContentSize({ width: 0, height: 0 });
     setReloadNonce((value) => value + 1);
   }
 
@@ -441,9 +575,13 @@ export function BrowserPanel() {
               key={mode}
               className={`browser-viewport-chip${viewportMode === mode ? ' active' : ''}`}
               type="button"
+              role="tab"
+              aria-label={`${VIEWPORT_PRESETS[mode].label} viewport`}
+              aria-selected={viewportMode === mode}
+              title={VIEWPORT_PRESETS[mode].label}
               onClick={() => setViewportMode(mode)}
             >
-              {VIEWPORT_PRESETS[mode].label}
+              <ViewportModeIcon mode={mode} />
             </button>
           ))}
         </div>
@@ -484,7 +622,13 @@ export function BrowserPanel() {
               disabled={viewportMode === 'responsive'}
             />
           </label>
-          <button className="browser-viewport-fullscreen" type="button" onClick={handleFullscreenToggle}>
+          <button
+            className="browser-viewport-fullscreen"
+            type="button"
+            onClick={handleFullscreenToggle}
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
             {isFullscreen ? <IconShrink /> : <IconExpand />}
           </button>
         </div>
@@ -526,6 +670,11 @@ export function BrowserPanel() {
                 style={{ ...frameStyle, pointerEvents: inspectMode ? 'none' : 'auto' }}
                 src={activeTab.proxyPath}
                 title={displayTitle(activeTab)}
+                onLoad={() => {
+                  updateAutoContentSize();
+                  window.setTimeout(updateAutoContentSize, 250);
+                  window.setTimeout(updateAutoContentSize, 1000);
+                }}
                 sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
               />
               {/* Event-capture overlay — catches mouse events when iframe has pointer-events:none */}

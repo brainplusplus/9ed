@@ -13,6 +13,7 @@ npm run go:test        # go test ./...
 npm run test           # vitest run --environment jsdom (frontend tests)
 npm run build          # vite build (frontend only)
 npm run server:build   # go build -o server ./cmd/server
+npm run binary:build   # build frontend + embed assets into single Go binary
 ```
 
 ### Dev workflow
@@ -68,7 +69,7 @@ go test ./internal/chat/ -run TestCreateAndListSessions
 | `hooks/` | Custom hooks |
 | `config/` | Monaco language setup (TS/JS diagnostics, Vue/Svelte) |
 
-Vite builds two entry points: `frontend/index.html` (terminal) and `frontend/ide.html` (IDE). Output goes to `dist/`.
+Vite builds two entry points: `frontend/index.html` (terminal) and `frontend/ide.html` (IDE). Normal frontend output goes to `dist/`. Release binaries use `npm run binary:build`, which builds the frontend into `internal/webassets/dist/` and embeds it with the `embedassets` Go build tag.
 
 ## Key Facts for Agents
 

@@ -1,6 +1,6 @@
 {
   "name": "9ed",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,9 @@
     "test": "vitest run --environment jsdom",
     "preview": "vite preview --config vite.config.ts",
     "server": "go run ./cmd/server",
+    "build:embedded": "vite build --config vite.config.ts --outDir ../internal/webassets/dist",
     "server:build": "go build -o server ./cmd/server",
+    "binary:build": "npm run build:embedded && go build -tags embedassets -o server ./cmd/server",
     "start": "npm install && npm run build && go run ./cmd/server",
     "go:test": "go test ./...",
     "go:build": "go build ./...",

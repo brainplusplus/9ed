@@ -1,11 +1,13 @@
 package server
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/brainplusplus/9ed/internal/config"
 )
@@ -82,6 +84,49 @@ func TestServerHandlerReturns404ForMissingAssetInsteadOfSPAHTML(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing asset, got %d with body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEmbeddedSPAHandlerServesEmbeddedAssets(t *testing.T) {
+	assets := fstest.MapFS{
+		"index.html": {
+			Data: []byte("<html><body>terminal</body></html>"),
+			Mode: fs.ModePerm,
+		},
+		"ide.html": {
+			Data: []byte("<html><body>ide</body></html>"),
+			Mode: fs.ModePerm,
+		},
+		"assets/app.js": {
+			Data: []byte("console.log('embedded');"),
+			Mode: fs.ModePerm,
+		},
+	}
+	handler := embeddedSPAHandler(assets, "full")
+
+	indexReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	indexRec := httptest.NewRecorder()
+	handler.ServeHTTP(indexRec, indexReq)
+
+	if indexRec.Code != http.StatusOK {
+		t.Fatalf("expected embedded index request to return 200, got %d", indexRec.Code)
+	}
+	if body := indexRec.Body.String(); body != "<html><body>ide</body></html>" {
+		t.Fatalf("expected embedded IDE body, got %q", body)
+	}
+
+	assetReq := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	assetRec := httptest.NewRecorder()
+	handler.ServeHTTP(assetRec, assetReq)
+
+	if assetRec.Code != http.StatusOK {
+		t.Fatalf("expected embedded asset request to return 200, got %d", assetRec.Code)
+	}
+	if body := assetRec.Body.String(); body != "console.log('embedded');" {
+		t.Fatalf("expected embedded asset body, got %q", body)
+	}
+	if got := assetRec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("expected embedded asset cache header, got %q", got)
 	}
 }
 

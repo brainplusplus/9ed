@@ -25,7 +25,9 @@ export function TerminalPanel() {
   const [selectedShellId, setSelectedShellId] = useState('');
   const [creating, setCreating] = useState(false);
   const [terminalAction, setTerminalAction] = useState<TerminalAction | null>(null);
+  const [shellMenuOpen, setShellMenuOpen] = useState(false);
   const defaultCreatedProjects = useRef(new Set<string>());
+  const shellMenuRef = useRef<HTMLDivElement>(null);
 
   const tabs = activeProject?.terminalTabs ?? [];
   const activeTabId = activeProject?.activeTerminalTabId ?? null;
@@ -46,11 +48,13 @@ export function TerminalPanel() {
     return () => { cancelled = true; };
   }, []);
 
-  const handleCreateTab = useCallback(async () => {
-    if (!selectedShellId || !activeProjectId || !activeProject) return;
+  const handleCreateTab = useCallback(async (shellId = selectedShellId) => {
+    if (!shellId || !activeProjectId || !activeProject) return;
+    setSelectedShellId(shellId);
+    setShellMenuOpen(false);
     setCreating(true);
     try {
-      const session = await createSession(selectedShellId, activeProject.path);
+      const session = await createSession(shellId, activeProject.path);
       const newTab: SessionTab = { id: session.id, profile: session.profile, status: 'connecting' };
       addTerminalTab(activeProjectId, newTab);
       addTerminalSession(activeProjectId, session.id);
@@ -60,6 +64,29 @@ export function TerminalPanel() {
       setCreating(false);
     }
   }, [selectedShellId, activeProjectId, activeProject, addTerminalSession, addTerminalTab]);
+
+  useEffect(() => {
+    if (!shellMenuOpen) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!shellMenuRef.current?.contains(event.target as Node)) {
+        setShellMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setShellMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [shellMenuOpen]);
 
   // Auto-create default terminal when project opens
   useEffect(() => {
@@ -134,20 +161,48 @@ export function TerminalPanel() {
           <TerminalTabs tabs={tabs} activeTabId={activeTabId} onSelectTab={handleSelectTab} onCloseTab={(id) => void handleCloseTab(id)} />
         </div>
         <div className="terminal-panel-controls">
-          <select value={selectedShellId} onChange={(e) => setSelectedShellId(e.target.value)} className="terminal-shell-select">
-            {shells.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </select>
           <button
             className="terminal-clear-btn"
             onClick={() => dispatchTerminalAction('clear-terminal')}
             type="button"
+            aria-label="Clear terminal"
             title="Clear Terminal — clear terminal output, keep active prompt"
             disabled={!activeTabId}
           >
             <span className="terminal-clear-btn-icon" aria-hidden="true">⌫</span>
-            <span>Clear Terminal</span>
           </button>
-          <button className="terminal-new-btn" onClick={() => void handleCreateTab()} disabled={creating} type="button">+</button>
+          <div className={`terminal-new-menu-wrap${shellMenuOpen ? ' open' : ''}`} ref={shellMenuRef}>
+            <button
+              className={`terminal-new-btn${shellMenuOpen ? ' active' : ''}`}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                setShellMenuOpen((open) => !open);
+              }}
+              disabled={creating || shells.length === 0}
+              type="button"
+              aria-label="New terminal"
+              aria-haspopup="menu"
+              aria-expanded={shellMenuOpen}
+              title="New terminal"
+            >
+              +
+            </button>
+            {shells.length > 0 && (
+              <div className="terminal-profile-menu" role="menu" aria-label="Terminal profiles">
+                {shells.map((shell) => (
+                  <button
+                    key={shell.id}
+                    className={`terminal-profile-menu-item${shell.id === selectedShellId ? ' active' : ''}`}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleCreateTab(shell.id)}
+                  >
+                    {shell.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="terminal-panel-body">

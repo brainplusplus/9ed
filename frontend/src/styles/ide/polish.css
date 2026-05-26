@@ -12,21 +12,15 @@
 }
 
 .chat-header {
-  padding: 10px 12px;
-  gap: 12px;
+  padding: 7px 8px;
+  gap: 8px;
   background: linear-gradient(180deg, rgba(34, 36, 58, 0.92) 0%, rgba(24, 24, 37, 0.92) 100%);
   backdrop-filter: blur(12px);
-}
-
-.chat-header-top,
-.chat-header-actions {
-  min-width: 0;
-}
-
-.chat-header {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  min-height: 43px;
 }
 
 .chat-header-top {
@@ -36,14 +30,21 @@
   min-width: 0;
 }
 
+.chat-tab-session-area {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .chat-header-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  width: 100%;
+  justify-content: flex-end;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-width: 0;
+  width: auto;
   flex-wrap: nowrap;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .chat-title-block {
@@ -104,8 +105,31 @@
 }
 
 .chat-header-actions .agent-picker,
-.chat-header-actions .chat-new-btn {
+.chat-header-actions .chat-new-btn,
+.chat-header-actions .chat-history-btn {
   min-width: 0;
+}
+
+.chat-header-actions .agent-picker {
+  min-height: 30px;
+  max-width: 126px;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+
+.chat-header-actions .agent-picker-label {
+  max-width: 92px;
+}
+
+.chat-header-actions .chat-new-btn-icon,
+.chat-header-actions .chat-history-btn {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 7px;
 }
 
 .agent-picker:hover,
@@ -357,7 +381,7 @@
 
 .chat-config-bar {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   padding: 0;
   flex-wrap: wrap;
   align-items: center;
@@ -369,13 +393,56 @@
 
 .chat-config-toggle {
   margin-left: 0;
-  padding: 4px 6px;
-  border-radius: 8px;
+  min-height: 28px;
+  padding: 0 7px;
+  border-radius: 7px;
   background: rgba(255,255,255,0.04);
 }
 
 .chat-config-toggle-label {
   font-size: 0.72rem;
+}
+
+.chat-config-bar .chat-picker-wrap {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.chat-config-bar .agent-picker {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  gap: 6px;
+  align-items: center;
+}
+
+.chat-config-bar .agent-picker-rich {
+  max-width: 136px;
+  align-items: center;
+}
+
+.chat-config-bar .agent-picker-compact {
+  max-width: 82px;
+}
+
+.chat-config-bar .agent-picker-label,
+.chat-config-bar .agent-picker-label-multiline,
+.chat-config-bar .agent-picker-label-compact {
+  display: block;
+  max-width: 100%;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: unset;
+}
+
+.chat-config-bar .agent-picker-caret {
+  flex: 0 0 auto;
+  font-size: 0.64rem;
+  line-height: 1;
 }
 
 .chat-input-area {
@@ -589,16 +656,23 @@
   border-radius: 8px;
 }
 
-@media (max-width: 1023px) {
-  .terminal-panel-header,
+@media (max-width: 1279px) {
   .chat-header {
-    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .terminal-panel-controls,
   .chat-header-actions {
-    width: 100%;
-    justify-content: flex-start;
+    width: auto;
+    justify-content: flex-end;
+  }
+
+  .terminal-panel-header {
+    flex-wrap: nowrap;
+  }
+
+  .terminal-panel-controls {
+    width: auto;
+    justify-content: flex-end;
   }
 
   .chat-session-dropdown {
@@ -617,28 +691,34 @@
   }
 
   .chat-header-actions {
-    justify-content: stretch;
+    justify-content: flex-end;
+    gap: 4px;
   }
 
   .chat-header-actions .chat-picker-wrap {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
   }
 
   .chat-header-actions .agent-picker {
-    width: 100%;
-    justify-content: center;
+    width: auto;
+    max-width: 104px;
+    justify-content: space-between;
+  }
+
+  .chat-header-actions .agent-picker-label {
+    max-width: 70px;
   }
 
   .chat-header-actions .chat-new-btn:not(.chat-new-btn-icon) {
-    flex: 1 1 auto;
-    width: 100%;
+    flex: 0 0 auto;
+    width: auto;
     justify-content: center;
   }
 
   .chat-header-actions .chat-new-btn-icon {
     flex: 0 0 auto;
-    width: auto;
-    min-width: 32px;
+    width: 30px;
+    min-width: 30px;
   }
 
   .chat-session-dropdown {

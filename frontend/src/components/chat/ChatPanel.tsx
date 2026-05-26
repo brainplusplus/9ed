@@ -187,10 +187,11 @@ export function ChatPanel() {
             className="chat-new-btn chat-new-btn-icon"
             onClick={() => void handleNewChat()}
             type="button"
+            aria-label={creating ? 'Creating new chat' : 'New chat'}
             title={creating ? 'Creating new chat...' : 'New chat'}
             disabled={creating || !selectedAgentId}
           >
-            {creating ? 'Creating...' : '+'}
+            {creating ? <span className="chat-connecting-spinner chat-inline-spinner" /> : '+'}
           </button>
         </div>
       </div>

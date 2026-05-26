@@ -69,8 +69,7 @@
 .mobile-shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-viewport-height);
   min-height: 0;
   overflow: hidden;
 }
@@ -146,8 +145,7 @@
 /* Tablet layout */
 .tablet-shell {
   display: flex;
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-viewport-height);
   min-height: 0;
   overflow: hidden;
 }
@@ -164,8 +162,7 @@
    The same panel instances stay mounted across desktop, tablet, and mobile. */
 .workspace-shell {
   display: flex;
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-viewport-height);
   min-height: 0;
   overflow: hidden;
   background: var(--editor-bg);
@@ -284,8 +281,9 @@
   .workspace-chat,
   .workspace-browser {
     position: fixed;
-    top: 0;
-    bottom: 0;
+    top: var(--app-viewport-top);
+    bottom: auto;
+    height: var(--app-viewport-height);
     z-index: 100;
     min-width: 0;
     max-width: none;

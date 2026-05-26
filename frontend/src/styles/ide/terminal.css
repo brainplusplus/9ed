@@ -7,6 +7,8 @@
 }
 
 .terminal-panel-header {
+  position: relative;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -171,6 +173,7 @@
   gap: 8px;
   align-items: center;
   flex-shrink: 0;
+  position: relative;
 }
 
 .terminal-shell-select {
@@ -201,6 +204,12 @@
   font-size: 0.9rem;
 }
 
+.terminal-new-btn.active {
+  background: rgba(137, 180, 250, 0.16);
+  border-color: rgba(137, 180, 250, 0.38);
+  color: #dcecff;
+}
+
 .terminal-clear-btn {
   height: 34px;
   border: 1px solid rgba(137, 180, 250, 0.14);
@@ -221,8 +230,10 @@
 .terminal-clear-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  justify-content: center;
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
   font-size: 0.76rem;
   font-weight: 600;
 }
@@ -234,6 +245,151 @@
   width: 16px;
   height: 16px;
   color: var(--accent-blue-light);
+}
+
+.terminal-new-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.terminal-profile-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 5000;
+  display: none;
+  width: max-content;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 24px));
+  max-height: min(320px, calc(100vh - 96px));
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgba(137, 180, 250, 0.14);
+  border-radius: 8px;
+  background: rgba(31, 31, 31, 0.98);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.38);
+}
+
+.terminal-new-menu-wrap.open .terminal-profile-menu,
+.terminal-new-menu-wrap:focus-within .terminal-profile-menu {
+  display: block;
+}
+
+.terminal-profile-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  font-size: 0.82rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.terminal-profile-menu-item:hover,
+.terminal-profile-menu-item.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+}
+
+@media (max-width: 1279px) {
+  .terminal-panel-header {
+    min-height: 36px;
+    padding: 4px 8px;
+    gap: 6px;
+    flex-wrap: nowrap;
+    z-index: 120;
+  }
+
+  .terminal-panel-session-area {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .tab-strip {
+    gap: 4px;
+    padding-bottom: 0;
+  }
+
+  .tab-chip {
+    height: 28px;
+    max-width: min(190px, 42vw);
+    border-radius: 6px;
+  }
+
+  .tab-button {
+    gap: 6px;
+    padding: 0 7px;
+  }
+
+  .tab-chip-icon {
+    width: 16px;
+    height: 16px;
+    background: transparent;
+    font-size: 0.68rem;
+  }
+
+  .tab-chip-copy small {
+    display: none;
+  }
+
+  .tab-chip-title {
+    max-width: 120px;
+    font-size: 0.74rem;
+    font-weight: 600;
+  }
+
+  .tab-close {
+    width: 24px;
+    min-width: 24px;
+    padding: 0;
+  }
+
+  .terminal-panel-controls {
+    flex: 0 0 auto;
+    width: auto;
+    gap: 4px;
+  }
+
+  .terminal-shell-select {
+    width: clamp(88px, 18vw, 150px);
+    height: 28px;
+    padding: 0 6px;
+    border-radius: 6px;
+    font-size: 0.7rem;
+  }
+
+  .terminal-clear-btn,
+  .terminal-new-btn {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: 6px;
+  }
+
+  .terminal-clear-btn {
+    gap: 0;
+  }
+
+  .terminal-clear-btn span:last-child {
+    display: none;
+  }
+
+  .terminal-profile-menu {
+    top: calc(100% + 5px);
+    min-width: 200px;
+  }
+
+  .workspace-tablet.chat-open .terminal-panel-header {
+    padding-right: 328px;
+  }
 }
 
 .terminal-panel-body {

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -23,6 +24,7 @@ import (
 	"github.com/brainplusplus/9ed/internal/shells"
 	"github.com/brainplusplus/9ed/internal/terminal"
 	"github.com/brainplusplus/9ed/internal/watcher"
+	"github.com/brainplusplus/9ed/internal/webassets"
 )
 
 type Server struct {
@@ -118,7 +120,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/api/", s.api.Handler())
 	mux.Handle("/ws/", s.api.Handler())
 	mux.Handle("/browser/", s.api.Handler())
-	mux.Handle("/", spaHandler(distDir(), s.Config.Mode))
+	embeddedAssets, hasEmbeddedAssets := webassets.Embedded()
+	mux.Handle("/", spaHandler(distDir(), s.Config.Mode, embeddedAssets, hasEmbeddedAssets))
 
 	protected := auth.Middleware(s.Config.BasicAuthUsername, s.Config.BasicAuthPassword)(mux)
 
@@ -156,7 +159,11 @@ func distDir() string {
 	return filepath.Join(cwd, "dist")
 }
 
-func spaHandler(root string, mode string) http.Handler {
+func spaHandler(root string, mode string, embeddedAssets fs.FS, hasEmbeddedAssets bool) http.Handler {
+	if hasEmbeddedAssets && embeddedAssetsAvailable(embeddedAssets, mode) {
+		return embeddedSPAHandler(embeddedAssets, mode)
+	}
+
 	fileServer := http.FileServer(http.Dir(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := os.Stat(root); err != nil {
@@ -190,6 +197,45 @@ func spaHandler(root string, mode string) http.Handler {
 	})
 }
 
+func embeddedAssetsAvailable(assets fs.FS, mode string) bool {
+	if mode == "full" {
+		if _, err := fs.Stat(assets, "ide.html"); err == nil {
+			return true
+		}
+	}
+	_, err := fs.Stat(assets, "index.html")
+	return err == nil
+}
+
+func embeddedSPAHandler(assets fs.FS, mode string) http.Handler {
+	fileServer := http.FileServer(http.FS(assets))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assetPath := strings.TrimPrefix(path.Clean("/"+strings.TrimSpace(r.URL.Path)), "/")
+		if assetPath != "." && assetPath != "" && fs.ValidPath(assetPath) {
+			if info, err := fs.Stat(assets, assetPath); err == nil && !info.IsDir() {
+				setStaticCacheHeaders(w, assetPath)
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		if shouldBypassSPAFallback(r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
+
+		fallback := "index.html"
+		if mode == "full" {
+			if _, err := fs.Stat(assets, "ide.html"); err == nil {
+				fallback = "ide.html"
+			}
+		}
+
+		setStaticCacheHeaders(w, fallback)
+		http.ServeFileFS(w, r, assets, fallback)
+	})
+}
+
 func shouldBypassSPAFallback(requestPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimSpace(requestPath))
 	if strings.HasPrefix(cleanPath, "/assets/") {
@@ -200,11 +246,12 @@ func shouldBypassSPAFallback(requestPath string) bool {
 }
 
 func setStaticCacheHeaders(w http.ResponseWriter, path string) {
-	switch strings.ToLower(filepath.Ext(path)) {
+	assetPath := filepath.ToSlash(path)
+	switch strings.ToLower(filepath.Ext(assetPath)) {
 	case ".html":
 		w.Header().Set("Cache-Control", "no-store")
 	default:
-		if strings.Contains(filepath.ToSlash(path), "/assets/") {
+		if strings.HasPrefix(assetPath, "assets/") || strings.Contains(assetPath, "/assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			return
 		}
