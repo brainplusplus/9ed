@@ -64,6 +64,10 @@ function resetStores() {
     queuedMessages: {},
     includeIgnoredInMentions: false,
     autoApprove: false,
+    useActiveBrowser: false,
+    useActiveTerminal: false,
+    activeTerminalId: null,
+    browserSelection: null,
     restoring: false,
     lastRestoreError: null,
   });
@@ -121,7 +125,7 @@ describe('ChatPanel new chat', () => {
       newChatButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo');
+    expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo', false);
   });
 
   it('shows loading state instead of no-agents while agent fetch is pending', async () => {

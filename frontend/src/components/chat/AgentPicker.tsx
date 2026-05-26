@@ -99,9 +99,10 @@ export function AgentPicker() {
 type ConfigBarProps = {
   setConfigOption?: (configId: string, value: string) => void;
   setAutoApprove?: (enabled: boolean) => void;
+  connected?: boolean;
 };
 
-export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
+export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }: ConfigBarProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
@@ -111,13 +112,19 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
-  const toggleUseActiveTerminal = useChatStore((s) => s.toggleUseActiveTerminal);
+  const restartActiveSessionForTerminal = useChatStore((s) => s.restartActiveSessionForTerminal);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const configOptions = activeSession?.configOptions ?? [];
   const hasActiveSession = !!activeSessionId;
+  const terminalReady = !!activeTerminalId && !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
+  const terminalToggleTitle = !activeTerminalId
+    ? 'No terminal active'
+    : terminalReady
+      ? 'Restart this ready agent session with or without the active terminal MCP bridge'
+      : 'Terminal can be toggled when the agent is Ready';
 
   const handleChange = (configId: string, value: string) => {
     setOpenDropdown(null);
@@ -128,6 +135,11 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
     const newValue = !autoApprove;
     toggleAutoApprove();
     setAutoApprove?.(newValue);
+  };
+
+  const handleTerminalToggle = () => {
+    if (!terminalReady) return;
+    void restartActiveSessionForTerminal(!(useActiveTerminal && !!activeTerminalId));
   };
 
   return (
@@ -168,14 +180,14 @@ export function ConfigBar({ setConfigOption, setAutoApprove }: ConfigBarProps) {
         <span className="chat-config-toggle-label">Browser</span>
       </label>
       <label
-        className={`chat-config-toggle${!activeTerminalId ? ' disabled' : ''}`}
-        title={activeTerminalId ? 'Send active terminal scrollback as context to the agent' : 'No terminal active'}
+        className={`chat-config-toggle${!terminalReady ? ' disabled' : ''}`}
+        title={terminalToggleTitle}
       >
         <input
           type="checkbox"
           checked={useActiveTerminal && !!activeTerminalId}
-          onChange={toggleUseActiveTerminal}
-          disabled={!activeTerminalId}
+          onChange={handleTerminalToggle}
+          disabled={!terminalReady}
         />
         <span className="chat-config-toggle-label">Terminal</span>
       </label>

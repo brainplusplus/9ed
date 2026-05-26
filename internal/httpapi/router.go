@@ -25,8 +25,8 @@ type SessionManager interface {
 }
 
 type ChatRuntimeManager interface {
-	Create(context.Context, chat.AgentDescriptor, string) (chat.ChatSession, error)
-	Resume(context.Context, chat.AgentDescriptor, string, string) (chat.ChatSession, error)
+	Create(context.Context, chat.AgentDescriptor, string, chat.SessionOptions) (chat.ChatSession, error)
+	Resume(context.Context, chat.AgentDescriptor, string, string, chat.SessionOptions) (chat.ChatSession, error)
 	Get(string) (chat.ChatSession, bool)
 	Remove(string)
 	List() []chat.ChatSession

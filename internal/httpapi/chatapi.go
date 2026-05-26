@@ -16,10 +16,11 @@ import (
 )
 
 type chatCreateRequest struct {
-	AgentID      string `json:"agentId"`
-	WorkDir      string `json:"workDir,omitempty"`
-	ResumeID     string `json:"resumeId,omitempty"`
-	ACPSessionID string `json:"acpSessionId,omitempty"`
+	AgentID           string `json:"agentId"`
+	WorkDir           string `json:"workDir,omitempty"`
+	ResumeID          string `json:"resumeId,omitempty"`
+	ACPSessionID      string `json:"acpSessionId,omitempty"`
+	UseActiveTerminal bool   `json:"useActiveTerminal,omitempty"`
 }
 
 type chatCreateResponse struct {
@@ -57,10 +58,11 @@ type chatRestoreResponse struct {
 }
 
 type chatResumeRequest struct {
-	SessionID    string `json:"sessionId"`
-	AgentID      string `json:"agentId"`
-	WorkDir      string `json:"workDir"`
-	ACPSessionID string `json:"acpSessionId"`
+	SessionID         string `json:"sessionId"`
+	AgentID           string `json:"agentId"`
+	WorkDir           string `json:"workDir"`
+	ACPSessionID      string `json:"acpSessionId"`
+	UseActiveTerminal bool   `json:"useActiveTerminal,omitempty"`
 }
 
 var discoverAgentDescriptors = chat.DiscoverAgentDescriptors
@@ -131,6 +133,10 @@ func (a *API) handleChatTerminalRun(w http.ResponseWriter, r *http.Request) {
 	session, ok := a.chatSessionManager.Get(req.SessionID)
 	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if !session.UseActiveTerminalEnabled() {
+		http.Error(w, "active terminal integration is disabled for this chat session", http.StatusConflict)
 		return
 	}
 
@@ -217,11 +223,18 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 		var session chat.ChatSession
 		var err error
 		resumedFrom := ""
+		opts := chat.SessionOptions{UseActiveTerminal: req.UseActiveTerminal}
+		previousLiveID := ""
+		if req.ResumeID != "" {
+			if liveID, ok := a.chatSessionManager.LiveIDForRecordID(req.ResumeID); ok {
+				previousLiveID = liveID
+			}
+		}
 
 		if req.ResumeID != "" && req.ACPSessionID != "" && agent.SupportsACP {
-			session, err = a.chatSessionManager.Resume(context.Background(), agent, workDir, req.ACPSessionID)
+			session, err = a.chatSessionManager.Resume(context.Background(), agent, workDir, req.ACPSessionID, opts)
 			if err != nil {
-				session, err = a.chatSessionManager.Create(context.Background(), agent, workDir)
+				session, err = a.chatSessionManager.Create(context.Background(), agent, workDir, opts)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
@@ -230,11 +243,14 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 				resumedFrom = req.ResumeID
 			}
 		} else {
-			session, err = a.chatSessionManager.Create(context.Background(), agent, workDir)
+			session, err = a.chatSessionManager.Create(context.Background(), agent, workDir, opts)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+		}
+		if previousLiveID != "" && previousLiveID != session.ID() {
+			a.chatSessionManager.Remove(previousLiveID)
 		}
 
 		if a.chatStore != nil {
@@ -661,8 +677,13 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 	var err error
 	resumed := true
 	resumeErr := ""
+	opts := chat.SessionOptions{UseActiveTerminal: req.UseActiveTerminal}
+	previousLiveID := ""
+	if liveID, ok := a.chatSessionManager.LiveIDForRecordID(req.SessionID); ok {
+		previousLiveID = liveID
+	}
 	if agent.SupportsACP && req.ACPSessionID != "" {
-		session, err = a.chatSessionManager.Resume(context.Background(), agent, workDir, req.ACPSessionID)
+		session, err = a.chatSessionManager.Resume(context.Background(), agent, workDir, req.ACPSessionID, opts)
 		if err != nil {
 			resumeErr = err.Error()
 		}
@@ -674,7 +695,7 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("%s", resumeErr)
 	}
 	if err != nil {
-		session, err = a.chatSessionManager.Create(context.Background(), agent, workDir)
+		session, err = a.chatSessionManager.Create(context.Background(), agent, workDir, opts)
 		if err != nil {
 			writeJSON(w, http.StatusOK, chatRestoreResponse{
 				Found:       true,
@@ -685,6 +706,9 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resumed = false
+	}
+	if previousLiveID != "" && previousLiveID != session.ID() {
+		a.chatSessionManager.Remove(previousLiveID)
 	}
 
 	if a.chatStore != nil {

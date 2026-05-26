@@ -94,3 +94,4 @@ func (s *fakeChatSession) IsResumed() bool                                      
 func (s *fakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *fakeChatSession) SetAutoApprove(bool)                                   {}
 func (s *fakeChatSession) SetUseActiveTerminal(bool)                             {}
+func (s *fakeChatSession) UseActiveTerminalEnabled() bool                         { return false }

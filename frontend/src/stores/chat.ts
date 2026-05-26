@@ -103,6 +103,8 @@ type ChatState = {
   toggleUseActiveBrowser: () => void;
   setBrowserSelection: (selection: BrowserElementSelection | null) => void;
   toggleUseActiveTerminal: () => void;
+  setUseActiveTerminal: (enabled: boolean) => void;
+  restartActiveSessionForTerminal: (enabled: boolean) => Promise<boolean>;
   setActiveTerminalId: (id: string | null) => void;
 };
 
@@ -112,6 +114,10 @@ function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: Cha
 
 function findSessionByIdentity(sessions: ChatSessionInfo[], identity: string): ChatSessionInfo | undefined {
   return sessions.find((s) => s.id === identity || s.recordId === identity);
+}
+
+function shouldEnableTerminalForAgent(state: Pick<ChatState, 'useActiveTerminal' | 'activeTerminalId'>): boolean {
+  return state.useActiveTerminal && !!state.activeTerminalId;
 }
 
 function fallbackTitle(agentId: string, title?: string): string {
@@ -615,7 +621,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }],
         }));
         try {
-          const resumed = await resumeChatSession(sessionId, historyEntry.agentId, historyEntry.workDir, historyEntry.acpSessionId);
+          const resumed = await resumeChatSession(sessionId, historyEntry.agentId, historyEntry.workDir, historyEntry.acpSessionId, shouldEnableTerminalForAgent(get()));
           if ('id' in resumed) {
             liveSessionId = resumed.id;
             kind = 'resumable';
@@ -643,6 +649,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         kind,
         workDir: historyEntry?.workDir,
         acpSessionId,
+        useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
@@ -723,7 +730,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }),
       }));
 
-      const resumed = await resumeChatSession(recordId, agentId, workDir, currentAcpSessionId);
+      const terminalEnabled = shouldEnableTerminalForAgent(get());
+      const resumed = await resumeChatSession(recordId, agentId, workDir, currentAcpSessionId, terminalEnabled);
       if (!('id' in resumed)) {
         set((state) => ({
           sessions: updateSession(state.sessions, session.id, (s) => ({ ...s, status: 'error' })),
@@ -748,6 +756,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           kind: 'resumable',
           workDir: nextWorkDir,
           acpSessionId,
+          useActiveTerminal: terminalEnabled,
         };
         return {
           sessions: [...state.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession],
@@ -843,7 +852,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }],
       }));
         try {
-          const resumed = await resumeChatSession(targetSessionId, restoreAgentId, restore.workDir ?? projectPath, restore.acpSessionId);
+          const resumed = await resumeChatSession(targetSessionId, restoreAgentId, restore.workDir ?? projectPath, restore.acpSessionId, shouldEnableTerminalForAgent(get()));
           if ('id' in resumed) {
             liveSessionId = resumed.id;
             kind = 'resumable';
@@ -874,6 +883,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         kind,
         workDir: restore.workDir ?? historyEntry?.workDir ?? projectPath,
         acpSessionId,
+        useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
@@ -965,6 +975,76 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   toggleUseActiveTerminal: () =>
     set((state) => ({ useActiveTerminal: !state.useActiveTerminal })),
+
+  setUseActiveTerminal: (enabled) =>
+    set({ useActiveTerminal: enabled }),
+
+  restartActiveSessionForTerminal: async (enabled) => {
+    const state = get();
+    const sessionId = state.activeSessionId;
+    const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
+    if (!session || session.status !== 'idle' || session.pendingPermission) return false;
+    if (!session.agentId || !session.workDir) return false;
+
+    const previousEnabled = state.useActiveTerminal;
+    set({ useActiveTerminal: enabled });
+
+    if (session.useActiveTerminal === enabled) return true;
+
+    const recordId = session.recordId ?? session.id;
+    const requestKey = `${recordId}\x00terminal:${enabled ? 'on' : 'off'}`;
+    const existingRequest = resumeRequests.get(requestKey);
+    if (existingRequest) return existingRequest;
+
+    const request = (async () => {
+      set((current) => ({
+        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'connecting', kind: 'archived' })),
+      }));
+
+      const resumed = await resumeChatSession(recordId, session.agentId, session.workDir!, session.acpSessionId, enabled);
+      if (!('id' in resumed)) {
+        throw new Error(resumed.resumeError ?? 'Restart failed');
+      }
+
+      const liveSessionId = resumed.id;
+      const acpSessionId = resumed.acpSessionId ?? session.acpSessionId;
+      const nextWorkDir = resumed.workDir ?? session.workDir;
+      set((current) => {
+        const idsToRemove = new Set([session.id, liveSessionId]);
+        const nextSession: ChatSessionInfo = {
+          ...session,
+          id: liveSessionId,
+          recordId,
+          status: 'connecting',
+          kind: 'resumable',
+          workDir: nextWorkDir,
+          acpSessionId,
+          useActiveTerminal: enabled,
+        };
+        return {
+          sessions: [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession],
+          activeSessionId: current.activeSessionId === session.id ? liveSessionId : current.activeSessionId,
+          lastRestoreError: null,
+        };
+      });
+      return true;
+    })().catch((err) => {
+      set((current) => ({
+        useActiveTerminal: previousEnabled,
+        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'error' })),
+        lastRestoreError: {
+          sessionId: recordId,
+          reason: err instanceof Error ? err.message : 'Restart request failed',
+        },
+      }));
+      return false;
+    }).finally(() => {
+      resumeRequests.delete(requestKey);
+    });
+
+    resumeRequests.set(requestKey, request);
+    return request;
+  },
 
   setActiveTerminalId: (id) =>
     set({ activeTerminalId: id }),

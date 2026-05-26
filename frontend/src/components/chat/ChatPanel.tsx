@@ -50,6 +50,8 @@ export function ChatPanel() {
   const agents = useChatStore((s) => s.agents);
   const sessions = useChatStore((s) => s.sessions);
   const selectedAgentId = useChatStore((s) => s.selectedAgentId);
+  const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
+  const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const loadAgents = useChatStore((s) => s.loadAgents);
   const createSessionStore = useChatStore((s) => s.createSession);
   const setActiveSession = useChatStore((s) => s.setActiveSession);
@@ -127,7 +129,8 @@ export function ChatPanel() {
 
     setCreating(true);
     try {
-      const created = await createChatSession(agentId, activeProject?.path);
+      const terminalEnabled = useActiveTerminal && !!activeTerminalId;
+      const created = await createChatSession(agentId, activeProject?.path, terminalEnabled);
       const session: ChatSessionInfo = {
         id: created.id,
         recordId: created.resumedFrom ?? created.id,
@@ -139,6 +142,7 @@ export function ChatPanel() {
         kind: 'live',
         workDir: created.workDir ?? activeProject?.path,
         acpSessionId: created.acpSessionId,
+        useActiveTerminal: terminalEnabled,
       };
       createSessionStore(session);
     } catch {
@@ -239,7 +243,7 @@ export function ChatPanel() {
           <div className="chat-bottom-bar">
             <ContextUsageBar contextUsed={activeSession?.contextUsed} contextWindow={activeSession?.contextWindow} costAmount={activeSession?.costAmount} costCurrency={activeSession?.costCurrency} />
             {!isArchived && activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
-            {!isArchived && <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} />}
+            {!isArchived && <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} connected={connected} />}
             <ChatInput
               onSend={handleSend}
               onCancel={cancel}

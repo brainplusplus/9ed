@@ -19,12 +19,12 @@ func NewSessionManager() *SessionManager {
 	}
 }
 
-func (m *SessionManager) Create(ctx context.Context, agent AgentDescriptor, workDir string) (ChatSession, error) {
+func (m *SessionManager) Create(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (ChatSession, error) {
 	if !agent.Available {
 		return nil, fmt.Errorf("agent %q is not available", agent.ID)
 	}
 
-	session, err := NewChatSession(ctx, agent, workDir)
+	session, err := NewChatSession(ctx, agent, workDir, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (m *SessionManager) Create(ctx context.Context, agent AgentDescriptor, work
 	return session, nil
 }
 
-func (m *SessionManager) Resume(ctx context.Context, agent AgentDescriptor, workDir, acpSessionID string) (ChatSession, error) {
+func (m *SessionManager) Resume(ctx context.Context, agent AgentDescriptor, workDir, acpSessionID string, opts SessionOptions) (ChatSession, error) {
 	if !agent.Available {
 		return nil, fmt.Errorf("agent %q is not available", agent.ID)
 	}
@@ -45,7 +45,7 @@ func (m *SessionManager) Resume(ctx context.Context, agent AgentDescriptor, work
 		return nil, fmt.Errorf("agent %q does not support ACP, cannot resume", agent.ID)
 	}
 
-	session, err := newACPResumedSession(ctx, agent, workDir, acpSessionID)
+	session, err := newACPResumedSession(ctx, agent, workDir, acpSessionID, opts)
 	if err != nil {
 		return nil, err
 	}

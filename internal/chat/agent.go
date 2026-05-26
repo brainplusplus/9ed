@@ -100,6 +100,7 @@ type ChatSession interface {
 	RespondPermission(resp PermissionResponse)
 	SetAutoApprove(enabled bool)
 	SetUseActiveTerminal(enabled bool)
+	UseActiveTerminalEnabled() bool
 	ACPSessionID() string
 	IsResumed() bool
 }
@@ -131,10 +132,21 @@ func SetActiveTerminalMCPServers(servers []acp.MCPServer) {
 	activeTerminalMCPServers = servers
 }
 
+type SessionOptions struct {
+	UseActiveTerminal bool
+}
+
+func activeTerminalServersForOptions(opts SessionOptions) []acp.MCPServer {
+	if !opts.UseActiveTerminal {
+		return nil
+	}
+	return activeTerminalMCPServers
+}
+
 // NewChatSession creates a ChatSession using ACP if supported, falling back to PTY.
-func NewChatSession(ctx context.Context, agent AgentDescriptor, workDir string) (ChatSession, error) {
+func NewChatSession(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (ChatSession, error) {
 	if agent.SupportsACP {
-		sess, err := newACPSession(ctx, agent, workDir)
+		sess, err := newACPSession(ctx, agent, workDir, opts)
 		if err == nil {
 			return sess, nil
 		}
@@ -149,7 +161,7 @@ func NewChatSession(ctx context.Context, agent AgentDescriptor, workDir string) 
 			if info != nil {
 				installed.ACPArgs = []string{}
 			}
-			sess, err := newACPSession(ctx, installed, workDir)
+			sess, err := newACPSession(ctx, installed, workDir, opts)
 			if err == nil {
 				return sess, nil
 			}
@@ -190,7 +202,7 @@ type acpSession struct {
 	routedToolCalls   map[string]bool
 }
 
-func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (*acpSession, error) {
+func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (*acpSession, error) {
 	if workDir == "" {
 		workDir = currentWorkingDirectory()
 	}
@@ -206,7 +218,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 		Command:    acpCommand,
 		Args:       agent.ACPArgs,
 		WorkDir:    workDir,
-		MCPServers: activeTerminalMCPServers,
+		MCPServers: activeTerminalServersForOptions(opts),
 	}
 
 	adapter, err := acp.NewAdapter(acpCtx, cfg)
@@ -234,6 +246,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 		cancelFn:        cancel,
 		promptDone:      make(chan *acp.SessionPromptResult, 1),
 		permissionCh:    make(chan PermissionResponse, 1),
+		useActiveTerminal: opts.UseActiveTerminal,
 		terminals:       make(map[string]*acpTerminal),
 		routedToolCalls: make(map[string]bool),
 	}
@@ -246,7 +259,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string) (
 	return s, nil
 }
 
-func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, acpSessionID string) (*acpSession, error) {
+func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, acpSessionID string, opts SessionOptions) (*acpSession, error) {
 	if workDir == "" {
 		workDir = currentWorkingDirectory()
 	}
@@ -262,7 +275,7 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		Command:    acpCommand,
 		Args:       agent.ACPArgs,
 		WorkDir:    workDir,
-		MCPServers: activeTerminalMCPServers,
+		MCPServers: activeTerminalServersForOptions(opts),
 	}
 
 	adapter, err := acp.NewAdapter(acpCtx, cfg)
@@ -290,6 +303,7 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		cancelFn:        cancel,
 		promptDone:      make(chan *acp.SessionPromptResult, 1),
 		permissionCh:    make(chan PermissionResponse, 1),
+		useActiveTerminal: opts.UseActiveTerminal,
 		resumed:         true,
 		terminals:       make(map[string]*acpTerminal),
 		routedToolCalls: make(map[string]bool),
@@ -332,6 +346,10 @@ func (s *acpSession) SetAutoApprove(enabled bool) {
 
 func (s *acpSession) SetUseActiveTerminal(enabled bool) {
 	s.useActiveTerminal = enabled
+}
+
+func (s *acpSession) UseActiveTerminalEnabled() bool {
+	return s.useActiveTerminal
 }
 
 func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string) error {

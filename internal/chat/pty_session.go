@@ -105,6 +105,7 @@ func (s *ptySession) IsResumed() bool                        { return false }
 func (s *ptySession) RespondPermission(_ PermissionResponse) {}
 func (s *ptySession) SetAutoApprove(_ bool)                  {}
 func (s *ptySession) SetUseActiveTerminal(_ bool)            {}
+func (s *ptySession) UseActiveTerminalEnabled() bool          { return false }
 
 func (s *ptySession) SetConfigOption(_ context.Context, _, _ string) error {
 	return nil

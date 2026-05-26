@@ -361,14 +361,14 @@ export type CreatedChatSession = {
   acpSessionId?: string;
 };
 
-export async function createChatSession(agentId: string, workDir?: string): Promise<CreatedChatSession> {
+export async function createChatSession(agentId: string, workDir?: string, useActiveTerminal = false): Promise<CreatedChatSession> {
   const response = await fetch('/api/chat/sessions', {
     method: 'POST',
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ agentId, workDir }),
+    body: JSON.stringify({ agentId, workDir, useActiveTerminal }),
   });
   return parseResponse<CreatedChatSession>(response);
 }
@@ -423,12 +423,12 @@ export async function getRestorableChatSession(workDir: string, preferredSession
   return parseResponse<RestorableChatSession>(response);
 }
 
-export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId?: string): Promise<CreatedChatSession | RestorableChatSession> {
+export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId?: string, useActiveTerminal = false): Promise<CreatedChatSession | RestorableChatSession> {
   const response = await fetchWithTimeout('/api/chat/sessions/resume', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, agentId, workDir, acpSessionId }),
+    body: JSON.stringify({ sessionId, agentId, workDir, acpSessionId, useActiveTerminal }),
   }, RESUME_REQUEST_TIMEOUT_MS);
   return parseResponse<CreatedChatSession | RestorableChatSession>(response);
 }

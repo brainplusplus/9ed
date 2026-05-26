@@ -468,7 +468,7 @@ type fakeChatRuntimeManager struct {
 	createCalls   int
 }
 
-func (m *fakeChatRuntimeManager) Create(_ context.Context, _ chat.AgentDescriptor, _ string) (chat.ChatSession, error) {
+func (m *fakeChatRuntimeManager) Create(_ context.Context, _ chat.AgentDescriptor, _ string, _ chat.SessionOptions) (chat.ChatSession, error) {
 	m.createCalls++
 	if m.createErr != nil {
 		return nil, m.createErr
@@ -482,7 +482,7 @@ func (m *fakeChatRuntimeManager) Create(_ context.Context, _ chat.AgentDescripto
 	return m.createSession, nil
 }
 
-func (m *fakeChatRuntimeManager) Resume(_ context.Context, _ chat.AgentDescriptor, _ string, _ string) (chat.ChatSession, error) {
+func (m *fakeChatRuntimeManager) Resume(_ context.Context, _ chat.AgentDescriptor, _ string, _ string, _ chat.SessionOptions) (chat.ChatSession, error) {
 	m.resumeCalls++
 	if m.resumeErr != nil {
 		return nil, m.resumeErr
@@ -579,6 +579,7 @@ func (s *apiFakeChatSession) IsResumed() bool                                   
 func (s *apiFakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *apiFakeChatSession) SetAutoApprove(bool)                                   {}
 func (s *apiFakeChatSession) SetUseActiveTerminal(bool)                             {}
+func (s *apiFakeChatSession) UseActiveTerminalEnabled() bool                         { return false }
 
 type fakeManager struct {
 	removedID string

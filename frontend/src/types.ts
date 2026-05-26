@@ -387,6 +387,7 @@ export type ChatSessionInfo = {
   kind: ChatSessionKind;
   workDir?: string;
   acpSessionId?: string;
+  useActiveTerminal?: boolean;
   commands?: SlashCommandInfo[];
   configOptions?: ConfigOptionInfo[];
   pendingPermission?: PendingPermission;
