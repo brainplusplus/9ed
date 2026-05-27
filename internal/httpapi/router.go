@@ -13,6 +13,7 @@ import (
 	"github.com/brainplusplus/9ed/internal/chat"
 	"github.com/brainplusplus/9ed/internal/shells"
 	"github.com/brainplusplus/9ed/internal/terminal"
+	"github.com/brainplusplus/9ed/internal/tunnel"
 	"github.com/brainplusplus/9ed/internal/watcher"
 
 	"github.com/gorilla/websocket"
@@ -39,14 +40,13 @@ type ChatRuntimeManager interface {
 type Dependencies struct {
 	Shells             []shells.Profile
 	Sessions           SessionManager
-	Mode               string
 	WorkspaceRoot      string
-	UseBrowser         bool
 	TerminalAIMaxLines int
 	Watcher            *watcher.FileWatcher
 	ChatSessionManager ChatRuntimeManager
 	ChatStore          *chat.ChatStore
 	Browser            *browser.Manager
+	SettingsTunnels    *tunnel.Manager
 	TunnelURL          func() string // returns current tunnel URL (may change on restart)
 	TerminalMCPToken   string
 }
@@ -55,15 +55,14 @@ type API struct {
 	shells             []shells.Profile
 	sessions           SessionManager
 	upgrader           websocket.Upgrader
-	mode               string
 	workspaceRoot      string
-	useBrowser         bool
 	terminalAiMaxLines int
 	watcher            *watcher.FileWatcher
 	chatSessionManager ChatRuntimeManager
 	chatStore          *chat.ChatStore
 	chatStreams        *chatStreamRegistry
 	browser            *browser.Manager
+	settingsTunnels    *tunnel.Manager
 	tunnelURL          func() string
 	terminalMCPToken   string
 	terminalRunMu      sync.Mutex
@@ -75,15 +74,14 @@ func New(deps Dependencies) *API {
 		shells:             deps.Shells,
 		sessions:           deps.Sessions,
 		upgrader:           websocket.Upgrader{CheckOrigin: sameOrigin},
-		mode:               deps.Mode,
 		workspaceRoot:      deps.WorkspaceRoot,
-		useBrowser:         deps.UseBrowser,
 		terminalAiMaxLines: deps.TerminalAIMaxLines,
 		watcher:            deps.Watcher,
 		chatSessionManager: deps.ChatSessionManager,
 		chatStore:          deps.ChatStore,
 		chatStreams:        newChatStreamRegistry(),
 		browser:            deps.Browser,
+		settingsTunnels:    deps.SettingsTunnels,
 		tunnelURL:          deps.TunnelURL,
 		terminalMCPToken:   deps.TerminalMCPToken,
 		terminalRuns:       make(map[string]time.Time),
@@ -127,24 +125,26 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/terminal/run", a.handleChatTerminalRun)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
-	if a.useBrowser {
-		mux.HandleFunc("/api/browser/state", a.handleBrowserState)
-		mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)
-		mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
-		mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
-		mux.HandleFunc("/browser/", a.handleBrowserProxy)
-		mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
-		mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
-		mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)
-		mux.HandleFunc("/api/browser/automation/click", a.handleBrowserAutomationClick)
-		mux.HandleFunc("/api/browser/automation/type", a.handleBrowserAutomationType)
-		mux.HandleFunc("/api/browser/automation/evaluate", a.handleBrowserAutomationEvaluate)
-		mux.HandleFunc("/api/browser/automation/inspect", a.handleBrowserAutomationInspect)
-		mux.HandleFunc("/api/browser/automation/screenshot", a.handleBrowserAutomationScreenshot)
-	}
+	mux.HandleFunc("/api/browser/state", a.handleBrowserState)
+	mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)
+	mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
+	mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
+	mux.HandleFunc("/browser/", a.handleBrowserProxy)
+	mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
+	mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
+	mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)
+	mux.HandleFunc("/api/browser/automation/click", a.handleBrowserAutomationClick)
+	mux.HandleFunc("/api/browser/automation/type", a.handleBrowserAutomationType)
+	mux.HandleFunc("/api/browser/automation/evaluate", a.handleBrowserAutomationEvaluate)
+	mux.HandleFunc("/api/browser/automation/inspect", a.handleBrowserAutomationInspect)
+	mux.HandleFunc("/api/browser/automation/element-screenshot", a.handleBrowserAutomationElementScreenshot)
+	mux.HandleFunc("/api/browser/automation/screenshot", a.handleBrowserAutomationScreenshot)
 
 	mux.HandleFunc("/api/projects/recent", a.handleRecentProjects)
 	mux.HandleFunc("/api/workspace/state", a.handleWorkspaceState)
+	mux.HandleFunc("/api/settings/about", a.handleSettingsAbout)
+	mux.HandleFunc("/api/settings/tunnels", a.handleSettingsTunnels)
+	mux.HandleFunc("/api/settings/tunnels/", a.handleSettingsTunnelByID)
 
 	mux.HandleFunc("/api/git/status", a.handleGitStatus)
 	mux.HandleFunc("/api/git/log", a.handleGitLog)

@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useChatStore } from '../../stores/chat';
+import { sessionBelongsToWorkDir, useChatStore } from '../../stores/chat';
+import { useWorkspaceStore } from '../../stores/workspace';
 import type { ConfigOptionInfo } from '../../types';
 
 export function AgentPicker() {
@@ -105,20 +106,24 @@ type ConfigBarProps = {
 export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }: ConfigBarProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
+  const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
   const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
   const toggleIncludeIgnored = useChatStore((s) => s.toggleIncludeIgnored);
   const autoApprove = useChatStore((s) => s.autoApprove);
   const toggleAutoApprove = useChatStore((s) => s.toggleAutoApprove);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
+  const browserSelection = useChatStore((s) => s.browserSelection);
+  const browserSelectionMode = useChatStore((s) => s.browserSelectionMode);
+  const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
   const restartActiveSessionForTerminal = useChatStore((s) => s.restartActiveSessionForTerminal);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const activeSession = sessions.find((s) => s.id === activeSessionId && sessionBelongsToWorkDir(s, activeProject?.path));
   const configOptions = activeSession?.configOptions ?? [];
-  const hasActiveSession = !!activeSessionId;
+  const hasActiveSession = !!activeSession;
   const terminalReady = !!activeTerminalId && !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
   const terminalToggleTitle = !activeTerminalId
     ? 'No terminal active'
@@ -135,6 +140,27 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
     const newValue = !autoApprove;
     toggleAutoApprove();
     setAutoApprove?.(newValue);
+  };
+
+  const handleBrowserToggle = () => {
+    const enabled = !(activeSession?.useActiveBrowser ?? useActiveBrowser);
+    if (enabled !== useActiveBrowser) {
+      toggleUseActiveBrowser();
+    }
+    if (!activeSession) return;
+    useChatStore.setState((state) => ({
+      sessions: state.sessions.map((session) => (
+        session.id === activeSession.id
+          ? {
+              ...session,
+              useActiveBrowser: enabled,
+              browserSelection: enabled ? browserSelection : null,
+              browserSelectionMode,
+              browserSelectionCapture: enabled ? browserSelectionCapture : null,
+            }
+          : session
+      )),
+    }));
   };
 
   const handleTerminalToggle = () => {
@@ -174,8 +200,8 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
       <label className="chat-config-toggle" title="Send the active in-app browser page as extra context to the agent">
         <input
           type="checkbox"
-          checked={useActiveBrowser}
-          onChange={toggleUseActiveBrowser}
+          checked={activeSession?.useActiveBrowser ?? useActiveBrowser}
+          onChange={handleBrowserToggle}
         />
         <span className="chat-config-toggle-label">Browser</span>
       </label>
@@ -185,7 +211,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
       >
         <input
           type="checkbox"
-          checked={useActiveTerminal && !!activeTerminalId}
+          checked={!!activeSession?.useActiveTerminal}
           onChange={handleTerminalToggle}
           disabled={!terminalReady}
         />

@@ -18,6 +18,7 @@ export type Attachment = {
   type: 'file' | 'image';
   path: string;
   name: string;
+  previewUrl?: string;
 };
 
 type SpeechResultItem = {
@@ -104,6 +105,8 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     return session?.commands;
   }) ?? [];
   const browserSelection = useChatStore((s) => s.browserSelection);
+  const browserSelectionMode = useChatStore((s) => s.browserSelectionMode);
+  const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
   const includeIgnored = useChatStore((s) => s.includeIgnoredInMentions);
@@ -211,7 +214,8 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
         const file = items[i].getAsFile();
         if (file) {
           const name = `pasted-image-${Date.now()}.png`;
-          setAttachments((prev) => [...prev, { type: 'image', path: URL.createObjectURL(file), name }]);
+          const previewUrl = URL.createObjectURL(file);
+          setAttachments((prev) => [...prev, { type: 'image', path: previewUrl, previewUrl, name }]);
         }
         return;
       }
@@ -437,10 +441,28 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
         <div className="chat-browser-selection">
           <div className="chat-browser-selection-copy">
             <span className="chat-browser-selection-label">Selected element</span>
-            <span className="chat-browser-selection-text">
-              {describeBrowserSelection(browserSelection)}
-              {!useActiveBrowser ? ' (enable Browser to send)' : ''}
+            <span className="chat-browser-selection-mode">
+              {browserSelectionMode === 'screenshot' ? 'Element screenshot' : 'Inspect details'}
             </span>
+            {browserSelectionMode === 'screenshot' && browserSelectionCapture ? (
+              <div className="chat-browser-selection-shot">
+                <img src={browserSelectionCapture.dataUrl} alt={browserSelectionCapture.name} />
+                <span className="chat-browser-selection-text">
+                  {browserSelectionCapture.name}
+                  {!useActiveBrowser ? ' (enable Browser to send)' : ''}
+                </span>
+              </div>
+            ) : browserSelectionMode === 'screenshot' ? (
+              <span className="chat-browser-selection-text">
+                Preparing element screenshot...
+                {!useActiveBrowser ? ' (enable Browser to send)' : ''}
+              </span>
+            ) : (
+              <span className="chat-browser-selection-text">
+                {describeBrowserSelection(browserSelection)}
+                {!useActiveBrowser ? ' (enable Browser to send)' : ''}
+              </span>
+            )}
           </div>
           <button className="chat-browser-selection-clear" type="button" onClick={() => setBrowserSelection(null)}>
             x
@@ -485,7 +507,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
         <div className="chat-attachments">
           {attachments.map((att, i) => (
             <span key={i} className="chat-attachment-chip">
-              <span className="chat-attachment-icon" aria-hidden="true">{att.type === 'image' ? 'o' : '[]'}</span>
+              {att.type === 'image' && (att.previewUrl || att.path) ? (
+                <img className="chat-attachment-thumb" src={att.previewUrl ?? att.path} alt={att.name} />
+              ) : (
+                <span className="chat-attachment-icon" aria-hidden="true">[]</span>
+              )}
               {att.name}
               <button className="chat-attachment-remove" onClick={() => removeAttachment(i)} type="button">x</button>
             </span>
@@ -563,9 +589,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
           const file = e.target.files?.[0];
           if (file) {
             const isImage = file.type.startsWith('image/');
+            const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
             setAttachments((prev) => [...prev, {
               type: isImage ? 'image' : 'file',
-              path: isImage ? URL.createObjectURL(file) : file.name,
+              path: previewUrl ?? file.name,
+              previewUrl,
               name: file.name,
             }]);
           }

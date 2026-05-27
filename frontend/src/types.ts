@@ -73,14 +73,14 @@ export type Project = {
   terminalTabs: SessionTab[];
   activeTerminalTabId: string | null;
   terminalSessions: string[];
+  browserTabIds?: string[];
+  activeBrowserTabId?: string | null;
 };
 
-export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal' | 'git' | 'browser';
+export type ActivePanel = 'explorer' | 'search' | 'projects' | 'terminal' | 'git' | 'browser' | 'settings';
 
 export type AppConfig = {
-  mode: 'simple' | 'full';
   workspaceRoot: string;
-  useBrowser: boolean;
   terminalAiMaxLines: number;
 };
 
@@ -127,6 +127,7 @@ export type ParentChainItem = {
 };
 
 export type BrowserElementSelection = {
+  tabId?: string;
   url: string;
   title: string;
   tagName: string;
@@ -182,6 +183,17 @@ export type BrowserElementSelection = {
   eventListeners?: Array<{ type: string; handlerBody: string }>;
 };
 
+export type BrowserSelectionMode = 'detail' | 'screenshot';
+
+export type BrowserElementCapture = {
+  path: string;
+  dataUrl: string;
+  mimeType: string;
+  name: string;
+  selectorKey: string;
+  capturedAt: number;
+};
+
 /** Terminal context sent to AI chat when terminal integration is active. */
 export type TerminalContext = {
   sessionId: string;
@@ -196,6 +208,28 @@ export type BrowserState = {
   tabs: BrowserTab[];
   activeTabId?: string;
   localhostScope: 'server';
+};
+
+export type SettingsTunnel = {
+  id: string;
+  name: string;
+  localPort: string;
+  engine: 'bore' | 'cloudflare';
+  enabled: boolean;
+  status: 'starting' | 'started' | 'stopped';
+  url?: string;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SettingsAboutInfo = {
+  name: string;
+  version: string;
+  description: string;
+  defaultTunnelEngine: 'bore' | 'cloudflare';
+  appPort: string;
+  appTunnelEnabled: boolean;
 };
 
 // Git types
@@ -388,6 +422,11 @@ export type ChatSessionInfo = {
   workDir?: string;
   acpSessionId?: string;
   useActiveTerminal?: boolean;
+  terminalId?: string;
+  useActiveBrowser?: boolean;
+  browserSelection?: BrowserElementSelection | null;
+  browserSelectionMode?: BrowserSelectionMode;
+  browserSelectionCapture?: BrowserElementCapture | null;
   commands?: SlashCommandInfo[];
   configOptions?: ConfigOptionInfo[];
   pendingPermission?: PendingPermission;

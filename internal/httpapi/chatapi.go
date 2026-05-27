@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -506,10 +505,15 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			if msg.Context != nil && len(msg.Context) > 0 {
 				content = formatContextMessage(msg.Content, msg.Context)
 			}
-			if len(msg.Attachments) > 0 {
-				content = formatAttachments(content, msg.Attachments)
+			attachments := make([]chat.Attachment, 0, len(msg.Attachments))
+			for _, attachment := range msg.Attachments {
+				attachments = append(attachments, chat.Attachment{
+					Type: attachment.Type,
+					Path: attachment.Path,
+					Name: attachment.Name,
+				})
 			}
-			if err := session.Send(ctx, content); err != nil {
+			if err := session.Send(ctx, content, attachments); err != nil {
 				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
 
@@ -1015,22 +1019,6 @@ func findAnyAgentDescriptor(id string) (chat.AgentDescriptor, bool) {
 		}
 	}
 	return chat.AgentDescriptor{}, false
-}
-
-func formatAttachments(content string, attachments []chatAttachment) string {
-	var sb strings.Builder
-	for _, att := range attachments {
-		if att.Type == "file" {
-			data, err := os.ReadFile(att.Path)
-			if err == nil {
-				sb.WriteString(fmt.Sprintf("\n\nFile: %s\n```\n%s\n```\n", att.Name, string(data)))
-			}
-		}
-	}
-	if sb.Len() > 0 {
-		return content + sb.String()
-	}
-	return content
 }
 
 func formatContextMessage(content string, ctx json.RawMessage) string {

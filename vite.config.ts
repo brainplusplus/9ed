@@ -10,7 +10,6 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        terminal: resolve(__dirname, 'frontend/index.html'),
         ide: resolve(__dirname, 'frontend/ide.html'),
       },
     },

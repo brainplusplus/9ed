@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/brainplusplus/9ed/internal/tunnel"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -185,6 +187,18 @@ CREATE TABLE IF NOT EXISTS chat_session_snapshots (
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS tunnel_configs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    local_port TEXT NOT NULL,
+    engine TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tunnel_configs_port ON tunnel_configs(local_port);
 `
 	_, err := db.Exec(schema)
 	return err
@@ -437,6 +451,54 @@ func (s *ChatStore) SaveWorkspaceState(projectPath, stateJSON string) error {
 		 ON CONFLICT(project_path) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
 		projectPath, stateJSON, now,
 	)
+	return err
+}
+
+func (s *ChatStore) ListTunnelConfigs() ([]tunnel.ConfigRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, local_port, engine, enabled, created_at, updated_at
+		 FROM tunnel_configs
+		 ORDER BY created_at ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var configs []tunnel.ConfigRecord
+	for rows.Next() {
+		var cfg tunnel.ConfigRecord
+		var enabled int
+		if err := rows.Scan(&cfg.ID, &cfg.Name, &cfg.LocalPort, &cfg.Engine, &enabled, &cfg.CreatedAt, &cfg.UpdatedAt); err != nil {
+			return nil, err
+		}
+		cfg.Enabled = enabled == 1
+		configs = append(configs, cfg)
+	}
+	return configs, rows.Err()
+}
+
+func (s *ChatStore) SaveTunnelConfig(cfg tunnel.ConfigRecord) error {
+	enabled := 0
+	if cfg.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO tunnel_configs (id, name, local_port, engine, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   name = excluded.name,
+		   local_port = excluded.local_port,
+		   engine = excluded.engine,
+		   enabled = excluded.enabled,
+		   updated_at = excluded.updated_at`,
+		cfg.ID, cfg.Name, cfg.LocalPort, cfg.Engine, enabled, cfg.CreatedAt, cfg.UpdatedAt,
+	)
+	return err
+}
+
+func (s *ChatStore) DeleteTunnelConfig(id string) error {
+	_, err := s.db.Exec("DELETE FROM tunnel_configs WHERE id = ?", id)
 	return err
 }
 

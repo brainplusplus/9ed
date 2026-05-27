@@ -10,7 +10,6 @@ type WorkspaceState = {
   terminalVisible: boolean;
   chatVisible: boolean;
   browserVisible: boolean;
-  browserEnabled: boolean;
   showPicker: boolean;
 
   addProject: (path: string, name: string) => void;
@@ -23,7 +22,6 @@ type WorkspaceState = {
   showTerminal: () => void;
   toggleChat: () => void;
   toggleBrowser: () => void;
-  setBrowserEnabled: (enabled: boolean) => void;
   setShowPicker: (show: boolean) => void;
 
   openFile: (projectId: string, file: FileTab) => void;
@@ -47,6 +45,9 @@ type WorkspaceState = {
   updateTerminalTab: (projectId: string, sessionId: string, patch: Partial<SessionTab>) => void;
   setActiveTerminalTab: (projectId: string, sessionId: string | null) => void;
   removeTerminalTab: (projectId: string, sessionId: string) => void;
+  addBrowserTab: (projectId: string, tabId: string) => void;
+  removeBrowserTab: (projectId: string, tabId: string) => void;
+  setActiveBrowserTab: (projectId: string, tabId: string | null) => void;
 };
 
 type StoredActiveProject = {
@@ -55,7 +56,15 @@ type StoredActiveProject = {
   name: string;
 };
 
+type StoredProject = StoredActiveProject;
+
+type StoredWorkspace = {
+  projects: StoredProject[];
+  activeProjectId: string | null;
+};
+
 const ACTIVE_PROJECT_STORAGE_KEY = '9ed.activeProject.v1';
+const OPEN_PROJECTS_STORAGE_KEY = '9ed.openProjects.v1';
 
 function storage(): Storage | null {
   if (typeof window === 'undefined') return null;
@@ -68,6 +77,19 @@ function storage(): Storage | null {
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function emptyProject(project: StoredProject): Project {
+  return {
+    id: project.id,
+    path: project.path,
+    name: project.name,
+    openFiles: [],
+    activeFileId: null,
+    terminalTabs: [],
+    activeTerminalTabId: null,
+    terminalSessions: [],
+  };
 }
 
 function readStoredActiveProject(): StoredActiveProject | null {
@@ -88,6 +110,46 @@ function readStoredActiveProject(): StoredActiveProject | null {
   }
 }
 
+function normalizeStoredProject(project: Partial<StoredProject>): StoredProject | null {
+  if (!project.path || !project.name) return null;
+  return {
+    id: project.id || generateId(),
+    path: project.path,
+    name: project.name,
+  };
+}
+
+function readStoredWorkspace(): StoredWorkspace {
+  const store = storage();
+  if (!store) return { projects: [], activeProjectId: null };
+
+  try {
+    const raw = store.getItem(OPEN_PROJECTS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<StoredWorkspace>;
+      const seen = new Set<string>();
+      const projects = (parsed.projects ?? []).reduce<StoredProject[]>((acc, project) => {
+        const normalized = normalizeStoredProject(project);
+        if (!normalized || seen.has(normalized.path)) return acc;
+        seen.add(normalized.path);
+        acc.push(normalized);
+        return acc;
+      }, []);
+      const activeProjectId = projects.some((project) => project.id === parsed.activeProjectId)
+        ? parsed.activeProjectId ?? null
+        : (projects[0]?.id ?? null);
+      return { projects, activeProjectId };
+    }
+  } catch {
+  }
+
+  const activeProject = readStoredActiveProject();
+  return {
+    projects: activeProject ? [activeProject] : [],
+    activeProjectId: activeProject?.id ?? null,
+  };
+}
+
 function writeStoredActiveProject(project: Pick<Project, 'id' | 'path' | 'name'> | null): void {
   const store = storage();
   if (!store) return;
@@ -105,30 +167,44 @@ function writeStoredActiveProject(project: Pick<Project, 'id' | 'path' | 'name'>
   }
 }
 
+function writeStoredWorkspace(projects: Pick<Project, 'id' | 'path' | 'name'>[], activeProjectId: string | null): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    if (projects.length === 0) {
+      store.removeItem(OPEN_PROJECTS_STORAGE_KEY);
+      writeStoredActiveProject(null);
+      return;
+    }
+
+    const activeProject = projects.find((project) => project.id === activeProjectId) ?? projects[0] ?? null;
+    store.setItem(OPEN_PROJECTS_STORAGE_KEY, JSON.stringify({
+      projects: projects.map((project) => ({
+        id: project.id,
+        path: project.path,
+        name: project.name,
+      })),
+      activeProjectId: activeProject?.id ?? null,
+    }));
+    writeStoredActiveProject(activeProject);
+  } catch {
+  }
+}
+
 function updateProject(projects: Project[], projectId: string, updater: (p: Project) => Project): Project[] {
   return projects.map((p) => (p.id === projectId ? updater(p) : p));
 }
 
-const initialActiveProject = readStoredActiveProject();
+const initialWorkspace = readStoredWorkspace();
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
-  projects: initialActiveProject ? [{
-    id: initialActiveProject.id,
-    path: initialActiveProject.path,
-    name: initialActiveProject.name,
-    openFiles: [],
-    activeFileId: null,
-    terminalTabs: [],
-    activeTerminalTabId: null,
-    terminalSessions: [],
-  }] : [],
-  activeProjectId: initialActiveProject?.id ?? null,
+  projects: initialWorkspace.projects.map(emptyProject),
+  activeProjectId: initialWorkspace.activeProjectId,
   activePanel: 'explorer',
   sidebarVisible: true,
   terminalVisible: true,
   chatVisible: true,
   browserVisible: false,
-  browserEnabled: false,
   showPicker: false,
 
   addProject: (path, name) => {
@@ -137,17 +213,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       ...(() => {
         const existing = state.projects.find((p) => p.path === path);
         if (existing) {
-          writeStoredActiveProject(existing);
+          writeStoredWorkspace(state.projects, existing.id);
           return {
             projects: state.projects,
             activeProjectId: existing.id,
           };
         }
         const id = generateId();
-        const project = { id, path, name, openFiles: [], activeFileId: null, terminalTabs: [], activeTerminalTabId: null, terminalSessions: [] };
-        writeStoredActiveProject(project);
+        const project = emptyProject({ id, path, name });
+        const projects = [...state.projects, project];
+        writeStoredWorkspace(projects, id);
         return {
-          projects: [...state.projects, project],
+          projects,
           activeProjectId: id,
         };
       })(),
@@ -159,8 +236,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     set((state) => {
       const next = state.projects.filter((p) => p.id !== id);
       const nextActiveId = state.activeProjectId === id ? (next[0]?.id ?? null) : state.activeProjectId;
-      const nextActive = next.find((p) => p.id === nextActiveId) ?? null;
-      writeStoredActiveProject(nextActive);
+      writeStoredWorkspace(next, nextActiveId);
       return {
         projects: next,
         activeProjectId: nextActiveId,
@@ -169,30 +245,27 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   setActiveProject: (id) => set((state) => {
     const project = state.projects.find((p) => p.id === id) ?? null;
-    if (project) writeStoredActiveProject(project);
+    if (project) writeStoredWorkspace(state.projects, project.id);
     return { activeProjectId: id };
   }),
 
   restoreLastActiveProject: () => set((state) => {
     if (state.activeProjectId) return state;
-    const stored = readStoredActiveProject();
-    if (!stored) return state;
-    const existing = state.projects.find((p) => p.path === stored.path);
+    const stored = readStoredWorkspace();
+    if (stored.projects.length === 0) return state;
+    const restoredProjects = stored.projects
+      .filter((storedProject) => !state.projects.some((project) => project.path === storedProject.path))
+      .map(emptyProject);
+    const projects = [...state.projects, ...restoredProjects];
+    const activeProject = projects.find((p) => p.id === stored.activeProjectId) ?? projects[0] ?? null;
+    if (!activeProject) return state;
+    const existing = state.projects.find((p) => p.path === activeProject.path);
     if (existing) {
       return { activeProjectId: existing.id, showPicker: false };
     }
     return {
-      projects: [...state.projects, {
-        id: stored.id,
-        path: stored.path,
-        name: stored.name,
-        openFiles: [],
-        activeFileId: null,
-        terminalTabs: [],
-        activeTerminalTabId: null,
-        terminalSessions: [],
-      }],
-      activeProjectId: stored.id,
+      projects,
+      activeProjectId: activeProject.id,
       showPicker: false,
     };
   }),
@@ -208,8 +281,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   toggleChat: () => set((state) => ({ chatVisible: !state.chatVisible })),
 
   toggleBrowser: () => set((state) => ({ browserVisible: !state.browserVisible })),
-
-  setBrowserEnabled: (enabled) => set({ browserEnabled: enabled }),
 
   setShowPicker: (show) => set({ showPicker: show }),
 
@@ -411,5 +482,31 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
           terminalSessions: p.terminalSessions.filter((s) => s !== sessionId),
         };
       }),
+    })),
+
+  addBrowserTab: (projectId, tabId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const browserTabIds = p.browserTabIds ?? [];
+        return {
+          ...p,
+          browserTabIds: browserTabIds.includes(tabId) ? browserTabIds : [...browserTabIds, tabId],
+          activeBrowserTabId: tabId,
+        };
+      }),
+    })),
+
+  removeBrowserTab: (projectId, tabId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => {
+        const browserTabIds = (p.browserTabIds ?? []).filter((id) => id !== tabId);
+        const activeBrowserTabId = p.activeBrowserTabId === tabId ? (browserTabIds[0] ?? null) : (p.activeBrowserTabId ?? null);
+        return { ...p, browserTabIds, activeBrowserTabId };
+      }),
+    })),
+
+  setActiveBrowserTab: (projectId, tabId) =>
+    set((state) => ({
+      projects: updateProject(state.projects, projectId, (p) => ({ ...p, activeBrowserTabId: tabId })),
     })),
 }));

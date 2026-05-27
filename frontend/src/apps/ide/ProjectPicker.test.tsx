@@ -59,7 +59,7 @@ describe('ProjectPicker', () => {
   });
 
   it('loads workspace root tree without waiting for drive enumeration', async () => {
-    getConfig.mockResolvedValue({ mode: 'full', workspaceRoot: '/repo' });
+    getConfig.mockResolvedValue({ workspaceRoot: '/repo' });
     getDrives.mockReturnValue(new Promise(() => {}));
     getFileTree.mockResolvedValue([
       { name: 'src', type: 'dir', size: 0, modified: 1 },

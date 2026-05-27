@@ -6,6 +6,7 @@
 @import 'ide/file-tree.css';
 @import 'ide/search.css';
 @import 'ide/project-list.css';
+@import 'ide/settings.css';
 @import 'ide/terminal.css';
 @import 'ide/git.css';
 @import 'ide/chat.css';

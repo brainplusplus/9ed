@@ -56,6 +56,7 @@ function resetStores() {
       status: 'idle',
       createdAt: 1,
       kind: 'resumable',
+      workDir: '/repo',
     }],
     activeSessionId: 'live-9',
     agents: [],
@@ -127,6 +128,7 @@ describe('useWorkspaceStatePersistence', () => {
           status: 'idle',
           createdAt: 2,
           kind: 'live',
+          workDir: '/repo',
         }],
         activeSessionId: 'live-20',
       });

@@ -18,14 +18,6 @@ import (
 
 const maxFileSize = 10 * 1024 * 1024
 
-func (a *API) requireFullMode(w http.ResponseWriter) bool {
-	if a.mode != "full" {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return false
-	}
-	return true
-}
-
 func (a *API) validatePath(w http.ResponseWriter, raw string) (string, bool) {
 	validated, err := filesystem.ValidatePath(a.workspaceRoot, raw)
 	if err != nil {
@@ -41,9 +33,7 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := configResponse{
-		Mode:               a.mode,
 		WorkspaceRoot:      a.workspaceRoot,
-		UseBrowser:         a.useBrowser,
 		TerminalAIMaxLines: a.terminalAiMaxLines,
 	}
 	if a.tunnelURL != nil {
@@ -53,9 +43,6 @@ func (a *API) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileDrives(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -86,9 +73,6 @@ type fileTreeEntry struct {
 }
 
 func (a *API) handleFileTree(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -146,10 +130,6 @@ func (a *API) handleFileTree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
-
 	filePath := r.URL.Query().Get("path")
 	if filePath == "" {
 		http.Error(w, "path parameter is required", http.StatusBadRequest)
@@ -192,9 +172,6 @@ func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileCreate(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -220,9 +197,6 @@ func (a *API) handleFileCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileRename(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -252,9 +226,6 @@ func (a *API) handleFileRename(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileCopy(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -284,9 +255,6 @@ func (a *API) handleFileCopy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileMove(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -316,9 +284,6 @@ func (a *API) handleFileMove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileDelete(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodDelete {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -344,9 +309,6 @@ func (a *API) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileSearch(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -385,9 +347,6 @@ func (a *API) handleFileSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileDownload(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -435,9 +394,6 @@ func (a *API) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileUpload(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -489,10 +445,6 @@ func (a *API) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFileWatch(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		debug.Printf("[ws/watch] Rejected: not full mode")
-		return
-	}
 	if a.watcher == nil {
 		debug.Printf("[ws/watch] Rejected: watcher is nil")
 		http.Error(w, "file watcher not available", http.StatusServiceUnavailable)

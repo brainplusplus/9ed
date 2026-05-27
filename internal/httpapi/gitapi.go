@@ -21,9 +21,6 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 }
 
 func (a *API) handleGitStatus(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -54,9 +51,6 @@ func (a *API) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitLog(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -88,9 +82,6 @@ func (a *API) handleGitLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitBranches(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -119,9 +110,6 @@ func (a *API) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitStage(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -154,9 +142,6 @@ func (a *API) handleGitStage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -189,9 +174,6 @@ func (a *API) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitCommit(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -225,9 +207,6 @@ func (a *API) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitPush(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -262,9 +241,6 @@ func (a *API) handleGitPush(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitPull(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -299,9 +275,6 @@ func (a *API) handleGitPull(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitBranch(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -348,9 +321,6 @@ func (a *API) handleGitBranch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitMerge(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -383,9 +353,6 @@ func (a *API) handleGitMerge(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitStash(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -450,9 +417,6 @@ func (a *API) handleGitStash(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitDiff(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -482,9 +446,6 @@ func (a *API) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitDiffLines(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -517,9 +478,6 @@ func (a *API) handleGitDiffLines(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitBlame(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -552,9 +510,6 @@ func (a *API) handleGitBlame(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -587,9 +542,6 @@ func (a *API) handleGitDiscard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitFiles(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -618,9 +570,6 @@ func (a *API) handleGitFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGitFileAtHEAD(w http.ResponseWriter, r *http.Request) {
-	if !a.requireFullMode(w) {
-		return
-	}
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return

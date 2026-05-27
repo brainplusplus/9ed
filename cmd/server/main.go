@@ -75,13 +75,8 @@ func main() {
 }
 
 func printStartupInfo(cfg config.Config, tn *tunnel.Tunnel) {
-	mode := "terminal"
-	if cfg.Mode == "full" {
-		mode = "IDE"
-	}
-
 	fmt.Println("─────────────────────────────────────────────")
-	fmt.Printf("  9ed  [%s mode]\n", mode)
+	fmt.Println("  9ed  [Web IDE]")
 	fmt.Println("─────────────────────────────────────────────")
 	fmt.Printf("  Local:   http://localhost:%s\n", cfg.Port)
 	if tn != nil {

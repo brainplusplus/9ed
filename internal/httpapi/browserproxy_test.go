@@ -95,7 +95,7 @@ func TestHandleBrowserProxyRewritesHTMLResponses(t *testing.T) {
 		t.Fatalf("CreateTab() error = %v", err)
 	}
 
-	api := New(Dependencies{Mode: "full", UseBrowser: true, Browser: manager})
+	api := New(Dependencies{Browser: manager})
 	req := httptest.NewRequest(http.MethodGet, "/browser/"+tab.ID+"/", nil)
 	rec := httptest.NewRecorder()
 

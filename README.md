@@ -49,7 +49,7 @@ It runs as a normal Go server during development and can also be shipped as a si
 - Multi-tab terminal UI using xterm.js
 - Cross-platform shell detection (PowerShell, cmd, Git Bash, WSL, bash, zsh)
 
-### IDE Mode (Full)
+### Web IDE
 - Monaco Editor with multi-tab file editing
 - File explorer with tree navigation and context menu (New, Rename, Delete, Copy, Cut, Paste)
 - Full-text search across project files
@@ -102,9 +102,14 @@ It runs as a normal Go server during development and can also be shipped as a si
 - **Smart hit-test**: click any element in browser panel to inspect
 - **Rich tooltip**: shows tag, id, classes, dimensions, CSS properties
 - **Keyboard navigation**: Tab/Shift+Tab between elements, Escape to exit
-- **AI context injection**: selected element details auto-attached to chat messages
+- **AI context injection**: selected element can be sent as inspect details or as an element-only screenshot
 - **Mini inspect panel**: Styles, Events, Accessibility tabs for selected element
 - **Ruler lines**: visual guides from selected element to viewport edges
+
+### Global Settings
+- Global **Settings** panel available from the sidebar and mobile nav
+- **Tunneling** management for additional local ports with persisted state, live status, engine tag, and current public URL
+- **About** section with 9ed version and runtime info
 
 ![Mobile - Chat](docs/screenshots/mobile-chat.png)
 ![Mobile - Editor](docs/screenshots/mobile-editor.png)
@@ -143,6 +148,9 @@ It runs as a normal Go server during development and can also be shipped as a si
 - **Cloudflare** (default): Quick tunnel via `cloudflared`, generates random public URL
 - **Bore**: Fixed port tunnel via `bore.pub`, auto-installs binary
 - Toggle with `TUNNEL=true/false`, select engine with `TUNNEL_ENGINE=cloudflare|bore`
+- Global **Settings -> Tunneling** panel for managing additional tunnels to other local ports on the same machine
+- Additional tunnels persist in SQLite, remember active state, and auto-start again after 9ed restarts
+- Each custom tunnel shows its engine, live public URL, and runtime state in the Settings UI
 - **Auto-restart watchdog**: tunnel process auto-restarts on crash
 - **Graceful shutdown**: clean process termination with timeout
 - **Output recording**: tunnel logs captured for diagnostics
@@ -196,12 +204,10 @@ For a deployed release, keep the generated binary next to a `.env` file with `BA
 | `PORT` | HTTP listen port | `8080` |
 | `BASIC_AUTH_USERNAME` | Required username | required |
 | `BASIC_AUTH_PASSWORD` | Required password | required |
-| `MODE` | `simple` (terminal only) or `full` (IDE) | `simple` |
 | `WORKSPACE_ROOT` | Default workspace directory | cwd |
 | `AUTOKILL_PORT` | Kill existing process on port before start | `true` |
 | `TUNNEL` | Auto-start tunnel for public access | `true` |
 | `TUNNEL_ENGINE` | `cloudflare` (random URL via cloudflared) or `bore` (fixed port via bore.pub) | `cloudflare` |
-| `USE_BROWSER` | Enable in-app browser panel | `false` |
 | `TERMINAL_AI_MAX_LINES` | Max terminal lines sent to AI as context | `100` |
 | `DEBUG` | Enable verbose debug logging | `false` |
 | `DEBUG_WATCHER` | Enable watcher-specific debug logs (requires `DEBUG=true`) | `false` |
@@ -261,8 +267,7 @@ internal/
   server/              - HTTP assembly and static serving
   tunnel/              - Tunnel subprocess lifecycle (bore, cloudflare)
 frontend/src/
-  apps/ide/            - IDE mode entry (workspace, project picker)
-  apps/terminal/       - Simple terminal mode
+  apps/ide/            - Web IDE entry (workspace, project picker)
   config/              - Monaco editor setup (TS/JS diagnostics, Vue/Svelte languages)
   components/
     editor/            - Monaco editor, diff view, tabs with context menu
@@ -270,6 +275,7 @@ frontend/src/
     chat/              - Chat panel, messages, input, agent picker, permission dialog, queue, voice
     browser/           - Browser panel, inspect overlay, element selection, hit-test
     sidebar/           - Activity bar (with badge), file tree (with context menu), search
+    settings/          - Global settings panel for tunnel management and about info
     terminal/          - Terminal panel (xterm.js), tabs per project
     shared/            - Bottom nav, shortcuts help, context menu
   stores/              - Zustand state (workspace, git, chat)

@@ -50,8 +50,8 @@ func TestServerHandlerServesSPAAndStaticAssetsWhenAuthenticated(t *testing.T) {
 	if indexRec.Code != http.StatusOK {
 		t.Fatalf("expected index request to return 200, got %d", indexRec.Code)
 	}
-	if body := indexRec.Body.String(); body != "<html><body>app</body></html>" {
-		t.Fatalf("expected index body to match test asset, got %q", body)
+	if body := indexRec.Body.String(); body != "<html><body>ide</body></html>" {
+		t.Fatalf("expected IDE body to match test asset, got %q", body)
 	}
 
 	assetReq := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
@@ -102,7 +102,7 @@ func TestEmbeddedSPAHandlerServesEmbeddedAssets(t *testing.T) {
 			Mode: fs.ModePerm,
 		},
 	}
-	handler := embeddedSPAHandler(assets, "full")
+	handler := embeddedSPAHandler(assets)
 
 	indexReq := httptest.NewRequest(http.MethodGet, "/", nil)
 	indexRec := httptest.NewRecorder()
@@ -135,7 +135,6 @@ func TestServerHandlerExemptsActiveTerminalMCPFromBasicAuth(t *testing.T) {
 	withWorkingDirectory(t, root)
 
 	srv := New(config.Config{
-		Mode:              "full",
 		Port:              "8080",
 		BasicAuthUsername: "alice",
 		BasicAuthPassword: "secret",
@@ -163,6 +162,9 @@ func setupTestDist(t *testing.T) string {
 	}
 	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<html><body>app</body></html>"), 0o644); err != nil {
 		t.Fatalf("WriteFile for index.html returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "ide.html"), []byte("<html><body>ide</body></html>"), 0o644); err != nil {
+		t.Fatalf("WriteFile for ide.html returned error: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dist, "assets", "app.js"), []byte("console.log('ok');"), 0o644); err != nil {
 		t.Fatalf("WriteFile for app.js returned error: %v", err)

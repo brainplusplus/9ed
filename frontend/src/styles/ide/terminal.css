@@ -449,12 +449,14 @@
 }
 
 .picker-shell {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  height: var(--app-viewport-height);
+  min-height: 0;
+  display: block;
   background: linear-gradient(135deg, #1e1e2e 0%, #181825 100%);
   padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .picker-card {
@@ -467,26 +469,25 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  margin: 0 auto;
 }
 
-.picker-header {
+.picker-hero {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+  padding-bottom: 6px;
 }
 
-.picker-header .eyebrow {
-  margin: 0;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  font-size: 0.72rem;
-  color: #f9e2af;
-}
-
-.picker-header h1 {
-  margin: 0;
-  font-size: 1.8rem;
-  color: var(--sidebar-fg);
+.picker-logo {
+  width: min(420px, 100%);
+  height: auto;
+  display: block;
+  margin-bottom: 6px;
+  filter: drop-shadow(0 22px 44px rgba(0, 0, 0, 0.32));
 }
 
 .drive-picker {
@@ -551,10 +552,18 @@
   gap: 4px;
 }
 
+.picker-project-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
 .picker-project-btn {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  flex: 1;
   padding: 10px 14px;
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -567,6 +576,27 @@
 .picker-project-btn:hover {
   background: var(--sidebar-hover);
   border-color: #585b70;
+}
+
+.picker-project-remove {
+  flex: 0 0 34px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--activity-bg);
+  color: var(--activity-fg);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.picker-project-remove:hover {
+  background: #45273a;
+  border-color: rgba(243, 139, 168, 0.5);
+  color: #f38ba8;
+}
+
+.picker-projects > .picker-project-btn {
+  width: 100%;
 }
 
 .picker-project-name {
@@ -663,4 +693,42 @@
 .status-banner.error {
   background: #45273a;
   color: #f38ba8;
+}
+
+@media (max-width: 768px) {
+  .picker-shell {
+    padding: 12px;
+  }
+
+  .picker-card {
+    padding: 24px;
+    border-radius: 12px;
+    gap: 12px;
+  }
+
+  .picker-logo {
+    width: min(340px, 100%);
+  }
+
+  .picker-root {
+    word-break: break-word;
+  }
+
+  .picker-tree {
+    max-height: min(45vh, 360px);
+  }
+}
+
+@media (max-width: 420px) {
+  .picker-card {
+    padding: 20px 16px;
+  }
+
+  .folder-row {
+    gap: 6px;
+  }
+
+  .folder-open-btn {
+    padding: 4px 10px;
+  }
 }

@@ -1,7 +1,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { activateBrowserTab, createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
+import { activateBrowserTab, captureBrowserElementScreenshot, createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
 import { useChatStore } from '../../stores/chat';
-import type { BrowserAutomationStatus, BrowserTab } from '../../types';
+import { useWorkspaceStore } from '../../stores/workspace';
+import type { BrowserAutomationStatus, BrowserSelectionMode, BrowserTab } from '../../types';
 import { useInspectMode } from './useInspectMode';
 import { InspectOverlay, SelectedHighlight, InspectMiniPanel } from './InspectOverlay';
 
@@ -158,7 +159,6 @@ export function BrowserPanel() {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [address, setAddress] = useState(DEFAULT_URL);
   const [loading, setLoading] = useState(false);
   const [initializing, setInitializing] = useState(true);
@@ -166,6 +166,7 @@ export function BrowserPanel() {
   const [automation, setAutomation] = useState<BrowserAutomationStatus | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const tabsRef = useRef<BrowserTab[]>([]);
+  const creatingDefaultProjectTabRef = useRef<Set<string>>(new Set());
   const [viewportMode, setViewportMode] = useState<ViewportMode>('responsive');
   const [customWidth, setCustomWidth] = useState(1280);
   const [customHeight, setCustomHeight] = useState(720);
@@ -173,13 +174,28 @@ export function BrowserPanel() {
   const [autoContentSize, setAutoContentSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showMiniPanel, setShowMiniPanel] = useState(false);
+  const [selectionCaptureBusy, setSelectionCaptureBusy] = useState(false);
   const addressEditingRef = useRef(false);
   const browserSelection = useChatStore((s) => s.browserSelection);
+  const browserSelectionMode = useChatStore((s) => s.browserSelectionMode);
+  const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
+  const setBrowserSelectionMode = useChatStore((s) => s.setBrowserSelectionMode);
+  const setBrowserSelectionCapture = useChatStore((s) => s.setBrowserSelectionCapture);
+  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
+  const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
+  const addBrowserTab = useWorkspaceStore((s) => s.addBrowserTab);
+  const removeBrowserTab = useWorkspaceStore((s) => s.removeBrowserTab);
+  const setActiveBrowserTab = useWorkspaceStore((s) => s.setActiveBrowserTab);
 
+  const projectTabs = useMemo(() => {
+    const tabIds = new Set(activeProject?.browserTabIds ?? []);
+    return tabs.filter((tab) => tabIds.has(tab.id));
+  }, [activeProject?.browserTabIds, tabs]);
   const activeTab = useMemo(
-    () => tabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? null,
-    [tabs, activeTabId],
+    () => projectTabs.find((tab) => tab.id === activeProject?.activeBrowserTabId) ?? projectTabs[0] ?? null,
+    [activeProject?.activeBrowserTabId, projectTabs],
   );
+  const activeTabId = activeTab?.id ?? null;
 
   const updateStageSize = useCallback(() => {
     const stage = stageRef.current;
@@ -204,6 +220,11 @@ export function BrowserPanel() {
     toggleInspectMode,
     clearSelection,
   } = useInspectMode(iframeRef, stageRef, activeTab);
+
+  const selectionKey = useMemo(() => {
+    if (!browserSelection) return null;
+    return `${browserSelection.tabId ?? activeTab?.id ?? ''}:${browserSelection.uniqueSelector ?? browserSelection.selector}:${browserSelection.url}`;
+  }, [activeTab?.id, browserSelection]);
   const viewport = useMemo(() => {
     if (viewportMode === 'custom') {
       return {
@@ -342,22 +363,51 @@ export function BrowserPanel() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    async function ensureCapture() {
+      if (!browserSelection || browserSelectionMode !== 'screenshot' || !selectionKey) return;
+      if (browserSelectionCapture?.selectorKey === selectionKey) return;
+
+      setSelectionCaptureBusy(true);
+      try {
+        const response = await captureBrowserElementScreenshot({
+          url: browserSelection.url,
+          selectors: [browserSelection.uniqueSelector ?? '', browserSelection.selector].filter(Boolean),
+          name: browserSelection.tagName.toLowerCase(),
+        });
+        if (cancelled) return;
+        setBrowserSelectionCapture({
+          path: response.path,
+          dataUrl: response.dataUrl,
+          mimeType: response.mimeType,
+          name: `${browserSelection.tagName.toLowerCase()}-selection.png`,
+          selectorKey: selectionKey,
+          capturedAt: Date.now(),
+        });
+        setError(null);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to capture selected element');
+        }
+      } finally {
+        if (!cancelled) {
+          setSelectionCaptureBusy(false);
+        }
+      }
+    }
+
+    void ensureCapture();
+    return () => { cancelled = true; };
+  }, [browserSelection, browserSelectionCapture?.selectorKey, browserSelectionMode, selectionKey, setBrowserSelectionCapture]);
+
+  useEffect(() => {
     let alive = true;
     getBrowserState()
       .then((state) => {
         if (!alive) return;
         setTabs(state.tabs);
         setAutomation(state.automation);
-        setActiveTabId(state.activeTabId || state.tabs[0]?.id || null);
-        if (state.tabs.length === 0) {
-          return createBrowserTab(DEFAULT_URL);
-        }
         return null;
-      })
-      .then((tab) => {
-        if (!alive || !tab) return;
-        setTabs([tab]);
-        setActiveTabId(tab.id);
       })
       .catch((err: Error) => {
         if (alive) setError(err.message);
@@ -369,6 +419,27 @@ export function BrowserPanel() {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (initializing || !activeProjectId) return;
+    if (projectTabs.length > 0) {
+      if (!activeProject?.activeBrowserTabId || !projectTabs.some((tab) => tab.id === activeProject.activeBrowserTabId)) {
+        setActiveBrowserTab(activeProjectId, projectTabs[0].id);
+      }
+      return;
+    }
+    if (creatingDefaultProjectTabRef.current.has(activeProjectId)) return;
+    creatingDefaultProjectTabRef.current.add(activeProjectId);
+    createBrowserTab(DEFAULT_URL)
+      .then((tab) => {
+        setTabs((current) => [...current, tab]);
+        addBrowserTab(activeProjectId, tab.id);
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => {
+        creatingDefaultProjectTabRef.current.delete(activeProjectId);
+      });
+  }, [activeProject?.activeBrowserTabId, activeProjectId, addBrowserTab, initializing, projectTabs, setActiveBrowserTab]);
 
   // Sync address from active tab — skip while user is editing
   useEffect(() => {
@@ -389,7 +460,7 @@ export function BrowserPanel() {
           setError(null);
           const tab = await createBrowserTab(data.url);
           setTabs((current) => [...current, tab]);
-          setActiveTabId(tab.id);
+          if (activeProjectId) addBrowserTab(activeProjectId, tab.id);
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to open browser tab');
         }
@@ -429,7 +500,7 @@ export function BrowserPanel() {
         const exists = current.some((item) => item.id === tab.id);
         return exists ? current.map((item) => (item.id === tab.id ? tab : item)) : [...current, tab];
       });
-      setActiveTabId(tab.id);
+      if (activeProjectId) addBrowserTab(activeProjectId, tab.id);
       setReloadNonce((value) => value + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to navigate');
@@ -444,7 +515,7 @@ export function BrowserPanel() {
     try {
       const tab = await createBrowserTab(DEFAULT_URL);
       setTabs((current) => [...current, tab]);
-      setActiveTabId(tab.id);
+      if (activeProjectId) addBrowserTab(activeProjectId, tab.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create tab');
     } finally {
@@ -455,9 +526,7 @@ export function BrowserPanel() {
   async function handleCloseTab(tabId: string) {
     const nextTabs = tabsRef.current.filter((tab) => tab.id !== tabId);
     setTabs(nextTabs);
-    if (activeTabId === tabId) {
-      setActiveTabId(nextTabs[0]?.id ?? null);
-    }
+    if (activeProjectId) removeBrowserTab(activeProjectId, tabId);
     try {
       await deleteBrowserTab(tabId);
     } catch (err) {
@@ -471,7 +540,7 @@ export function BrowserPanel() {
   }
 
   async function handleSelectTab(tabId: string) {
-    setActiveTabId(tabId);
+    if (activeProjectId) setActiveBrowserTab(activeProjectId, tabId);
     try {
       await activateBrowserTab(tabId);
     } catch (err) {
@@ -519,7 +588,7 @@ export function BrowserPanel() {
   return (
     <section ref={panelRef} className={`browser-panel${isFullscreen ? ' fullscreen' : ''}`}>
       <div className="browser-tab-strip">
-        {tabs.map((tab) => (
+        {projectTabs.map((tab) => (
           <div key={tab.id} className={`browser-tab-chip${tab.id === activeTab?.id ? ' active' : ''}`}>
             <button className="browser-tab-button" type="button" onClick={() => void handleSelectTab(tab.id)} title={tab.url}>
               <span className="browser-tab-dot" />
@@ -652,9 +721,13 @@ export function BrowserPanel() {
       {browserSelection && (
         <BrowserSelectionBar
           selection={browserSelection}
+          mode={browserSelectionMode}
+          captureReady={browserSelectionCapture?.selectorKey === selectionKey}
+          captureBusy={selectionCaptureBusy}
           onClear={clearSelection}
           onReselect={toggleInspectMode}
           onTogglePanel={() => setShowMiniPanel((v) => !v)}
+          onChangeMode={(mode) => setBrowserSelectionMode(mode)}
           showPanel={showMiniPanel}
         />
       )}
@@ -722,15 +795,23 @@ export function BrowserPanel() {
 
 function BrowserSelectionBar({
   selection,
+  mode,
+  captureReady,
+  captureBusy,
   onClear,
   onReselect,
   onTogglePanel,
+  onChangeMode,
   showPanel,
 }: {
   selection: { selector: string };
+  mode: BrowserSelectionMode;
+  captureReady: boolean;
+  captureBusy: boolean;
   onClear: () => void;
   onReselect: () => void;
   onTogglePanel: () => void;
+  onChangeMode: (mode: BrowserSelectionMode) => void;
   showPanel: boolean;
 }) {
   const linked = useChatStore((s) => s.useActiveBrowser);
@@ -745,6 +826,21 @@ function BrowserSelectionBar({
         <span>{selection.selector}</span>
       </div>
       <div className="browser-selection-actions">
+        <button
+          type="button"
+          className={`browser-selection-mode${mode === 'detail' ? ' active' : ''}`}
+          onClick={() => onChangeMode('detail')}
+        >
+          Detail
+        </button>
+        <button
+          type="button"
+          className={`browser-selection-mode${mode === 'screenshot' ? ' active' : ''}`}
+          onClick={() => onChangeMode('screenshot')}
+          title={captureBusy ? 'Capturing element...' : (captureReady ? 'Send element screenshot' : 'Capture element screenshot')}
+        >
+          {captureBusy && mode === 'screenshot' ? 'Shot...' : 'Shot'}
+        </button>
         <button type="button" className="browser-selection-reselect" onClick={onReselect}>
           Re-select
         </button>

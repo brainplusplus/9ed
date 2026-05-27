@@ -44,9 +44,7 @@ type copyMoveRequest struct {
 }
 
 type configResponse struct {
-	Mode               string `json:"mode"`
 	WorkspaceRoot      string `json:"workspaceRoot"`
-	UseBrowser         bool   `json:"useBrowser"`
 	TerminalAIMaxLines int    `json:"terminalAiMaxLines"`
 	TunnelURL          string `json:"tunnelUrl,omitempty"`
 }

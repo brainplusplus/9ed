@@ -18,7 +18,6 @@ function resetWorkspaceStore() {
     terminalVisible: true,
     chatVisible: true,
     browserVisible: false,
-    browserEnabled: false,
     showPicker: false,
   });
 }
@@ -49,6 +48,25 @@ describe('useWorkspaceStore active project restore', () => {
     expect(restored.path).toBe('/repo');
     expect(restored.name).toBe('repo');
     expect(useWorkspaceStore.getState().activeProjectId).toBe(restored.id);
+  });
+
+  it('restores every open project after reload state reset', () => {
+    useWorkspaceStore.getState().addProject('/repo-a', 'repo-a');
+    useWorkspaceStore.getState().addProject('/repo-b', 'repo-b');
+
+    const activeBeforeReload = useWorkspaceStore.getState().activeProjectId;
+
+    useWorkspaceStore.setState({
+      projects: [],
+      activeProjectId: null,
+      showPicker: false,
+    });
+
+    useWorkspaceStore.getState().restoreLastActiveProject();
+
+    const restored = useWorkspaceStore.getState().projects;
+    expect(restored.map((project) => project.path)).toEqual(['/repo-a', '/repo-b']);
+    expect(useWorkspaceStore.getState().activeProjectId).toBe(activeBeforeReload);
   });
 
   it('activates an existing project instead of duplicating the same path', () => {

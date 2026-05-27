@@ -19,6 +19,10 @@ export function ProjectPicker() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    document.title = '9ed - Home';
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void getRecentProjects()
       .then((projects) => {
@@ -113,14 +117,14 @@ export function ProjectPicker() {
   return (
     <main className="picker-shell">
       <div className="picker-card">
-        <header className="picker-header">
-          <p className="eyebrow">Web IDE</p>
-          <h1>Open Project</h1>
+        <header className="picker-hero">
+          <img className="picker-logo" src="/logo.svg" alt="9ed" />
         </header>
 
         {recentProjects.length > 0 && (
           <div className="picker-section">
-            <h3 className="picker-section-title">Recent Projects</h3>
+            <h1 className="picker-section-title">Open Project</h1>
+            <h2 className="picker-section-title">Recent Projects</h2>
             <div className="picker-projects">
               {recentProjects.map((rp) => (
                 <div key={rp.path} className="picker-project-row">
@@ -154,7 +158,8 @@ export function ProjectPicker() {
 
         {projects.length > 0 && (
           <div className="picker-section">
-            <h3 className="picker-section-title">Opened Projects</h3>
+            {recentProjects.length === 0 && <h1 className="picker-section-title">Open Project</h1>}
+            <h2 className="picker-section-title">Opened Projects</h2>
             <div className="picker-projects">
               {projects.map((p) => (
                 <button
@@ -172,6 +177,7 @@ export function ProjectPicker() {
           </div>
         )}
 
+        {recentProjects.length === 0 && projects.length === 0 && <h1 className="picker-section-title">Open Project</h1>}
         <h3 className="picker-section-title">Open New Folder</h3>
 
         {drives.length > 1 && (

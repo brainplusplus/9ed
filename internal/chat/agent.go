@@ -90,7 +90,7 @@ type ChatSession interface {
 	ID() string
 	AgentID() string
 	WorkDir() string
-	Send(ctx context.Context, message string) error
+	Send(ctx context.Context, message string, attachments []Attachment) error
 	SetConfigOption(ctx context.Context, configID, value string) error
 	Events() <-chan ChatEvent
 	Cancel() error
@@ -235,20 +235,20 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, o
 	}
 
 	s := &acpSession{
-		id:              result.SessionID,
-		agentID:         agent.ID,
-		workDir:         workDir,
-		adapter:         adapter,
-		sessionID:       result.SessionID,
-		ctx:             acpCtx,
-		events:          make(chan ChatEvent, 128),
-		done:            make(chan struct{}),
-		cancelFn:        cancel,
-		promptDone:      make(chan *acp.SessionPromptResult, 1),
-		permissionCh:    make(chan PermissionResponse, 1),
+		id:                result.SessionID,
+		agentID:           agent.ID,
+		workDir:           workDir,
+		adapter:           adapter,
+		sessionID:         result.SessionID,
+		ctx:               acpCtx,
+		events:            make(chan ChatEvent, 128),
+		done:              make(chan struct{}),
+		cancelFn:          cancel,
+		promptDone:        make(chan *acp.SessionPromptResult, 1),
+		permissionCh:      make(chan PermissionResponse, 1),
 		useActiveTerminal: opts.UseActiveTerminal,
-		terminals:       make(map[string]*acpTerminal),
-		routedToolCalls: make(map[string]bool),
+		terminals:         make(map[string]*acpTerminal),
+		routedToolCalls:   make(map[string]bool),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -292,21 +292,21 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 	}
 
 	s := &acpSession{
-		id:              result.SessionID,
-		agentID:         agent.ID,
-		workDir:         workDir,
-		adapter:         adapter,
-		sessionID:       result.SessionID,
-		ctx:             acpCtx,
-		events:          make(chan ChatEvent, 128),
-		done:            make(chan struct{}),
-		cancelFn:        cancel,
-		promptDone:      make(chan *acp.SessionPromptResult, 1),
-		permissionCh:    make(chan PermissionResponse, 1),
+		id:                result.SessionID,
+		agentID:           agent.ID,
+		workDir:           workDir,
+		adapter:           adapter,
+		sessionID:         result.SessionID,
+		ctx:               acpCtx,
+		events:            make(chan ChatEvent, 128),
+		done:              make(chan struct{}),
+		cancelFn:          cancel,
+		promptDone:        make(chan *acp.SessionPromptResult, 1),
+		permissionCh:      make(chan PermissionResponse, 1),
 		useActiveTerminal: opts.UseActiveTerminal,
-		resumed:         true,
-		terminals:       make(map[string]*acpTerminal),
-		routedToolCalls: make(map[string]bool),
+		resumed:           true,
+		terminals:         make(map[string]*acpTerminal),
+		routedToolCalls:   make(map[string]bool),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -361,10 +361,9 @@ func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string
 	return nil
 }
 
-func (s *acpSession) Send(_ context.Context, message string) error {
-	content := []acp.ContentBlock{
-		{Type: "text", Text: message},
-	}
+func (s *acpSession) Send(_ context.Context, message string, attachments []Attachment) error {
+	imageCapable := s.adapter.AgentCapabilities().PromptCapabilities != nil && s.adapter.AgentCapabilities().PromptCapabilities.Image
+	content := buildACPContentBlocks(message, attachments, imageCapable)
 
 	go func() {
 		result, err := s.adapter.Prompt(s.ctx, s.sessionID, content)

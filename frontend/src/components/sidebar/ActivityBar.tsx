@@ -73,6 +73,15 @@ function BrowserIcon() {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="10" cy="10" r="2.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M10 3.2V5.1M10 14.9V16.8M16.8 10H14.9M5.1 10H3.2M14.95 5.05L13.6 6.4M6.4 13.6L5.05 14.95M14.95 14.95L13.6 13.6M6.4 6.4L5.05 5.05" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function BrandIcon() {
   return (
     <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -91,10 +100,10 @@ function BrandIcon() {
 }
 
 const panels: { id: ActivePanel; icon: React.ReactNode; label: string }[] = [
+  { id: 'projects', icon: <ProjectsIcon />, label: 'Projects' },
   { id: 'explorer', icon: <ExplorerIcon />, label: 'Explorer' },
   { id: 'search', icon: <SearchIcon />, label: 'Search' },
   { id: 'git', icon: <GitIcon />, label: 'Source Control' },
-  { id: 'projects', icon: <ProjectsIcon />, label: 'Projects' },
   { id: 'terminal', icon: <TerminalIcon />, label: 'Terminal' },
 ];
 
@@ -107,23 +116,26 @@ export function ActivityBar() {
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
   const browserVisible = useWorkspaceStore((s) => s.browserVisible);
-  const browserEnabled = useWorkspaceStore((s) => s.browserEnabled);
   const toggleBrowser = useWorkspaceStore((s) => s.toggleBrowser);
   const gitChangeCount = useGitStore((s) => s.status.length);
+
+  function openSidebarPanel(panel: ActivePanel) {
+    if (activePanel === panel && sidebarVisible) {
+      toggleSidebar();
+      return;
+    }
+    setActivePanel(panel);
+    if (!sidebarVisible) {
+      toggleSidebar();
+    }
+  }
 
   function handlePanelClick(p: (typeof panels)[number]) {
     if (p.id === 'terminal') {
       toggleTerminal();
       return;
     }
-    if (activePanel === p.id && sidebarVisible) {
-      toggleSidebar();
-      return;
-    }
-    setActivePanel(p.id);
-    if (!sidebarVisible) {
-      toggleSidebar();
-    }
+    openSidebarPanel(p.id);
   }
 
   return (
@@ -154,16 +166,22 @@ export function ActivityBar() {
       >
         <span className="activity-icon"><ChatIcon /></span>
       </button>
-      {browserEnabled && (
-        <button
-          className={`activity-btn${browserVisible ? ' active' : ''}`}
-          onClick={toggleBrowser}
-          title="Browser (Ctrl+Shift+B)"
-          type="button"
-        >
-          <span className="activity-icon"><BrowserIcon /></span>
-        </button>
-      )}
+      <button
+        className={`activity-btn${browserVisible ? ' active' : ''}`}
+        onClick={toggleBrowser}
+        title="Browser (Ctrl+Shift+B)"
+        type="button"
+      >
+        <span className="activity-icon"><BrowserIcon /></span>
+      </button>
+      <button
+        className={`activity-btn${activePanel === 'settings' && sidebarVisible ? ' active' : ''}`}
+        onClick={() => openSidebarPanel('settings')}
+        title="Settings"
+        type="button"
+      >
+        <span className="activity-icon"><SettingsIcon /></span>
+      </button>
     </nav>
   );
 }

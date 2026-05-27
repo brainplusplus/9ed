@@ -479,6 +479,29 @@
   display: flex;
   gap: 4px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.browser-selection-mode {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  border-radius: 5px;
+  background: rgba(59, 130, 246, 0.06);
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 0.68rem;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.browser-selection-mode:hover {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.browser-selection-mode.active {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: rgba(96, 165, 250, 0.55);
+  color: #dbeafe;
 }
 
 .browser-selection-clear {
@@ -533,6 +556,17 @@
 .browser-selection-panel.active {
   background: rgba(59, 130, 246, 0.3);
   border-color: rgba(96, 165, 250, 0.6);
+}
+
+@media (max-width: 767px) {
+  .browser-selection-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .browser-selection-actions {
+    width: 100%;
+  }
 }
 
 /* ── Inspect mode tip ── */

@@ -15,6 +15,7 @@ import (
 
 	"log"
 
+	"github.com/brainplusplus/9ed/internal/appmeta"
 	"github.com/brainplusplus/9ed/internal/auth"
 	"github.com/brainplusplus/9ed/internal/browser"
 	"github.com/brainplusplus/9ed/internal/chat"
@@ -23,81 +24,71 @@ import (
 	"github.com/brainplusplus/9ed/internal/httpapi"
 	"github.com/brainplusplus/9ed/internal/shells"
 	"github.com/brainplusplus/9ed/internal/terminal"
+	"github.com/brainplusplus/9ed/internal/tunnel"
 	"github.com/brainplusplus/9ed/internal/watcher"
 	"github.com/brainplusplus/9ed/internal/webassets"
 )
 
 type Server struct {
-	Config   config.Config
-	api      *httpapi.API
-	hs       *http.Server
-	tunnelFn func() string
+	Config          config.Config
+	api             *httpapi.API
+	hs              *http.Server
+	tunnelFn        func() string
+	settingsTunnels *tunnel.Manager
 }
 
 func New(cfg config.Config) *Server {
 	profiles := shells.Discover()
 	manager := terminal.NewManager(terminal.NewPTYSpawnFunc())
 
-	var fw *watcher.FileWatcher
-	if cfg.Mode == "full" {
-		var err error
-		fw, err = watcher.New()
-		if err != nil {
-			log.Printf("warning: file watcher unavailable: %v", err)
-		}
+	fw, err := watcher.New()
+	if err != nil {
+		log.Printf("warning: file watcher unavailable: %v", err)
 	}
 
-	var chatSessionMgr *chat.SessionManager
-	if cfg.Mode == "full" {
-		chatSessionMgr = chat.NewSessionManager()
-	}
+	chatSessionMgr := chat.NewSessionManager()
 	terminalMCPToken := randomToken()
-	if cfg.Mode == "full" {
-		cwd, _ := os.Getwd()
-		chat.SetActiveTerminalMCPServers([]acp.MCPServer{{
-			Name:    "9ed-active-terminal",
-			Command: "go",
-			Args:    []string{"run", filepath.Join(cwd, "cmd", "active-terminal-mcp")},
-			Env: []acp.EnvVariable{
-				{Name: "NINE_ED_MCP_ENDPOINT", Value: "http://127.0.0.1:" + cfg.Port + "/api/chat/terminal/run"},
-				{Name: "NINE_ED_MCP_TOKEN", Value: terminalMCPToken},
-			},
-		}})
+	cwd, _ := os.Getwd()
+	chat.SetActiveTerminalMCPServers([]acp.MCPServer{{
+		Name:    "9ed-active-terminal",
+		Command: "go",
+		Args:    []string{"run", filepath.Join(cwd, "cmd", "active-terminal-mcp")},
+		Env: []acp.EnvVariable{
+			{Name: "NINE_ED_MCP_ENDPOINT", Value: "http://127.0.0.1:" + cfg.Port + "/api/chat/terminal/run"},
+			{Name: "NINE_ED_MCP_TOKEN", Value: terminalMCPToken},
+		},
+	}})
+
+	chatStore, err := chat.NewChatStore(chat.DefaultDBPath())
+	if err != nil {
+		log.Printf("warning: chat history unavailable: %v", err)
 	}
 
-	var chatStore *chat.ChatStore
-	if cfg.Mode == "full" {
-		var err error
-		chatStore, err = chat.NewChatStore(chat.DefaultDBPath())
-		if err != nil {
-			log.Printf("warning: chat history unavailable: %v", err)
-		}
-	}
-
-	var browserMgr *browser.Manager
-	if cfg.Mode == "full" && cfg.UseBrowser {
-		browserMgr = browser.NewManager()
+	browserMgr := browser.NewManager()
+	settingsTunnels := tunnel.NewManager(chatStore, cfg.Port, cfg.Tunnel, cfg.TunnelEngine)
+	if err := settingsTunnels.Load(); err != nil {
+		log.Printf("warning: settings tunnels unavailable: %v", err)
 	}
 
 	api := httpapi.New(httpapi.Dependencies{
 		Shells:             profiles,
 		Sessions:           manager,
-		Mode:               cfg.Mode,
 		WorkspaceRoot:      cfg.WorkspaceRoot,
-		UseBrowser:         cfg.UseBrowser && cfg.Mode == "full",
 		TerminalAIMaxLines: cfg.TerminalAIMaxLines,
 		Watcher:            fw,
 		ChatSessionManager: chatSessionMgr,
 		ChatStore:          chatStore,
 		Browser:            browserMgr,
+		SettingsTunnels:    settingsTunnels,
 		TunnelURL:          func() string { return "" }, // placeholder, set via SetTunnel
 		TerminalMCPToken:   terminalMCPToken,
 	})
 
 	return &Server{
-		Config:   cfg,
-		api:      api,
-		tunnelFn: func() string { return "" },
+		Config:          cfg,
+		api:             api,
+		tunnelFn:        func() string { return "" },
+		settingsTunnels: settingsTunnels,
 	}
 }
 
@@ -121,7 +112,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/ws/", s.api.Handler())
 	mux.Handle("/browser/", s.api.Handler())
 	embeddedAssets, hasEmbeddedAssets := webassets.Embedded()
-	mux.Handle("/", spaHandler(distDir(), s.Config.Mode, embeddedAssets, hasEmbeddedAssets))
+	mux.Handle("/", spaHandler(distDir(), embeddedAssets, hasEmbeddedAssets))
 
 	protected := auth.Middleware(s.Config.BasicAuthUsername, s.Config.BasicAuthPassword)(mux)
 
@@ -144,6 +135,9 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Shutdown() {
+	if s.settingsTunnels != nil {
+		s.settingsTunnels.Shutdown()
+	}
 	if s.hs != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -159,9 +153,9 @@ func distDir() string {
 	return filepath.Join(cwd, "dist")
 }
 
-func spaHandler(root string, mode string, embeddedAssets fs.FS, hasEmbeddedAssets bool) http.Handler {
-	if hasEmbeddedAssets && embeddedAssetsAvailable(embeddedAssets, mode) {
-		return embeddedSPAHandler(embeddedAssets, mode)
+func spaHandler(root string, embeddedAssets fs.FS, hasEmbeddedAssets bool) http.Handler {
+	if hasEmbeddedAssets && embeddedAssetsAvailable(embeddedAssets) {
+		return embeddedSPAHandler(embeddedAssets)
 	}
 
 	fileServer := http.FileServer(http.Dir(root))
@@ -183,31 +177,23 @@ func spaHandler(root string, mode string, embeddedAssets fs.FS, hasEmbeddedAsset
 			return
 		}
 
-		fallback := "index.html"
-		if mode == "full" {
-			idePath := filepath.Join(root, "ide.html")
-			if _, err := os.Stat(idePath); err == nil {
-				fallback = "ide.html"
-			}
+		fallbackPath := filepath.Join(root, "ide.html")
+		if _, err := os.Stat(fallbackPath); err != nil {
+			http.Error(w, fmt.Sprintf("IDE frontend asset not found in %s; run npm run build", fallbackPath), http.StatusServiceUnavailable)
+			return
 		}
 
-		fallbackPath := filepath.Join(root, fallback)
 		setStaticCacheHeaders(w, fallbackPath)
 		http.ServeFile(w, r, fallbackPath)
 	})
 }
 
-func embeddedAssetsAvailable(assets fs.FS, mode string) bool {
-	if mode == "full" {
-		if _, err := fs.Stat(assets, "ide.html"); err == nil {
-			return true
-		}
-	}
-	_, err := fs.Stat(assets, "index.html")
+func embeddedAssetsAvailable(assets fs.FS) bool {
+	_, err := fs.Stat(assets, "ide.html")
 	return err == nil
 }
 
-func embeddedSPAHandler(assets fs.FS, mode string) http.Handler {
+func embeddedSPAHandler(assets fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(assets))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assetPath := strings.TrimPrefix(path.Clean("/"+strings.TrimSpace(r.URL.Path)), "/")
@@ -224,12 +210,7 @@ func embeddedSPAHandler(assets fs.FS, mode string) http.Handler {
 			return
 		}
 
-		fallback := "index.html"
-		if mode == "full" {
-			if _, err := fs.Stat(assets, "ide.html"); err == nil {
-				fallback = "ide.html"
-			}
-		}
+		fallback := "ide.html"
 
 		setStaticCacheHeaders(w, fallback)
 		http.ServeFileFS(w, r, assets, fallback)
@@ -257,4 +238,8 @@ func setStaticCacheHeaders(w http.ResponseWriter, path string) {
 		}
 		w.Header().Set("Cache-Control", "no-cache")
 	}
+}
+
+func AppVersion() string {
+	return appmeta.Version
 }

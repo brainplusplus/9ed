@@ -42,7 +42,7 @@ func TestFileDrivesIncludesWorkspaceRootVolume(t *testing.T) {
 	if volume == "" {
 		t.Skip("volume roots only apply on Windows")
 	}
-	api := New(Dependencies{Mode: "full", WorkspaceRoot: `D:\workspace`})
+	api := New(Dependencies{WorkspaceRoot: `D:\workspace`})
 	req := httptest.NewRequest(http.MethodGet, "/api/files/drives", nil)
 	rec := httptest.NewRecorder()
 
@@ -570,7 +570,7 @@ func (s *apiFakeChatSession) WorkDir() string                                   
 func (s *apiFakeChatSession) Mode() chat.SessionMode                                { return s.mode }
 func (s *apiFakeChatSession) Events() <-chan chat.ChatEvent                         { return s.events }
 func (s *apiFakeChatSession) Done() <-chan struct{}                                 { return s.done }
-func (s *apiFakeChatSession) Send(context.Context, string) error                    { return nil }
+func (s *apiFakeChatSession) Send(context.Context, string, []chat.Attachment) error { return nil }
 func (s *apiFakeChatSession) Cancel() error                                         { return nil }
 func (s *apiFakeChatSession) Close() error                                          { close(s.done); return nil }
 func (s *apiFakeChatSession) SetConfigOption(context.Context, string, string) error { return nil }
@@ -579,7 +579,7 @@ func (s *apiFakeChatSession) IsResumed() bool                                   
 func (s *apiFakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *apiFakeChatSession) SetAutoApprove(bool)                                   {}
 func (s *apiFakeChatSession) SetUseActiveTerminal(bool)                             {}
-func (s *apiFakeChatSession) UseActiveTerminalEnabled() bool                         { return false }
+func (s *apiFakeChatSession) UseActiveTerminalEnabled() bool                        { return false }
 
 type fakeManager struct {
 	removedID string

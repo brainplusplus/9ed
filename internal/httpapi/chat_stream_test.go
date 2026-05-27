@@ -85,7 +85,7 @@ func (s *fakeChatSession) WorkDir() string                                      
 func (s *fakeChatSession) Mode() chat.SessionMode                                { return chat.ModeACP }
 func (s *fakeChatSession) Events() <-chan chat.ChatEvent                         { return s.events }
 func (s *fakeChatSession) Done() <-chan struct{}                                 { return s.done }
-func (s *fakeChatSession) Send(context.Context, string) error                    { return nil }
+func (s *fakeChatSession) Send(context.Context, string, []chat.Attachment) error { return nil }
 func (s *fakeChatSession) Cancel() error                                         { return nil }
 func (s *fakeChatSession) Close() error                                          { close(s.done); return nil }
 func (s *fakeChatSession) SetConfigOption(context.Context, string, string) error { return nil }
@@ -94,4 +94,4 @@ func (s *fakeChatSession) IsResumed() bool                                      
 func (s *fakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *fakeChatSession) SetAutoApprove(bool)                                   {}
 func (s *fakeChatSession) SetUseActiveTerminal(bool)                             {}
-func (s *fakeChatSession) UseActiveTerminalEnabled() bool                         { return false }
+func (s *fakeChatSession) UseActiveTerminalEnabled() bool                        { return false }

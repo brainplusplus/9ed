@@ -309,6 +309,7 @@ function createFullSelection(
   }
 
   return {
+    tabId: tab.id,
     url: tab.url,
     title: tab.title,
     tagName: element.tagName,

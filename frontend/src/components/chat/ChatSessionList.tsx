@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useChatStore } from '../../stores/chat';
+import { sessionBelongsToWorkDir, useChatStore } from '../../stores/chat';
 import { deleteChatSession } from '../../api';
 import { useWorkspaceStore } from '../../stores/workspace';
 
@@ -98,8 +98,9 @@ export function ChatSessionList() {
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [open]);
 
-  const activeSessionIds = new Set(sessions.map((s) => s.id));
-  const activeAcpSessionIds = new Set(sessions.map((s) => s.acpSessionId).filter(Boolean));
+  const projectSessions = sessions.filter((session) => sessionBelongsToWorkDir(session, activeProject?.path));
+  const activeSessionIds = new Set(projectSessions.map((s) => s.id));
+  const activeAcpSessionIds = new Set(projectSessions.map((s) => s.acpSessionId).filter(Boolean));
   const pastSessions = historySessions.filter((h) => !activeSessionIds.has(h.id) && (!h.acpSessionId || !activeAcpSessionIds.has(h.acpSessionId)));
 
   const dropdownContent = useMemo(() => (
@@ -113,12 +114,12 @@ export function ChatSessionList() {
           ⚠ Restore failed: {lastRestoreError.reason}
         </div>
       )}
-      {sessions.length > 0 && (
+      {projectSessions.length > 0 && (
         <div className="chat-session-section-label">
           Active
         </div>
       )}
-      {sessions.map((session) => (
+      {projectSessions.map((session) => (
         <div
           key={session.id}
           className={`chat-session-row${session.id === activeSessionId ? ' active' : ''}`}
@@ -195,9 +196,9 @@ export function ChatSessionList() {
         </div>
       ))}
     </div>
-  ), [activeSessionId, deleteHistorySession, deleteSessionStore, lastRestoreError, loadHistorySession, overlayStyle, pastSessions, sessions, setActiveSession]);
+  ), [activeSessionId, deleteHistorySession, deleteSessionStore, lastRestoreError, loadHistorySession, overlayStyle, pastSessions, projectSessions, setActiveSession]);
 
-  const hasItems = sessions.length > 0 || pastSessions.length > 0;
+  const hasItems = projectSessions.length > 0 || pastSessions.length > 0;
   if (!hasItems) return null;
 
   return (

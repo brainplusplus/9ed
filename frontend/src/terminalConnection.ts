@@ -44,6 +44,19 @@ class TerminalConnection {
     }
   }
 
+  sendInput(data: string): void {
+    this.send({ type: 'input', data });
+  }
+
+  getScrollback(maxLines: number): string {
+    return this.outputBuffer
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .slice(-maxLines)
+      .join('\n')
+      .trimStart();
+  }
+
   dispose(): void {
     this.disposed = true;
     if (this.reconnectTimer) {

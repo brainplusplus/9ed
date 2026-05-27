@@ -1,9 +1,14 @@
 package httpapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -19,6 +24,18 @@ type browserSelectorRequest struct {
 
 type browserEvaluateRequest struct {
 	Expression string `json:"expression"`
+}
+
+type browserElementScreenshotRequest struct {
+	URL       string   `json:"url"`
+	Selectors []string `json:"selectors"`
+	Name      string   `json:"name,omitempty"`
+}
+
+type browserElementScreenshotResponse struct {
+	Path     string `json:"path"`
+	DataURL  string `json:"dataUrl"`
+	MimeType string `json:"mimeType"`
 }
 
 func (a *API) handleBrowserState(w http.ResponseWriter, r *http.Request) {
@@ -297,9 +314,40 @@ func (a *API) handleBrowserAutomationScreenshot(w http.ResponseWriter, r *http.R
 	_, _ = w.Write(data)
 }
 
+func (a *API) handleBrowserAutomationElementScreenshot(w http.ResponseWriter, r *http.Request) {
+	if !a.requireBrowser(w) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req browserElementScreenshotRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	data, err := a.browser.AutomationElementScreenshot(r.Context(), req.URL, req.Selectors...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	path, err := saveBrowserCapture(req.Name, data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, browserElementScreenshotResponse{
+		Path:     path,
+		DataURL:  "data:image/png;base64," + base64.StdEncoding.EncodeToString(data),
+		MimeType: "image/png",
+	})
+}
+
 func (a *API) requireBrowser(w http.ResponseWriter) bool {
 	if a.browser == nil {
-		http.Error(w, "browser is only available in full mode", http.StatusServiceUnavailable)
+		http.Error(w, "browser is disabled", http.StatusServiceUnavailable)
 		return false
 	}
 	return true
@@ -334,4 +382,42 @@ func splitBrowserProxyPath(rest string) (string, string) {
 		return id, "/"
 	}
 	return id, "/" + requestPath
+}
+
+func saveBrowserCapture(name string, data []byte) (string, error) {
+	base := strings.TrimSpace(name)
+	if base == "" {
+		base = "browser-selection"
+	}
+	base = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, base)
+
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		home = "."
+	}
+	dir := filepath.Join(home, ".9ed", "browser-captures")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%s-%d.png", base, time.Now().UnixMilli()))
+	if runtime.GOOS == "windows" {
+		path = filepath.Clean(path)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }

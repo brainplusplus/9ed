@@ -1,4 +1,4 @@
-import type { AppConfig, BrowserInspectResult, BrowserState, BrowserTab, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, BrowserInspectResult, BrowserState, BrowserTab, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, SettingsAboutInfo, SettingsTunnel, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
 const RESTORE_REQUEST_TIMEOUT_MS = 8000;
 const RESUME_REQUEST_TIMEOUT_MS = 30000;
@@ -65,6 +65,67 @@ export function createSessionWebSocket(sessionId: string, includeReplay = true):
 export async function getConfig(): Promise<AppConfig> {
   const response = await fetchWithTimeout('/api/config', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<AppConfig>(response);
+}
+
+export async function getSettingsAbout(): Promise<SettingsAboutInfo> {
+  const response = await fetchWithTimeout('/api/settings/about', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
+  return parseResponse<SettingsAboutInfo>(response);
+}
+
+export async function getSettingsTunnels(): Promise<SettingsTunnel[]> {
+  const response = await fetchWithTimeout('/api/settings/tunnels', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
+  return parseResponse<SettingsTunnel[]>(response);
+}
+
+export async function createSettingsTunnel(input: { name: string; localPort: string; engine?: string }): Promise<SettingsTunnel> {
+  const response = await fetch('/api/settings/tunnels', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<SettingsTunnel>(response);
+}
+
+export async function updateSettingsTunnel(id: string, input: { name: string; localPort: string; engine?: string }): Promise<SettingsTunnel> {
+  const response = await fetch(`/api/settings/tunnels/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<SettingsTunnel>(response);
+}
+
+export async function deleteSettingsTunnel(id: string): Promise<void> {
+  const response = await fetch(`/api/settings/tunnels/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to delete tunnel');
+  }
+}
+
+async function postTunnelAction(id: string, action: 'start' | 'stop' | 'restart'): Promise<SettingsTunnel> {
+  const response = await fetch(`/api/settings/tunnels/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  return parseResponse<SettingsTunnel>(response);
+}
+
+export function startSettingsTunnel(id: string): Promise<SettingsTunnel> {
+  return postTunnelAction(id, 'start');
+}
+
+export function stopSettingsTunnel(id: string): Promise<SettingsTunnel> {
+  return postTunnelAction(id, 'stop');
+}
+
+export function restartSettingsTunnel(id: string): Promise<SettingsTunnel> {
+  return postTunnelAction(id, 'restart');
 }
 
 export async function getDrives(): Promise<string[]> {
@@ -644,4 +705,14 @@ export async function navigateBrowserAutomation(url: string): Promise<BrowserIns
 export async function inspectBrowserAutomation(): Promise<BrowserInspectResult> {
   const response = await fetchWithTimeout('/api/browser/automation/inspect', { credentials: 'include' }, RESUME_REQUEST_TIMEOUT_MS);
   return parseResponse<BrowserInspectResult>(response);
+}
+
+export async function captureBrowserElementScreenshot(input: { url: string; selectors: string[]; name?: string }): Promise<{ path: string; dataUrl: string; mimeType: string }> {
+  const response = await fetch('/api/browser/automation/element-screenshot', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<{ path: string; dataUrl: string; mimeType: string }>(response);
 }

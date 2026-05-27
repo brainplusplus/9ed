@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="260" viewBox="0 0 960 260" role="img" aria-labelledby="title desc">
+  <title id="title">9ed logo</title>
+  <desc id="desc">A compact 9ed wordmark for a browser-based IDE with terminal, editor, and browser tools.</desc>
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f2335"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#89b4fa"/>
+      <stop offset="0.55" stop-color="#94e2d5"/>
+      <stop offset="1" stop-color="#f9e2af"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-30%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect width="960" height="260" rx="36" fill="#0b1020"/>
+  <g filter="url(#softShadow)">
+    <rect x="44" y="34" width="872" height="192" rx="24" fill="url(#panel)" stroke="#2e3654" stroke-width="2"/>
+    <rect x="44" y="34" width="872" height="42" rx="24" fill="#171b2d"/>
+    <path d="M68 76h824" stroke="#2e3654" stroke-width="2"/>
+    <circle cx="78" cy="55" r="6" fill="#f38ba8"/>
+    <circle cx="100" cy="55" r="6" fill="#f9e2af"/>
+    <circle cx="122" cy="55" r="6" fill="#a6e3a1"/>
+  </g>
+
+  <g transform="translate(87 104)">
+    <path d="M4 18 30 40 4 62" fill="none" stroke="#94e2d5" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M50 66h72" stroke="#f9e2af" stroke-width="12" stroke-linecap="round"/>
+  </g>
+
+  <g transform="translate(235 78)">
+    <text x="0" y="101" fill="#f8fafc" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="122" font-weight="800">9ed</text>
+    <path d="M22 126h206" stroke="url(#mark)" stroke-width="10" stroke-linecap="round"/>
+  </g>
+
+  <g transform="translate(568 92)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="0" y="0" width="118" height="86" rx="14" stroke="#89b4fa" stroke-width="8"/>
+    <path d="M25 25h68M25 45h48M25 65h60" stroke="#cdd6f4" stroke-width="7"/>
+  </g>
+
+  <g transform="translate(732 90)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="0" y="0" width="96" height="92" rx="16" stroke="#94e2d5" stroke-width="8"/>
+    <path d="M0 28h96" stroke="#94e2d5" stroke-width="8"/>
+    <path d="M29 61h38M48 42v38" stroke="#f9e2af" stroke-width="8"/>
+  </g>
+</svg>

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useWorkspaceStore } from '../stores/workspace';
-import { useChatStore } from '../stores/chat';
+import { sessionBelongsToWorkDir, useChatStore } from '../stores/chat';
 import { getWorkspaceState, saveWorkspaceState, getFileContent } from '../api';
 import type { WorkspaceState } from '../api';
 import type { FileTab } from '../types';
@@ -52,10 +52,11 @@ export function useWorkspaceStatePersistence() {
       if (!changed) return;
 
       const chatState = useChatStore.getState();
-      const activeChatSession = chatState.sessions.find((session) => session.id === chatState.activeSessionId) ?? null;
+      const activeChatSession = chatState.sessions.find((session) => (
+        session.id === chatState.activeSessionId && sessionBelongsToWorkDir(session, activeProject.path)
+      )) ?? null;
       const lastChatSessionId =
         activeChatSession?.recordId ??
-        chatState.activeSessionId ??
         lastKnownChatSessionByProject.get(activeProject.path);
       const wsState: WorkspaceState = {
         openFiles: activeProject.openFiles.map((f) => ({
@@ -86,10 +87,11 @@ export function useWorkspaceStatePersistence() {
       if (!activeProject) return;
       if (restoringProjects.has(activeProject.path)) return;
 
-      const activeChatSession = state.sessions.find((session) => session.id === state.activeSessionId) ?? null;
+      const activeChatSession = state.sessions.find((session) => (
+        session.id === state.activeSessionId && sessionBelongsToWorkDir(session, activeProject.path)
+      )) ?? null;
       const lastChatSessionId =
         activeChatSession?.recordId ??
-        state.activeSessionId ??
         lastKnownChatSessionByProject.get(activeProject.path);
       const wsState: WorkspaceState = {
         openFiles: activeProject.openFiles.map((f) => ({

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserAutomation, navigateBrowserAutomation, startBrowserAutomation } from '../api';
 import { useChatStore } from '../stores/chat';
+import { useWorkspaceStore } from '../stores/workspace';
 import { getTerminalHandle } from '../terminalRegistry';
 import { terminalCommandDialect, terminalShellLabel } from '../terminalIntegration';
 import type { Attachment } from '../components/chat/ChatInput';
-import type { BrowserElementSelection, ChatEvent, ChatSessionKind, CodeContext, TerminalContext } from '../types';
+import type { BrowserElementSelection, BrowserSelectionMode, ChatEvent, ChatSessionKind, CodeContext, TerminalContext } from '../types';
 import type { QueuedMessage } from '../stores/chat';
 
 const CONNECT_TIMEOUT_MS = 10000;
@@ -43,9 +44,9 @@ function isConnectableSession(session: { kind: ChatSessionKind; status?: string 
   return session.kind !== 'archived' && session.status !== 'error';
 }
 
-async function buildActiveBrowserContext(selection: BrowserElementSelection | null): Promise<string | null> {
+async function buildActiveBrowserContext(selection: BrowserElementSelection | null, mode: BrowserSelectionMode, preferredTabId?: string | null): Promise<string | null> {
   const state = await getBrowserState();
-  const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
+  const activeTab = state.tabs.find((tab) => tab.id === preferredTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
   if (!activeTab) {
     return null;
   }
@@ -73,7 +74,7 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
     lines.push(`Browser inspect status: ${error instanceof Error ? error.message : 'unavailable'}`);
   }
 
-  if (selection) {
+  if (selection && mode === 'detail') {
     lines.push('[Selected browser element]');
     lines.push(`Selector: ${selection.selector}`);
     if (selection.uniqueSelector) {
@@ -159,6 +160,8 @@ export function useChatSession(): UseChatSessionResult {
   const sessions = useChatStore((s) => s.sessions);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const browserSelection = useChatStore((s) => s.browserSelection);
+  const browserSelectionMode = useChatStore((s) => s.browserSelectionMode);
+  const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const addMessage = useChatStore((s) => s.addMessage);
@@ -467,6 +470,7 @@ export function useChatSession(): UseChatSessionResult {
       if (!activeSessionId) return;
       const conn = connectionsRef.current.get(activeSessionId);
       if (!conn?.ws || conn.ws.readyState !== WebSocket.OPEN) return;
+      const activeSession = useChatStore.getState().sessions.find((session) => session.id === activeSessionId);
 
       const displayContent = attachments?.length
         ? content + '\n\n' + attachments.map((a) => `ðŸ“Ž ${a.name}`).join('\n')
@@ -484,25 +488,49 @@ export function useChatSession(): UseChatSessionResult {
       setSessionStatus(activeSessionId, 'streaming');
 
       let outboundContent = content;
-      if (useActiveBrowser) {
+      const browserEnabled = activeSession?.useActiveBrowser ?? useActiveBrowser;
+      const browserSelectionForSession = activeSession?.browserSelection ?? browserSelection;
+      const browserSelectionModeForSession = activeSession?.browserSelectionMode ?? browserSelectionMode;
+      const browserSelectionCaptureForSession = activeSession?.browserSelectionCapture ?? browserSelectionCapture;
+      const effectiveBrowserSelectionMode: BrowserSelectionMode =
+        browserSelectionModeForSession === 'screenshot' && !browserSelectionCaptureForSession?.path
+          ? 'detail'
+          : browserSelectionModeForSession;
+      let outboundAttachments = attachments ? [...attachments] : undefined;
+      if (browserEnabled) {
         try {
-          const browserContext = await buildActiveBrowserContext(browserSelection);
+          const browserProject = useWorkspaceStore.getState().projects.find((project) => project.path === activeSession?.workDir);
+          const browserContext = await buildActiveBrowserContext(browserSelectionForSession, effectiveBrowserSelectionMode, browserProject?.activeBrowserTabId);
           if (browserContext) {
             outboundContent = `${browserContext}\n\n[User request]\n${content}`;
           }
         } catch {
         }
+
+        if (browserSelectionModeForSession === 'screenshot' && browserSelectionCaptureForSession?.path) {
+          outboundAttachments = [
+            ...(outboundAttachments ?? []),
+            {
+              type: 'image',
+              path: browserSelectionCaptureForSession.path,
+              name: browserSelectionCaptureForSession.name,
+              previewUrl: browserSelectionCaptureForSession.dataUrl,
+            } as Attachment,
+          ];
+        }
       }
 
       // Append terminal context if active
-      if (useActiveTerminal && activeTerminalId) {
+      const terminalIdForSession = activeSession?.terminalId ?? activeTerminalId;
+      const terminalEnabled = activeSession?.useActiveTerminal ?? useActiveTerminal;
+      if (terminalEnabled && terminalIdForSession) {
         try {
-          const handle = getTerminalHandle(activeTerminalId);
+          const handle = getTerminalHandle(terminalIdForSession);
           if (handle) {
             const maxLines = (await getConfig().catch(() => ({ terminalAiMaxLines: 100 }))).terminalAiMaxLines ?? 100;
             const scrollback = handle.getScrollback(maxLines || 10000);
             const terminalContext = buildActiveTerminalContext({
-              sessionId: activeTerminalId,
+              sessionId: terminalIdForSession,
               cwd: handle.cwd,
               shellType: handle.shellType,
               scrollback,
@@ -517,12 +545,12 @@ export function useChatSession(): UseChatSessionResult {
       if (context) {
         payload.context = context;
       }
-      if (attachments?.length) {
-        payload.attachments = attachments;
+      if (outboundAttachments?.length) {
+        payload.attachments = outboundAttachments;
       }
       conn.ws.send(JSON.stringify(payload));
     },
-    [activeSessionId, addMessage, browserSelection, setSessionStatus, useActiveBrowser, useActiveTerminal, activeTerminalId],
+    [activeSessionId, addMessage, browserSelection, browserSelectionCapture, browserSelectionMode, setSessionStatus, useActiveBrowser, useActiveTerminal, activeTerminalId],
   );
 
   sendQueuedRef.current = async (queued: QueuedMessage) => {

@@ -1,6 +1,4 @@
-import { useWorkspaceStore } from '../../stores/workspace';
-
-export type MobileView = 'explorer' | 'git' | 'editor' | 'terminal' | 'chat' | 'browser';
+export type MobileView = 'explorer' | 'git' | 'editor' | 'terminal' | 'chat' | 'browser' | 'settings';
 
 type BottomNavProps = {
   activeView: MobileView;
@@ -70,6 +68,15 @@ function BrowserIcon() {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="10" cy="10" r="2.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M10 3.2V5.1M10 14.9V16.8M16.8 10H14.9M5.1 10H3.2M14.95 5.05L13.6 6.4M6.4 13.6L5.05 14.95M14.95 14.95L13.6 13.6M6.4 6.4L5.05 5.05" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 const NAV_ITEMS: { view: MobileView; icon: React.ReactNode; label: string }[] = [
   { view: 'explorer', icon: <ExplorerIcon />, label: 'Files' },
   { view: 'git', icon: <GitIcon />, label: 'Git' },
@@ -84,9 +91,14 @@ const BROWSER_ITEM: { view: MobileView; icon: React.ReactNode; label: string } =
   label: 'Web',
 };
 
+const SETTINGS_ITEM: { view: MobileView; icon: React.ReactNode; label: string } = {
+  view: 'settings',
+  icon: <SettingsIcon />,
+  label: 'Prefs',
+};
+
 export function BottomNav({ activeView, onViewChange }: BottomNavProps) {
-  const browserEnabled = useWorkspaceStore((s) => s.browserEnabled);
-  const items = browserEnabled ? [...NAV_ITEMS, BROWSER_ITEM] : NAV_ITEMS;
+  const items = [...NAV_ITEMS, BROWSER_ITEM, SETTINGS_ITEM];
 
   return (
     <nav className="bottom-nav">

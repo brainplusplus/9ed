@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { BrowserElementSelection, ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
+import type { BrowserElementCapture, BrowserElementSelection, BrowserSelectionMode, ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
 import { getChatHistory, getChatSessionState, saveChatMessage, deleteChatHistory, getRestorableChatSession, resumeChatSession } from '../api';
+import { getTerminalConnection } from '../terminalConnection';
 import { getTerminalHandle } from '../terminalRegistry';
-import { useWorkspaceStore } from './workspace';
 
 export type ChatRestoreError = {
   sessionId: string;
@@ -58,6 +58,7 @@ function writeStoredAgents(agents: ChatAgent[], selectedAgentId: string | null):
 type ChatState = {
   sessions: ChatSessionInfo[];
   activeSessionId: string | null;
+  activeSessionByWorkDir: Record<string, string>;
   agents: ChatAgent[];
   selectedAgentId: string | null;
   chatVisible: boolean;
@@ -69,6 +70,8 @@ type ChatState = {
   autoApprove: boolean;
   useActiveBrowser: boolean;
   browserSelection: BrowserElementSelection | null;
+  browserSelectionMode: BrowserSelectionMode;
+  browserSelectionCapture: BrowserElementCapture | null;
   useActiveTerminal: boolean;
   activeTerminalId: string | null;
   restoring: boolean;
@@ -102,6 +105,8 @@ type ChatState = {
   toggleAutoApprove: () => void;
   toggleUseActiveBrowser: () => void;
   setBrowserSelection: (selection: BrowserElementSelection | null) => void;
+  setBrowserSelectionMode: (mode: BrowserSelectionMode) => void;
+  setBrowserSelectionCapture: (capture: BrowserElementCapture | null) => void;
   toggleUseActiveTerminal: () => void;
   setUseActiveTerminal: (enabled: boolean) => void;
   restartActiveSessionForTerminal: (enabled: boolean) => Promise<boolean>;
@@ -114,6 +119,36 @@ function updateSession(sessions: ChatSessionInfo[], id: string, updater: (s: Cha
 
 function findSessionByIdentity(sessions: ChatSessionInfo[], identity: string): ChatSessionInfo | undefined {
   return sessions.find((s) => s.id === identity || s.recordId === identity);
+}
+
+export function normalizeWorkDir(path?: string | null): string | null {
+  if (!path) return null;
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+export function sessionBelongsToWorkDir(session: Pick<ChatSessionInfo, 'workDir'>, workDir?: string | null): boolean {
+  return normalizeWorkDir(session.workDir) === normalizeWorkDir(workDir);
+}
+
+function findProjectSession(sessions: ChatSessionInfo[], projectPath: string): ChatSessionInfo | undefined {
+  return [...sessions].reverse().find((session) => sessionBelongsToWorkDir(session, projectPath));
+}
+
+function activateSessionState(state: ChatState, id: string | null): Partial<ChatState> {
+  if (!id) return { activeSessionId: null };
+
+  const session = findSessionByIdentity(state.sessions, id);
+  const workDir = normalizeWorkDir(session?.workDir);
+  if (!workDir) return { activeSessionId: id };
+
+  return {
+    activeSessionId: id,
+    activeSessionByWorkDir: {
+      ...state.activeSessionByWorkDir,
+      [workDir]: session?.id ?? id,
+    },
+  };
 }
 
 function shouldEnableTerminalForAgent(state: Pick<ChatState, 'useActiveTerminal' | 'activeTerminalId'>): boolean {
@@ -134,23 +169,28 @@ function fallbackTitle(agentId: string, title?: string): string {
   return title && title.trim() ? title : agentLabel;
 }
 
-function routeCommandToActiveTerminal(getState: () => ChatState, command: string): void {
+function routeCommandToSessionTerminal(getState: () => ChatState, sessionId: string, command: string): void {
   const cmd = command.trim();
   if (!cmd) return;
 
   const state = getState();
-  if (!state.useActiveTerminal || !state.activeTerminalId) return;
+  const session = findSessionByIdentity(state.sessions, sessionId);
+  const terminalId = session?.terminalId ?? (state.activeSessionId === sessionId ? state.activeTerminalId : null);
+  const terminalEnabled = session?.useActiveTerminal ?? (state.activeSessionId === sessionId ? state.useActiveTerminal : false);
+  if (!terminalEnabled || !terminalId) return;
 
   const now = Date.now();
   const lastRoutedAt = recentlyRoutedTerminalCommands.get(cmd) ?? 0;
   if (now - lastRoutedAt < TERMINAL_COMMAND_DEDUPE_MS) return;
   recentlyRoutedTerminalCommands.set(cmd, now);
 
-  const handle = getTerminalHandle(state.activeTerminalId);
-  if (!handle) return;
+  const handle = getTerminalHandle(terminalId);
+  if (handle) {
+    handle.sendCommand(cmd);
+    return;
+  }
 
-  useWorkspaceStore.getState().showTerminal();
-  handle.sendCommand(cmd);
+  getTerminalConnection(terminalId).sendInput(cmd + '\r');
 }
 
 function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
@@ -334,6 +374,7 @@ export function parseSnapshotJson<T>(json: string | undefined | null): T[] | und
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
+  activeSessionByWorkDir: {},
   agents: readStoredAgents().agents,
   selectedAgentId: readStoredAgents().selectedAgentId,
   chatVisible: false,
@@ -344,9 +385,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   includeIgnoredInMentions: false,
   autoApprove: false,
   useActiveBrowser: false,
+  browserSelectionMode: 'detail',
   useActiveTerminal: false,
   activeTerminalId: null,
   browserSelection: null,
+  browserSelectionCapture: null,
   restoring: false,
   lastRestoreError: null,
 
@@ -365,13 +408,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   createSession: (session) => {
     const normalized = { ...session, recordId: session.recordId ?? session.id, kind: session.kind ?? 'live' };
-    set((state) => ({
-      sessions: [...state.sessions.filter((s) => s.id !== normalized.id && s.recordId !== normalized.recordId), normalized],
-      activeSessionId: normalized.id,
-    }));
+    set((state) => {
+      const nextState = {
+        ...state,
+        sessions: [...state.sessions.filter((s) => s.id !== normalized.id && s.recordId !== normalized.recordId), normalized],
+      };
+      return {
+        sessions: nextState.sessions,
+        ...activateSessionState(nextState, normalized.id),
+      };
+    });
   },
 
-  setActiveSession: (id) => set({ activeSessionId: id }),
+  setActiveSession: (id) => set((state) => activateSessionState(state, id)),
 
   addMessage: (sessionId, message) => {
     set((state) => ({
@@ -519,7 +568,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case 'terminal_execute': {
             if (event.terminalCommand) {
-              routeCommandToActiveTerminal(get, event.terminalCommand);
+              routeCommandToSessionTerminal(get, sessionId, event.terminalCommand);
             }
             const toolCallId = event.toolCallId || `active-terminal-${Date.now().toString(36)}`;
             const idx = findLastIndex(msgs, (m: ChatMessage) => m.role === 'tool_call' && m.toolCall?.toolCallId === toolCallId);
@@ -576,10 +625,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteSession: (id) =>
     set((state) => {
+      const deleted = state.sessions.find((s) => s.id === id);
       const next = state.sessions.filter((s) => s.id !== id);
+      const fallback = deleted?.workDir
+        ? findProjectSession(next, deleted.workDir)
+        : next[0];
       return {
         sessions: next,
-        activeSessionId: state.activeSessionId === id ? (next[0]?.id ?? null) : state.activeSessionId,
+        ...(state.activeSessionId === id ? activateSessionState({ ...state, sessions: next }, fallback?.id ?? null) : {}),
       };
     }),
 
@@ -595,7 +648,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadHistorySession: async (sessionId: string) => {
     const existing = findSessionByIdentity(get().sessions, sessionId);
     if (existing) {
-      set({ activeSessionId: existing.id, lastRestoreError: null });
+      set((state) => ({
+        ...activateSessionState(state, existing.id),
+        lastRestoreError: null,
+      }));
       return;
     }
 
@@ -618,6 +674,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             kind: 'archived',
             workDir: historyEntry.workDir,
             acpSessionId: historyEntry.acpSessionId,
+            terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
           }],
         }));
         try {
@@ -650,6 +707,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         workDir: historyEntry?.workDir,
         acpSessionId,
         useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
+        terminalId: kind === 'resumable' && shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
@@ -659,9 +717,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
       set((state) => {
         const idsToRemove = new Set([sessionId, liveSessionId]);
+        const nextSessions = [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session];
+        const nextState = { ...state, sessions: nextSessions };
         return {
-          sessions: [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session],
-          activeSessionId: session.id,
+          sessions: nextSessions,
+          ...activateSessionState(nextState, session.id),
           lastRestoreError: kind === 'archived' ? state.lastRestoreError : null,
         };
       });
@@ -731,6 +791,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
 
       const terminalEnabled = shouldEnableTerminalForAgent(get());
+      const terminalId = terminalEnabled ? get().activeTerminalId ?? undefined : undefined;
       const resumed = await resumeChatSession(recordId, agentId, workDir, currentAcpSessionId, terminalEnabled);
       if (!('id' in resumed)) {
         set((state) => ({
@@ -757,10 +818,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           workDir: nextWorkDir,
           acpSessionId,
           useActiveTerminal: terminalEnabled,
+          terminalId,
         };
+        const nextSessions = [...state.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
+        const nextState = { ...state, sessions: nextSessions };
         return {
-          sessions: [...state.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession],
-          activeSessionId: state.activeSessionId === session.id ? liveSessionId : state.activeSessionId,
+          sessions: nextSessions,
+          ...(state.activeSessionId === session.id ? activateSessionState(nextState, liveSessionId) : {}),
         };
       });
       return true;
@@ -805,7 +869,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         restore = await getRestorableChatSession(projectPath);
       }
       if (!restore?.found || !restore.sessionId) {
-        set({ restoring: false });
+        const existingProjectSession = findProjectSession(get().sessions, projectPath);
+        set((state) => ({
+          ...activateSessionState(state, existingProjectSession?.id ?? null),
+          restoring: false,
+        }));
         return;
       }
 
@@ -824,7 +892,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const existing = findSessionByIdentity(get().sessions, targetSessionId);
       if (existing) {
-        set({ activeSessionId: existing.id, restoring: false, lastRestoreError: null });
+        set((state) => ({
+          ...activateSessionState(state, sessionBelongsToWorkDir(existing, projectPath)
+            ? existing.id
+            : (findProjectSession(get().sessions, projectPath)?.id ?? null)),
+          restoring: false,
+          lastRestoreError: null,
+        }));
         return;
       }
 
@@ -849,6 +923,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           kind: 'archived',
           workDir: restore.workDir ?? projectPath,
           acpSessionId: restore.acpSessionId,
+          terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
         }],
       }));
         try {
@@ -884,6 +959,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         workDir: restore.workDir ?? historyEntry?.workDir ?? projectPath,
         acpSessionId,
         useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
+        terminalId: kind === 'resumable' && shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
@@ -894,9 +970,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       set((state) => {
         const idsToRemove = new Set([targetSessionId, liveSessionId]);
+        const nextSessions = [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session];
+        const nextState = { ...state, sessions: nextSessions };
         return {
-          sessions: [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session],
-          activeSessionId: session.id,
+          sessions: nextSessions,
+          ...activateSessionState(nextState, session.id),
           restoring: false,
         };
       });
@@ -971,7 +1049,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({ useActiveBrowser: !state.useActiveBrowser })),
 
   setBrowserSelection: (selection) =>
-    set({ browserSelection: selection }),
+    set((state) => ({
+      browserSelection: selection,
+      browserSelectionCapture: null,
+      browserSelectionMode: selection ? state.browserSelectionMode : 'detail',
+      sessions: state.activeSessionId
+        ? updateSession(state.sessions, state.activeSessionId, (session) => ({
+            ...session,
+            browserSelection: selection,
+            browserSelectionCapture: null,
+            browserSelectionMode: selection ? (session.browserSelectionMode ?? state.browserSelectionMode) : 'detail',
+          }))
+        : state.sessions,
+    })),
+
+  setBrowserSelectionMode: (mode) =>
+    set((state) => ({
+      browserSelectionMode: mode,
+      sessions: state.activeSessionId
+        ? updateSession(state.sessions, state.activeSessionId, (session) => ({
+            ...session,
+            browserSelectionMode: mode,
+          }))
+        : state.sessions,
+    })),
+
+  setBrowserSelectionCapture: (capture) =>
+    set((state) => ({
+      browserSelectionCapture: capture,
+      sessions: state.activeSessionId
+        ? updateSession(state.sessions, state.activeSessionId, (session) => ({
+            ...session,
+            browserSelectionCapture: capture,
+          }))
+        : state.sessions,
+    })),
 
   toggleUseActiveTerminal: () =>
     set((state) => ({ useActiveTerminal: !state.useActiveTerminal })),
@@ -987,6 +1099,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!session.agentId || !session.workDir) return false;
 
     const previousEnabled = state.useActiveTerminal;
+    const terminalId = enabled ? state.activeTerminalId ?? undefined : undefined;
     set({ useActiveTerminal: enabled });
 
     if (session.useActiveTerminal === enabled) return true;
@@ -1020,10 +1133,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           workDir: nextWorkDir,
           acpSessionId,
           useActiveTerminal: enabled,
+          terminalId,
         };
+        const nextSessions = [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
+        const nextState = { ...current, sessions: nextSessions };
         return {
-          sessions: [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession],
-          activeSessionId: current.activeSessionId === session.id ? liveSessionId : current.activeSessionId,
+          sessions: nextSessions,
+          ...(current.activeSessionId === session.id ? activateSessionState(nextState, liveSessionId) : {}),
           lastRestoreError: null,
         };
       });

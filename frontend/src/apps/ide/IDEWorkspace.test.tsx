@@ -38,7 +38,6 @@ vi.mock('../../hooks/useWorkspaceStatePersistence', () => ({
 }));
 
 vi.mock('../../api', () => ({
-  getConfig: vi.fn().mockResolvedValue({ useBrowser: true }),
   getFileContent: vi.fn(),
   saveRecentProject: vi.fn(),
 }));
@@ -112,6 +111,10 @@ vi.mock('../../components/browser/BrowserPanel', () => ({
   BrowserPanel: () => <div data-testid="browser" />,
 }));
 
+vi.mock('../../components/settings/SettingsPanel', () => ({
+  SettingsPanel: () => <div data-testid="settings" />,
+}));
+
 vi.mock('../../components/shared/BottomNav', () => ({
   BottomNav: () => <div data-testid="bottom-nav" />,
 }));
@@ -138,7 +141,6 @@ function resetWorkspaceStore() {
     terminalVisible: true,
     chatVisible: true,
     browserVisible: false,
-    browserEnabled: true,
     showPicker: false,
   });
 }

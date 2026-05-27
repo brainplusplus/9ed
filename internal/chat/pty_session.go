@@ -105,16 +105,16 @@ func (s *ptySession) IsResumed() bool                        { return false }
 func (s *ptySession) RespondPermission(_ PermissionResponse) {}
 func (s *ptySession) SetAutoApprove(_ bool)                  {}
 func (s *ptySession) SetUseActiveTerminal(_ bool)            {}
-func (s *ptySession) UseActiveTerminalEnabled() bool          { return false }
+func (s *ptySession) UseActiveTerminalEnabled() bool         { return false }
 
 func (s *ptySession) SetConfigOption(_ context.Context, _, _ string) error {
 	return nil
 }
 
-func (s *ptySession) Send(_ context.Context, message string) error {
+func (s *ptySession) Send(_ context.Context, message string, attachments []Attachment) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.pty.Write([]byte(message + "\n"))
+	_, err := s.pty.Write([]byte(formatMessageWithAttachments(message, attachments, true) + "\n"))
 	return err
 }
 

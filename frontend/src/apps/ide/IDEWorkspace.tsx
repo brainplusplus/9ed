@@ -14,9 +14,10 @@ import { EditorArea } from '../../components/editor/EditorArea';
 import { TerminalPanel } from '../../components/terminal/TerminalPanel';
 import { ChatPanel } from '../../components/chat/ChatPanel';
 import { BrowserPanel } from '../../components/browser/BrowserPanel';
+import { SettingsPanel } from '../../components/settings/SettingsPanel';
 import { BottomNav, type MobileView } from '../../components/shared/BottomNav';
 import { ShortcutsHelp } from '../../components/shared/ShortcutsHelp';
-import { getConfig, getFileContent } from '../../api';
+import { getFileContent } from '../../api';
 import type { FileTab } from '../../types';
 
 export const recentSaveTimestamps = new Map<string, number>();
@@ -56,7 +57,6 @@ export function IDEWorkspace() {
   const terminalVisible = useWorkspaceStore((s) => s.terminalVisible);
   const chatVisible = useWorkspaceStore((s) => s.chatVisible);
   const browserVisible = useWorkspaceStore((s) => s.browserVisible);
-  const browserEnabled = useWorkspaceStore((s) => s.browserEnabled);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const projects = useWorkspaceStore((s) => s.projects);
   const openFile = useWorkspaceStore((s) => s.openFile);
@@ -64,22 +64,16 @@ export function IDEWorkspace() {
   const toggleTerminal = useWorkspaceStore((s) => s.toggleTerminal);
   const toggleChat = useWorkspaceStore((s) => s.toggleChat);
   const toggleBrowser = useWorkspaceStore((s) => s.toggleBrowser);
-  const setBrowserEnabled = useWorkspaceStore((s) => s.setBrowserEnabled);
   const setActivePanel = useWorkspaceStore((s) => s.setActivePanel);
 
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
 
-  // Load server config on mount to check browser availability.
-  useEffect(() => {
-    let alive = true;
-    getConfig().then((config) => {
-      if (alive) setBrowserEnabled(config.useBrowser);
-    }).catch(() => {});
-    return () => { alive = false; };
-  }, [setBrowserEnabled]);
-
   useWorkspaceStatePersistence();
   useGitStatus(activeProject?.path ?? null);
+
+  useEffect(() => {
+    document.title = `9ed - ${activeProject?.name ?? 'Project'}`;
+  }, [activeProject?.name]);
 
   const restoredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -225,7 +219,7 @@ export function IDEWorkspace() {
   const sidebarContent = (
     <>
       <div className="sidebar-header">
-        <strong>{activeProject?.name ?? 'No project'}</strong>
+        <strong>{activePanel === 'settings' ? 'Settings' : (activeProject?.name ?? 'No project')}</strong>
       </div>
       {activePanel === 'explorer' && activeProject && (
         <FileTree rootPath={activeProject.path} onFileSelect={handleFileSelect} refreshKey={treeRefreshKey} />
@@ -237,6 +231,7 @@ export function IDEWorkspace() {
         <GitPanel projectPath={activeProject.path} onOpenDiff={handleOpenDiff} />
       )}
       {activePanel === 'projects' && <ProjectList />}
+      {activePanel === 'settings' && <SettingsPanel />}
     </>
   );
 
@@ -257,7 +252,7 @@ export function IDEWorkspace() {
   const overlayOpen = layoutMode === 'tablet' && (
     sidebarVisible ||
     chatVisible ||
-    (browserVisible && browserEnabled)
+    browserVisible
   );
   const shellClass = [
     'workspace-shell',
@@ -266,8 +261,8 @@ export function IDEWorkspace() {
     sidebarVisible ? 'sidebar-open' : 'sidebar-closed',
     terminalVisible ? 'terminal-open' : 'terminal-closed',
     chatVisible ? 'chat-open' : 'chat-closed',
-    browserVisible && browserEnabled ? 'browser-open' : 'browser-closed',
-    browserEnabled ? 'browser-enabled' : 'browser-disabled',
+    browserVisible ? 'browser-open' : 'browser-closed',
+    'browser-enabled',
   ].join(' ');
 
   return (
@@ -286,7 +281,7 @@ export function IDEWorkspace() {
         />
       )}
       <div className="workspace-main ide-main">
-        <aside className="workspace-sidebar ide-sidebar" aria-hidden={layoutMode === 'mobile' && mobileView !== 'explorer' && mobileView !== 'git'}>
+        <aside className="workspace-sidebar ide-sidebar" aria-hidden={layoutMode === 'mobile' && mobileView !== 'explorer' && mobileView !== 'git' && mobileView !== 'settings'}>
           {sidebarContent}
         </aside>
         <main className="workspace-center ide-content">
@@ -294,7 +289,7 @@ export function IDEWorkspace() {
             <EditorArea />
           </section>
           <section className="workspace-browser" aria-hidden={layoutMode === 'mobile' ? mobileView !== 'browser' : !browserVisible}>
-            {browserEnabled && <BrowserPanel />}
+            <BrowserPanel />
           </section>
           <section className="workspace-terminal ide-terminal-area" aria-hidden={layoutMode === 'mobile' && mobileView !== 'terminal'}>
             <TerminalPanel />
@@ -308,6 +303,7 @@ export function IDEWorkspace() {
         setMobileView(view);
         if (view === 'explorer') setActivePanel('explorer');
         if (view === 'git') setActivePanel('git');
+        if (view === 'settings') setActivePanel('settings');
       }} />
       {helpOverlay}
     </div>

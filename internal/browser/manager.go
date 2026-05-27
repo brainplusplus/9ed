@@ -264,6 +264,37 @@ func (m *Manager) AutomationScreenshot(ctx context.Context) ([]byte, error) {
 	return page.Screenshot(playwright.PageScreenshotOptions{FullPage: &fullPage})
 }
 
+func (m *Manager) AutomationElementScreenshot(ctx context.Context, rawURL string, selectors ...string) ([]byte, error) {
+	page, err := m.automationPage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(rawURL) != "" {
+		target, err := NormalizeURL(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		if page.URL() != target.String() {
+			if _, err := page.Goto(target.String()); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for _, selector := range selectors {
+		selector = strings.TrimSpace(selector)
+		if selector == "" {
+			continue
+		}
+		shot, err := page.Locator(selector).Screenshot(playwright.LocatorScreenshotOptions{})
+		if err == nil {
+			return shot, nil
+		}
+	}
+
+	return nil, fmt.Errorf("failed to capture selected element screenshot")
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

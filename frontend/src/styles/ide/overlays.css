@@ -370,6 +370,7 @@
 
   .mobile-view-explorer .workspace-sidebar,
   .mobile-view-git .workspace-sidebar,
+  .mobile-view-settings .workspace-sidebar,
   .mobile-view-editor .workspace-editor,
   .mobile-view-terminal .workspace-terminal,
   .mobile-view-chat .workspace-chat,

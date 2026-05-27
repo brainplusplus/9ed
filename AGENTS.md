@@ -32,7 +32,7 @@ go test ./internal/chat/ -run TestCreateAndListSessions
 - **Frontend**: React 18 + Vite + Monaco Editor + xterm.js + Zustand (state).
 - **Module name**: `github.com/brainplusplus/9ed` (import as `github.com/brainplusplus/9ed/internal/...`).
 - **Entry point**: `cmd/server/main.go` — loads `.env`, autokills existing port process, starts HTTP server.
-- **Two modes**: `MODE=simple` (terminal only) vs `MODE=full` (IDE with file explorer, git, chat). Controlled by env var. "full" features are gated behind `cfg.Mode == "full"` checks in `internal/server/server.go`.
+- **Single mode**: 9ed always starts as the full Web IDE with file explorer, git, chat, terminal, and workspace features enabled. There is no runtime mode environment variable.
 
 ### Backend layout (`internal/`)
 
@@ -57,19 +57,19 @@ go test ./internal/chat/ -run TestCreateAndListSessions
 
 | Path | Purpose |
 |------|---------|
-| `apps/ide/` | IDE mode entry (workspace, project picker) |
-| `apps/terminal/` | Simple terminal mode |
+| `apps/ide/` | Web IDE entry (workspace, project picker) |
 | `components/editor/` | Monaco editor, diff view, tab management |
 | `components/git/` | Git panel, status, branches, stash, diff |
 | `components/chat/` | Chat UI, agent picker, permission dialog, message queue |
 | `components/sidebar/` | File tree, search, activity bar |
+| `components/settings/` | Global settings panel for tunnel management and about info |
 | `components/terminal/` | xterm.js terminal panel, tabs per project with scrollback replay |
 | `components/browser/` | Browser panel, inspect overlay (4-layer box model), element selection |
 | `stores/` | Zustand stores (workspace, git, chat) |
 | `hooks/` | Custom hooks |
 | `config/` | Monaco language setup (TS/JS diagnostics, Vue/Svelte) |
 
-Vite builds two entry points: `frontend/index.html` (terminal) and `frontend/ide.html` (IDE). Normal frontend output goes to `dist/`. Release binaries use `npm run binary:build`, which builds the frontend into `internal/webassets/dist/` and embeds it with the `embedassets` Go build tag.
+Vite builds the Web IDE entry point at `frontend/ide.html`. Normal frontend output goes to `dist/`. Release binaries use `npm run binary:build`, which builds the frontend into `internal/webassets/dist/` and embeds it with the `embedassets` Go build tag.
 
 ## Key Facts for Agents
 
@@ -89,12 +89,10 @@ Vite builds two entry points: `frontend/index.html` (terminal) and `frontend/ide
 | `BASIC_AUTH_USERNAME` | **Yes** | — | Server won't start without it |
 | `BASIC_AUTH_PASSWORD` | **Yes** | — | Server won't start without it |
 | `PORT` | No | `8080` | |
-| `MODE` | No | `simple` | `simple` or `full` |
 | `WORKSPACE_ROOT` | No | cwd | Default workspace directory |
 | `AUTOKILL_PORT` | No | `true` | Kill existing process on port before start |
 | `TUNNEL` | No | `true` | Auto-start tunnel for public access. Requires `cloudflared` or `bore` binary |
-| `TUNNEL_ENGINE` | No | `bore` | Tunnel engine: `bore` (fixed port) or `cloudflare` (random URL) |
-| `USE_BROWSER` | No | `false` | Enable in-app browser panel (requires Chrome/Edge/Chromium) |
+| `TUNNEL_ENGINE` | No | `cloudflare` | Tunnel engine: `bore` (fixed port) or `cloudflare` (random URL) |
 | `TERMINAL_AI_MAX_LINES` | No | `100` | Max terminal lines sent to AI as context |
 | `DEBUG` | No | `false` | Enable verbose debug logging (watcher events, WebSocket, cloudflared output) |
 | `DEBUG_WATCHER` | No | `false` | Enable watcher-specific debug logs (requires DEBUG=true) |

@@ -125,6 +125,13 @@ describe('ChatPanel new chat', () => {
       newChatButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
+    const agentButton = document.body.querySelector('.chat-agent-create-item');
+    expect(agentButton).not.toBeNull();
+
+    await act(async () => {
+      agentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
     expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo', false);
   });
 
