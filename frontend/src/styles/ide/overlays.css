@@ -115,6 +115,12 @@
   border-top: 1px solid var(--border-color);
 }
 
+.bottom-nav-more-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+
 .bottom-nav-btn {
   flex: 1;
   display: flex;
@@ -140,6 +146,46 @@
 
 .bottom-nav-label {
   font-size: 0.65rem;
+}
+
+.bottom-nav-more-menu {
+  position: absolute;
+  right: 8px;
+  bottom: calc(100% + 10px);
+  min-width: 180px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(137, 180, 250, 0.16);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(30, 30, 46, 0.98), rgba(17, 24, 39, 0.98));
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
+  z-index: 120;
+}
+
+.bottom-nav-more-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--sidebar-fg);
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.bottom-nav-more-item.active {
+  border-color: rgba(137, 180, 250, 0.28);
+  background: rgba(137, 180, 250, 0.14);
+}
+
+.bottom-nav-more-item:hover {
+  background: rgba(255, 255, 255, 0.07);
 }
 
 /* Tablet layout */
@@ -369,6 +415,7 @@
   }
 
   .mobile-view-explorer .workspace-sidebar,
+  .mobile-view-projects .workspace-sidebar,
   .mobile-view-git .workspace-sidebar,
   .mobile-view-settings .workspace-sidebar,
   .mobile-view-editor .workspace-editor,

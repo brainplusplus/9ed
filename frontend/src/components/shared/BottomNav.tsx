@@ -1,4 +1,6 @@
-export type MobileView = 'explorer' | 'git' | 'editor' | 'terminal' | 'chat' | 'browser' | 'settings';
+import { useEffect, useRef, useState } from 'react';
+
+export type MobileView = 'explorer' | 'projects' | 'git' | 'editor' | 'terminal' | 'chat' | 'browser' | 'settings';
 
 type BottomNavProps = {
   activeView: MobileView;
@@ -11,6 +13,14 @@ function ExplorerIcon() {
       <rect x="2" y="3" width="7" height="9" rx="1" stroke="currentColor" strokeWidth="1.4" />
       <rect x="6" y="8" width="7" height="9" rx="1" stroke="currentColor" strokeWidth="1.4" />
       <rect x="11" y="3" width="7" height="14" rx="1" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+function ProjectsIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M2 5 L2 16 L18 16 L18 5 L11 5 L9.5 3 L2 3 Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -77,6 +87,16 @@ function SettingsIcon() {
   );
 }
 
+function MoreIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="5" cy="10" r="1.6" fill="currentColor" />
+      <circle cx="10" cy="10" r="1.6" fill="currentColor" />
+      <circle cx="15" cy="10" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
 const NAV_ITEMS: { view: MobileView; icon: React.ReactNode; label: string }[] = [
   { view: 'explorer', icon: <ExplorerIcon />, label: 'Files' },
   { view: 'git', icon: <GitIcon />, label: 'Git' },
@@ -85,34 +105,70 @@ const NAV_ITEMS: { view: MobileView; icon: React.ReactNode; label: string }[] = 
   { view: 'chat', icon: <ChatIcon />, label: 'Chat' },
 ];
 
-const BROWSER_ITEM: { view: MobileView; icon: React.ReactNode; label: string } = {
-  view: 'browser',
-  icon: <BrowserIcon />,
-  label: 'Web',
-};
-
-const SETTINGS_ITEM: { view: MobileView; icon: React.ReactNode; label: string } = {
-  view: 'settings',
-  icon: <SettingsIcon />,
-  label: 'Prefs',
-};
+const OVERFLOW_ITEMS: { view: MobileView; icon: React.ReactNode; label: string }[] = [
+  { view: 'projects', icon: <ProjectsIcon />, label: 'Projects' },
+  { view: 'browser', icon: <BrowserIcon />, label: 'Web' },
+  { view: 'settings', icon: <SettingsIcon />, label: 'Prefs' },
+];
 
 export function BottomNav({ activeView, onViewChange }: BottomNavProps) {
-  const items = [...NAV_ITEMS, BROWSER_ITEM, SETTINGS_ITEM];
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    function handlePointerDown(event: MouseEvent) {
+      if (moreRef.current && event.target instanceof Node && !moreRef.current.contains(event.target)) {
+        setMoreOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [moreOpen]);
 
   return (
     <nav className="bottom-nav">
-      {items.map((item) => (
+      {NAV_ITEMS.map((item) => (
         <button
           key={item.view}
           className={`bottom-nav-btn${activeView === item.view ? ' active' : ''}`}
           onClick={() => onViewChange(item.view)}
           aria-label={item.label}
+          type="button"
         >
           <span>{item.icon}</span>
           <span className="bottom-nav-label">{item.label}</span>
         </button>
       ))}
+      <div ref={moreRef} className="bottom-nav-more-wrap">
+        {moreOpen && (
+          <div className="bottom-nav-more-menu">
+            {OVERFLOW_ITEMS.map((item) => (
+              <button
+                key={item.view}
+                className={`bottom-nav-more-item${activeView === item.view ? ' active' : ''}`}
+                onClick={() => {
+                  setMoreOpen(false);
+                  onViewChange(item.view);
+                }}
+                type="button"
+              >
+                <span>{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          className={`bottom-nav-btn${OVERFLOW_ITEMS.some((item) => item.view === activeView) ? ' active' : ''}`}
+          onClick={() => setMoreOpen((open) => !open)}
+          aria-label="More"
+          type="button"
+        >
+          <span><MoreIcon /></span>
+          <span className="bottom-nav-label">More</span>
+        </button>
+      </div>
     </nav>
   );
 }

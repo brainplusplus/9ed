@@ -281,7 +281,7 @@ export function IDEWorkspace() {
         />
       )}
       <div className="workspace-main ide-main">
-        <aside className="workspace-sidebar ide-sidebar" aria-hidden={layoutMode === 'mobile' && mobileView !== 'explorer' && mobileView !== 'git' && mobileView !== 'settings'}>
+        <aside className="workspace-sidebar ide-sidebar" aria-hidden={layoutMode === 'mobile' && mobileView !== 'explorer' && mobileView !== 'projects' && mobileView !== 'git' && mobileView !== 'settings'}>
           {sidebarContent}
         </aside>
         <main className="workspace-center ide-content">
@@ -302,6 +302,7 @@ export function IDEWorkspace() {
       <BottomNav activeView={mobileView} onViewChange={(view) => {
         setMobileView(view);
         if (view === 'explorer') setActivePanel('explorer');
+        if (view === 'projects') setActivePanel('projects');
         if (view === 'git') setActivePanel('git');
         if (view === 'settings') setActivePanel('settings');
       }} />
