@@ -455,9 +455,11 @@
 }
 
 .chat-composer-shell {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: stretch;
+  width: 100%;
   padding: 8px 10px;
   border: 1px solid rgba(137, 180, 250, 0.12);
   border-radius: 12px;
@@ -475,7 +477,7 @@
 .chat-composer-actions {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  align-items: center;
   flex-shrink: 0;
 }
 
@@ -732,13 +734,14 @@
   }
 
   .chat-composer-shell {
-    flex-direction: column;
-    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
     padding: 5px 6px;
   }
 
   .chat-composer-actions {
-    justify-content: space-between;
+    justify-content: flex-end;
+    gap: 6px;
   }
 
   .chat-attach-btn,

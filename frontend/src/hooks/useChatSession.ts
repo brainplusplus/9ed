@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserAutomation, navigateBrowserAutomation, startBrowserAutomation } from '../api';
+import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserAutomation, isBackendTemporarilyUnavailable, navigateBrowserAutomation, startBrowserAutomation } from '../api';
 import { useChatStore } from '../stores/chat';
 import { useWorkspaceStore } from '../stores/workspace';
 import { getTerminalHandle } from '../terminalRegistry';
@@ -283,6 +283,15 @@ export function useChatSession(): UseChatSessionResult {
     const connect = async () => {
       if (conn.disposed) return;
       if (conn.connecting) return;
+      if (isBackendTemporarilyUnavailable()) {
+        const delay = RECONNECT_DELAYS_MS[Math.min(conn.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+        conn.reconnectAttempts += 1;
+        conn.reconnectTimer = window.setTimeout(() => {
+          conn.reconnectTimer = undefined;
+          void connect();
+        }, delay);
+        return;
+      }
       const session = getLiveSession();
       if (!session || !isConnectableSession(session)) {
         stopConnection(sessionId);
@@ -306,9 +315,18 @@ export function useChatSession(): UseChatSessionResult {
           }
           return;
         }
-      } catch {
+      } catch (error) {
         if (seq !== conn.seq || conn.disposed) return;
         conn.connecting = false;
+        if (isBackendTemporarilyUnavailable()) {
+          const delay = RECONNECT_DELAYS_MS[Math.min(conn.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+          conn.reconnectAttempts += 1;
+          conn.reconnectTimer = window.setTimeout(() => {
+            conn.reconnectTimer = undefined;
+            void connect();
+          }, delay);
+          return;
+        }
         setSessionStatus(sessionId, 'error');
         stopConnection(sessionId);
         return;

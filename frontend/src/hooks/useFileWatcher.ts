@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isBackendTemporarilyUnavailable } from '../api';
 
 type FileEvent = {
   type: 'create' | 'modify' | 'delete' | 'rename';
@@ -89,6 +90,10 @@ export function useFileWatcher({ root, onFileChange }: UseFileWatcherOptions) {
 
     function connect() {
       if (disposed) return;
+      if (isBackendTemporarilyUnavailable()) {
+        scheduleReconnect();
+        return;
+      }
       const token = ++connectionToken;
 
       ws = new WebSocket(url);

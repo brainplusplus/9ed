@@ -66,12 +66,28 @@ function installClipboardFallback() {
   if (typeof navigator === 'undefined') return;
 
   const existing = navigator.clipboard as ClipboardLike | undefined;
-  if (existing?.write && existing.writeText) return;
-
   const clipboard: ClipboardLike = {
     ...existing,
-    writeText: existing?.writeText?.bind(existing) ?? writeTextWithSelection,
-    write: existing?.write?.bind(existing) ?? writeClipboardItems,
+    writeText: async (text: string) => {
+      try {
+        if (existing?.writeText) {
+          await existing.writeText.call(existing, text);
+          return;
+        }
+      } catch {
+      }
+      await writeTextWithSelection(text);
+    },
+    write: async (items: ClipboardItem[]) => {
+      try {
+        if (existing?.write) {
+          await existing.write.call(existing, items);
+          return;
+        }
+      } catch {
+      }
+      await writeClipboardItems(items);
+    },
   };
 
   Object.defineProperty(navigator, 'clipboard', {
@@ -81,7 +97,7 @@ function installClipboardFallback() {
 }
 
 async function writeClipboardItems(items: ClipboardItem[]) {
-  const text = await readPlainTextClipboardItem(items);
+  const text = await readPlainTextClipboardItem(items).catch(() => '');
   await writeTextWithSelection(text);
 }
 

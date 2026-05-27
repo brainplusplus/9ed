@@ -62,6 +62,10 @@ export const useGitStore = create<GitState>((set, get) => ({
         set({ loading: false });
       }
     } catch (e) {
+      if (e instanceof Error && e.message === 'Backend temporarily unavailable') {
+        set({ loading: false });
+        return;
+      }
       set({ loading: false, error: e instanceof Error ? e.message : 'Git refresh failed' });
     }
   },

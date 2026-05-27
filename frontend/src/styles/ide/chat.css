@@ -14,10 +14,11 @@
 .chat-message-context { background: var(--activity-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 10px; font-size: 0.75rem; margin-bottom: 4px; cursor: pointer; }
 .chat-message-context-header { color: var(--activity-fg); font-size: 0.72rem; }
 .chat-input-area { padding: 8px 12px; border-top: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 6px; position: relative; flex-shrink: 0; }
-.chat-composer-shell { display: flex; gap: 6px; align-items: flex-end; }
+.chat-composer-shell { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; width: 100%; }
+.chat-textarea-wrap { min-width: 0; width: 100%; }
 .chat-textarea { flex: 1; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--activity-bg); color: var(--sidebar-fg); font-size: 0.85rem; resize: none; min-height: 36px; max-height: 120px; font-family: inherit; line-height: 1.4; }
 .chat-send-btn { padding: 6px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--sidebar-hover); color: var(--sidebar-fg); cursor: pointer; font-size: 0.85rem; white-space: nowrap; flex-shrink: 0; }
-.chat-composer-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.chat-composer-actions { display: flex; gap: 4px; flex-shrink: 0; align-items: center; }
 .chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-send-btn.stop { background: #45273a; border-color: #f38ba8; color: #f38ba8; }
 .chat-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--activity-fg); font-size: 0.85rem; text-align: center; padding: 24px; flex-direction: column; gap: 8px; }

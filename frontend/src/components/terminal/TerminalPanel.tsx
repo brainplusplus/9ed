@@ -9,6 +9,16 @@ import type { SessionTab, ShellProfile, TerminalAction } from '../../types';
 
 const TERMINAL_SCROLLBACK_MAX_BYTES = 200_000;
 
+function ClearTerminalIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6 3H13.5V13H2.5V6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 2.5V6.5H6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 6.5L6.5 2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function TerminalPanel() {
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const projects = useWorkspaceStore((s) => s.projects);
@@ -169,7 +179,7 @@ export function TerminalPanel() {
             title="Clear Terminal — clear terminal output, keep active prompt"
             disabled={!activeTabId}
           >
-            <span className="terminal-clear-btn-icon" aria-hidden="true">⌫</span>
+            <span className="terminal-clear-btn-icon" aria-hidden="true"><ClearTerminalIcon /></span>
           </button>
           <div className={`terminal-new-menu-wrap${shellMenuOpen ? ' open' : ''}`} ref={shellMenuRef}>
             <button

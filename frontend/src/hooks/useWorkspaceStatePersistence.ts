@@ -32,7 +32,7 @@ export function useWorkspaceStatePersistence() {
       if (state.lastChatSessionId) {
         lastKnownChatSessionByProject.set(projectPath, state.lastChatSessionId);
       }
-      void saveWorkspaceState(projectPath, state);
+      void saveWorkspaceState(projectPath, state).catch(() => undefined);
     }, 1000);
   };
 

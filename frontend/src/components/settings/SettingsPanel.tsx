@@ -54,7 +54,10 @@ export function SettingsPanel() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load tunnels');
+          const message = err instanceof Error ? err.message : 'Failed to load tunnels';
+          if (message !== 'Backend temporarily unavailable') {
+            setError(message);
+          }
         }
       } finally {
         if (!cancelled && initial) setLoading(false);
@@ -111,7 +114,10 @@ export function SettingsPanel() {
       resetForm();
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save tunnel');
+      const message = err instanceof Error ? err.message : 'Failed to save tunnel';
+      if (message !== 'Backend temporarily unavailable') {
+        setError(message);
+      }
     } finally {
       setFormBusy(false);
     }
@@ -130,7 +136,10 @@ export function SettingsPanel() {
       }
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${action} tunnel`);
+      const message = err instanceof Error ? err.message : `Failed to ${action} tunnel`;
+      if (message !== 'Backend temporarily unavailable') {
+        setError(message);
+      }
     } finally {
       setActionBusyId(null);
     }

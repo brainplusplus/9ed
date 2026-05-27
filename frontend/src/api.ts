@@ -3,12 +3,38 @@ import type { AppConfig, BrowserInspectResult, BrowserState, BrowserTab, ChatAge
 const RESTORE_REQUEST_TIMEOUT_MS = 8000;
 const RESUME_REQUEST_TIMEOUT_MS = 30000;
 const SHORT_REQUEST_TIMEOUT_MS = 5000;
+const BACKEND_UNAVAILABLE_COOLDOWN_MS = 3000;
+
+let backendUnavailableUntil = 0;
+
+function markBackendUnavailable() {
+  backendUnavailableUntil = Date.now() + BACKEND_UNAVAILABLE_COOLDOWN_MS;
+}
+
+export function isBackendTemporarilyUnavailable(): boolean {
+  return Date.now() < backendUnavailableUntil;
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof DOMException && error.name === 'AbortError')
+  );
+}
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = RESTORE_REQUEST_TIMEOUT_MS): Promise<Response> {
+  if (isBackendTemporarilyUnavailable()) {
+    throw new Error('Backend temporarily unavailable');
+  }
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (isRetryableNetworkError(error)) {
+      markBackendUnavailable();
+    }
+    throw error;
   } finally {
     window.clearTimeout(timer);
   }
@@ -591,12 +617,20 @@ export async function getWorkspaceState(projectPath: string): Promise<WorkspaceS
 }
 
 export async function saveWorkspaceState(projectPath: string, state: WorkspaceState): Promise<void> {
-  await fetch('/api/workspace/state', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectPath, state }),
-  });
+  if (isBackendTemporarilyUnavailable()) return;
+  try {
+    await fetch('/api/workspace/state', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectPath, state }),
+    });
+  } catch (error) {
+    if (isRetryableNetworkError(error)) {
+      markBackendUnavailable();
+    }
+    throw error;
+  }
 }
 
 export type RecentProject = { path: string; name: string; lastOpened: number };
