@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/brainplusplus/9ed/internal/config"
 )
@@ -21,6 +22,7 @@ func TestServerHandlerRequiresBasicAuthForSPA(t *testing.T) {
 		BasicAuthUsername: "alice",
 		BasicAuthPassword: "secret",
 	})
+	defer srv.Shutdown()
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -41,6 +43,7 @@ func TestServerHandlerServesSPAAndStaticAssetsWhenAuthenticated(t *testing.T) {
 		BasicAuthUsername: "alice",
 		BasicAuthPassword: "secret",
 	})
+	defer srv.Shutdown()
 
 	indexReq := httptest.NewRequest(http.MethodGet, "/", nil)
 	indexReq.SetBasicAuth("alice", "secret")
@@ -76,6 +79,7 @@ func TestServerHandlerReturns404ForMissingAssetInsteadOfSPAHTML(t *testing.T) {
 		BasicAuthUsername: "alice",
 		BasicAuthPassword: "secret",
 	})
+	defer srv.Shutdown()
 
 	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
 	req.SetBasicAuth("alice", "secret")
@@ -139,6 +143,7 @@ func TestServerHandlerExemptsActiveTerminalMCPFromBasicAuth(t *testing.T) {
 		BasicAuthUsername: "alice",
 		BasicAuthPassword: "secret",
 	})
+	defer srv.Shutdown()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat/terminal/run", nil)
 	rec := httptest.NewRecorder()
@@ -155,7 +160,10 @@ func TestServerHandlerExemptsActiveTerminalMCPFromBasicAuth(t *testing.T) {
 func setupTestDist(t *testing.T) string {
 	t.Helper()
 
-	root := t.TempDir()
+	root, err := os.MkdirTemp("", t.Name())
+	if err != nil {
+		t.Fatalf("MkdirTemp returned error: %v", err)
+	}
 	dist := filepath.Join(root, "dist")
 	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
@@ -187,5 +195,20 @@ func withWorkingDirectory(t *testing.T, dir string) {
 		if err := os.Chdir(previous); err != nil {
 			t.Fatalf("restoring working directory failed: %v", err)
 		}
+		if err := removeAllWithRetry(dir); err != nil {
+			t.Logf("removing test working directory failed: %v", err)
+		}
 	})
+}
+
+func removeAllWithRetry(path string) error {
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		err = os.RemoveAll(path)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+	}
+	return err
 }

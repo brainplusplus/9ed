@@ -39,8 +39,8 @@ func TestRewriteProxyHTMLRewritesRootRelativeAssetsAndInjectsRuntime(t *testing.
 	if strings.Contains(html, `history.replaceState`) {
 		t.Fatalf("proxy runtime must not move the iframe out of the proxy URL, got %q", html)
 	}
-	if !strings.Contains(html, `window.location.origin+"/"`) {
-		t.Fatalf("expected runtime patch to normalize same-origin absolute URLs, got %q", html)
+	if !strings.Contains(html, `_proxy/`) {
+		t.Fatalf("expected runtime patch to normalize external URLs through tab proxy, got %q", html)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestRewriteProxyLocationRewritesAbsoluteAndRootRelativeLocations(t *testing
 	if got := rewriteProxyLocation("/login", prefix); got != "/browser/browser-1/login" {
 		t.Fatalf("rewriteProxyLocation(root-relative) = %q", got)
 	}
-	if got := rewriteProxyLocation("https://example.com/dashboard?x=1", prefix); got != "/browser/browser-1/dashboard?x=1" {
+	if got := rewriteProxyLocation("https://example.com/dashboard?x=1", prefix); got != "/browser/browser-1/_proxy/https/example.com/dashboard?x=1" {
 		t.Fatalf("rewriteProxyLocation(absolute) = %q", got)
 	}
 	if got := rewriteProxyLocation("settings", prefix); got != "settings" {
@@ -116,8 +116,69 @@ func TestHandleBrowserProxyRewritesHTMLResponses(t *testing.T) {
 	}
 }
 
+func TestHandleBrowserExternalProxyForwardsRequestAndStoresCookies(t *testing.T) {
+	seenCookie := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/log" {
+			t.Fatalf("unexpected upstream path %q", r.URL.Path)
+		}
+		if r.URL.RawQuery != "format=json&hasfast=true" {
+			t.Fatalf("unexpected upstream query %q", r.URL.RawQuery)
+		}
+		seenCookie = r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "application/json")
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "abc123"})
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	manager := browser.NewManager()
+	tab, err := manager.CreateTab("https://www.google.com")
+	if err != nil {
+		t.Fatalf("CreateTab() error = %v", err)
+	}
+	target := strings.TrimPrefix(upstream.URL, "http://")
+
+	api := New(Dependencies{Browser: manager})
+	req := httptest.NewRequest(http.MethodGet, "/browser/"+tab.ID+"/_proxy/http/"+target+"/log?format=json&hasfast=true", nil)
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != `{"ok":true}` {
+		t.Fatalf("expected proxied response body, got %q", body)
+	}
+	if got := rec.Header().Get("Set-Cookie"); got != "" {
+		t.Fatalf("expected remote Set-Cookie to stay in backend jar, got %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/browser/"+tab.ID+"/_proxy/http/"+target+"/log?format=json&hasfast=true", nil)
+	rec = httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+
+	if seenCookie != "sid=abc123" {
+		t.Fatalf("expected backend cookie jar to replay target cookie, got %q", seenCookie)
+	}
+}
+
+func TestHandleBrowserExternalProxyRequiresKnownTab(t *testing.T) {
+	manager := browser.NewManager()
+	api := New(Dependencies{Browser: manager})
+	req := httptest.NewRequest(http.MethodGet, "/browser/missing/_proxy/https/example.com/path", nil)
+	rec := httptest.NewRecorder()
+
+	api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 without browser referer, got %d", rec.Code)
+	}
+}
+
 func TestRewriteProxyCSSRewritesRootRelativeURLs(t *testing.T) {
-	input := []byte(`@font-face{src:url('/cf-fonts/v/inter/normal.woff2')} .hero{background-image:url(/images/hero.png)}`)
+	input := []byte(`@font-face{src:url('/cf-fonts/v/inter/normal.woff2')} .hero{background-image:url(/images/hero.png)} .cdn{background:url(https://cdn.example.com/a.png)}`)
 
 	output := string(rewriteProxyCSS(input, "/browser/browser-1/"))
 
@@ -126,6 +187,9 @@ func TestRewriteProxyCSSRewritesRootRelativeURLs(t *testing.T) {
 	}
 	if !strings.Contains(output, `url(/browser/browser-1/images/hero.png)`) {
 		t.Fatalf("expected background URL to be rewritten, got %q", output)
+	}
+	if !strings.Contains(output, `url(/browser/browser-1/_proxy/https/cdn.example.com/a.png)`) {
+		t.Fatalf("expected absolute CSS URL to be rewritten through external proxy, got %q", output)
 	}
 }
 

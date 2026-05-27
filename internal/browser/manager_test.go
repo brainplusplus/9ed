@@ -1,6 +1,9 @@
 package browser
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestNormalizeURL(t *testing.T) {
 	tests := []struct {
@@ -81,5 +84,43 @@ func TestProxyTargetMapsInitialDocumentAndAbsoluteResources(t *testing.T) {
 	}
 	if asset.String() != "https://example.com/assets/app.js?v=1" {
 		t.Fatalf("expected absolute asset path to stay root-relative, got %q", asset.String())
+	}
+}
+
+func TestProxyExternalTargetRequiresKnownTabAndBuildsTargetURL(t *testing.T) {
+	manager := NewManager()
+	tab, err := manager.CreateTab("https://example.com")
+	if err != nil {
+		t.Fatalf("CreateTab() error = %v", err)
+	}
+
+	target, err := manager.ProxyExternalTarget(tab.ID, "https", "play.google.com", "/log", "format=json")
+	if err != nil {
+		t.Fatalf("ProxyExternalTarget() error = %v", err)
+	}
+	if target.String() != "https://play.google.com/log?format=json" {
+		t.Fatalf("ProxyExternalTarget() = %q", target.String())
+	}
+
+	if _, err := manager.ProxyExternalTarget("missing", "https", "play.google.com", "/log", ""); err == nil {
+		t.Fatal("expected missing tab to fail")
+	}
+}
+
+func TestManagerStoresCookiesPerTabAndHost(t *testing.T) {
+	manager := NewManager()
+	tab, err := manager.CreateTab("https://example.com")
+	if err != nil {
+		t.Fatalf("CreateTab() error = %v", err)
+	}
+
+	manager.StoreCookies(tab.ID, "play.google.com", []*http.Cookie{{Name: "sid", Value: "abc"}})
+	manager.StoreCookies(tab.ID, "accounts.google.com", []*http.Cookie{{Name: "other", Value: "def"}})
+
+	if got := manager.CookieHeader(tab.ID, "play.google.com"); got != "sid=abc" {
+		t.Fatalf("CookieHeader(play.google.com) = %q", got)
+	}
+	if got := manager.CookieHeader(tab.ID, "accounts.google.com"); got != "other=def" {
+		t.Fatalf("CookieHeader(accounts.google.com) = %q", got)
 	}
 }

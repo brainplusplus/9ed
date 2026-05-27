@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -49,6 +50,7 @@ type Manager struct {
 	tabs        map[string]Tab
 	activeTabID string
 	automation  *automationRuntime
+	cookies     map[string]map[string]map[string]*http.Cookie
 }
 
 type automationRuntime struct {
@@ -62,7 +64,8 @@ type automationRuntime struct {
 
 func NewManager() *Manager {
 	return &Manager{
-		tabs: make(map[string]Tab),
+		tabs:    make(map[string]Tab),
+		cookies: make(map[string]map[string]map[string]*http.Cookie),
 		automation: &automationRuntime{
 			lastErr: "",
 		},
@@ -140,6 +143,7 @@ func (m *Manager) DeleteTab(id string) error {
 		return fmt.Errorf("browser tab %q not found", id)
 	}
 	delete(m.tabs, id)
+	delete(m.cookies, id)
 	if m.activeTabID == id {
 		m.activeTabID = ""
 		for nextID := range m.tabs {
@@ -184,6 +188,86 @@ func (m *Manager) ProxyTarget(id string, requestPath string, rawQuery string) (*
 		target.RawQuery = rawQuery
 	}
 	return &target, nil
+}
+
+func (m *Manager) ProxyExternalTarget(id string, scheme string, host string, requestPath string, rawQuery string) (*url.URL, error) {
+	m.mu.Lock()
+	_, ok := m.tabs[id]
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("browser tab %q not found", id)
+	}
+
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	host = strings.TrimSpace(host)
+	if scheme != "http" && scheme != "https" {
+		return nil, fmt.Errorf("unsupported external proxy scheme %q", scheme)
+	}
+	if host == "" {
+		return nil, fmt.Errorf("external proxy host is required")
+	}
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if !strings.HasPrefix(requestPath, "/") {
+		requestPath = "/" + requestPath
+	}
+	target := &url.URL{
+		Scheme:   scheme,
+		Host:     host,
+		Path:     requestPath,
+		RawQuery: rawQuery,
+	}
+	return target, nil
+}
+
+func (m *Manager) CookieHeader(id string, host string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	hostCookies := m.cookies[id][strings.ToLower(host)]
+	if len(hostCookies) == 0 {
+		return ""
+	}
+	pairs := make([]string, 0, len(hostCookies))
+	for _, cookie := range hostCookies {
+		if cookie == nil || cookie.Name == "" {
+			continue
+		}
+		pairs = append(pairs, (&http.Cookie{Name: cookie.Name, Value: cookie.Value}).String())
+	}
+	return strings.Join(pairs, "; ")
+}
+
+func (m *Manager) StoreCookies(id string, host string, cookies []*http.Cookie) {
+	if len(cookies) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tabCookies := m.cookies[id]
+	if tabCookies == nil {
+		tabCookies = make(map[string]map[string]*http.Cookie)
+		m.cookies[id] = tabCookies
+	}
+	hostKey := strings.ToLower(host)
+	hostCookies := tabCookies[hostKey]
+	if hostCookies == nil {
+		hostCookies = make(map[string]*http.Cookie)
+		tabCookies[hostKey] = hostCookies
+	}
+	for _, cookie := range cookies {
+		if cookie == nil || cookie.Name == "" {
+			continue
+		}
+		if cookie.MaxAge < 0 {
+			delete(hostCookies, cookie.Name)
+			continue
+		}
+		copied := *cookie
+		hostCookies[cookie.Name] = &copied
+	}
 }
 
 func (m *Manager) StartAutomation(ctx context.Context) (Status, error) {

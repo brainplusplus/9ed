@@ -35,6 +35,7 @@ type Server struct {
 	hs              *http.Server
 	tunnelFn        func() string
 	settingsTunnels *tunnel.Manager
+	fileWatcher     *watcher.FileWatcher
 }
 
 func New(cfg config.Config) *Server {
@@ -89,6 +90,7 @@ func New(cfg config.Config) *Server {
 		api:             api,
 		tunnelFn:        func() string { return "" },
 		settingsTunnels: settingsTunnels,
+		fileWatcher:     fw,
 	}
 }
 
@@ -137,6 +139,10 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Shutdown() {
 	if s.settingsTunnels != nil {
 		s.settingsTunnels.Shutdown()
+	}
+	if s.fileWatcher != nil {
+		_ = s.fileWatcher.Close()
+		s.fileWatcher = nil
 	}
 	if s.hs != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
