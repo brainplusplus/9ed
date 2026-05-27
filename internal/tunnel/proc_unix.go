@@ -20,7 +20,7 @@ func stopProcess(cmd *exec.Cmd) {
 }
 
 func killProcessTree(pid int) error {
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err == nil {
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
 		return nil
 	}
 	proc, err := os.FindProcess(pid)

@@ -209,6 +209,13 @@ func (p *tunnelProc) stop(timeout time.Duration) {
 	select {
 	case <-p.done:
 	case <-time.After(timeout):
+		if p.cmd != nil && p.cmd.Process != nil {
+			_ = killProcessTree(p.cmd.Process.Pid)
+		}
+		select {
+		case <-p.done:
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 
