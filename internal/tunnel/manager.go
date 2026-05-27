@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,13 @@ const (
 	StatusStarted  = "started"
 	StatusStopped  = "stopped"
 )
+
+var settingsTunnelRetryBackoff = []time.Duration{
+	2 * time.Second,
+	5 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+}
 
 type ConfigRecord struct {
 	ID        string `json:"id"`
@@ -63,6 +71,7 @@ type Manager struct {
 	appTunnelEnabled bool
 	defaultEngine    string
 	tunnels          map[string]*managedTunnel
+	retryBackoff     []time.Duration
 }
 
 func NewManager(store Store, appPort string, appTunnelEnabled bool, defaultEngine string) *Manager {
@@ -83,6 +92,7 @@ func NewManagerWithStarter(store Store, appPort string, appTunnelEnabled bool, d
 		appTunnelEnabled: appTunnelEnabled,
 		defaultEngine:    engine,
 		tunnels:          make(map[string]*managedTunnel),
+		retryBackoff:     settingsTunnelRetryBackoff,
 	}
 }
 
@@ -393,8 +403,16 @@ func (m *Manager) startAsync(id string) {
 		_ = runtimeToStop.Stop()
 	}
 
-	go func() {
+	go m.startLoop(id, seq, cfg)
+}
+
+func (m *Manager) startLoop(id string, seq uint64, cfg ConfigRecord) {
+	attempt := 0
+	for {
 		runtime, err := m.startTunnel(cfg.Engine, cfg.LocalPort)
+		if err == nil && runtime == nil {
+			err = errors.New("tunnel starter returned nil runtime")
+		}
 
 		m.mu.Lock()
 		current, ok := m.tunnels[id]
@@ -405,19 +423,59 @@ func (m *Manager) startAsync(id string) {
 			}
 			return
 		}
-		if err != nil {
-			current.status = StatusStopped
-			current.lastError = err.Error()
+		if err == nil {
+			current.runtime = runtime
+			current.status = StatusStarted
+			current.lastError = ""
 			m.mu.Unlock()
-			log.Printf("tunnel: failed to start %s on port %s: %v", current.config.Name, current.config.LocalPort, err)
 			return
 		}
 
-		current.runtime = runtime
-		current.status = StatusStarted
-		current.lastError = ""
+		current.runtime = nil
+		current.status = StatusStarting
+		current.lastError = err.Error()
+		name := current.config.Name
+		port := current.config.LocalPort
+		delay := retryDelay(m.retryBackoff, attempt)
+		attempt++
 		m.mu.Unlock()
-	}()
+
+		if runtime != nil {
+			_ = runtime.Stop()
+		}
+		log.Printf("tunnel: failed to start %s on port %s: %v; retrying in %s", name, port, err, delay)
+		if !m.waitForRetry(id, seq, delay) {
+			return
+		}
+	}
+}
+
+func (m *Manager) waitForRetry(id string, seq uint64, delay time.Duration) bool {
+	if delay <= 0 {
+		runtime.Gosched()
+		return m.shouldContinueStart(id, seq)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+	return m.shouldContinueStart(id, seq)
+}
+
+func (m *Manager) shouldContinueStart(id string, seq uint64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	current, ok := m.tunnels[id]
+	return ok && current.launchSeq == seq && current.config.Enabled
+}
+
+func retryDelay(backoff []time.Duration, attempt int) time.Duration {
+	if len(backoff) == 0 {
+		return time.Second
+	}
+	if attempt < len(backoff) {
+		return backoff[attempt]
+	}
+	return backoff[len(backoff)-1]
 }
 
 func (m *Manager) snapshotPortsLocked(excludeID string) map[string]string {
