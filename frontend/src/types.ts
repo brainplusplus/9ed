@@ -84,10 +84,17 @@ export type AppConfig = {
   terminalAiMaxLines: number;
 };
 
+export type BrowserTransport = 'proxy' | 'webrtc';
+
 export type BrowserTab = {
   id: string;
   url: string;
   title: string;
+  transport: BrowserTransport;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  fileChooserPending?: boolean;
+  fileChooserMultiple?: boolean;
   proxyPath: string;
   createdAt: number;
   updatedAt: number;
@@ -97,6 +104,18 @@ export type BrowserAutomationStatus = {
   provider: string;
   running: boolean;
   lastError?: string;
+};
+
+export type BrowserMCPDebugEntry = {
+  timestamp: number;
+  source: string;
+  level: string;
+  message: string;
+};
+
+export type BrowserMCPDebugLog = {
+  enabled: boolean;
+  entries: BrowserMCPDebugEntry[];
 };
 
 export type BrowserInspectResult = {
@@ -204,6 +223,7 @@ export type TerminalContext = {
 
 export type BrowserState = {
   provider: string;
+  transport: BrowserTransport;
   automation: BrowserAutomationStatus;
   tabs: BrowserTab[];
   activeTabId?: string;
@@ -408,6 +428,13 @@ export type PendingPermission = {
   options: PermissionOptionInfo[];
 };
 
+export type ChatDebugEntry = {
+  timestamp: number;
+  source: 'client' | 'ws' | 'session' | 'tool';
+  level: 'info' | 'warn' | 'error';
+  message: string;
+};
+
 export type ChatSessionKind = 'live' | 'resumable' | 'archived';
 
 export type ChatSessionInfo = {
@@ -418,6 +445,8 @@ export type ChatSessionInfo = {
   messages: ChatMessage[];
   status: 'connecting' | 'idle' | 'streaming' | 'error';
   createdAt: number;
+  lastEventAt?: number;
+  stalled?: boolean;
   kind: ChatSessionKind;
   workDir?: string;
   acpSessionId?: string;
@@ -434,6 +463,7 @@ export type ChatSessionInfo = {
   contextUsed?: number;
   costAmount?: number;
   costCurrency?: string;
+  debugEntries?: ChatDebugEntry[];
 };
 
 export type HistorySessionRecord = {

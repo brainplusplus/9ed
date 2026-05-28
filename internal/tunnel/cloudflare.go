@@ -14,6 +14,7 @@ func startCloudflareProc(port string) (*tunnelProc, error) {
 	if err != nil {
 		return nil, err
 	}
+	prefix := tunnelLogPrefix("cloudflared", port)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -44,7 +45,7 @@ func startCloudflareProc(port string) (*tunnelProc, error) {
 
 	output := newOutputRecorder(20)
 	urlCh := make(chan string, 1)
-	go scanLinesWithRecorder(stderr, "cloudflared", cloudflaredURLPattern, output, urlCh)
+	go scanLinesWithRecorder(stderr, prefix, cloudflaredURLPattern, output, urlCh)
 
 	url, err := recvProcURL(proc, urlCh, 45*time.Second, output)
 	if err != nil {

@@ -5,21 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/brainplusplus/9ed/internal/browser"
 	"github.com/brainplusplus/9ed/internal/chat"
 	"github.com/brainplusplus/9ed/internal/chat/agentconfig"
 	"github.com/brainplusplus/9ed/internal/debug"
+	"github.com/brainplusplus/9ed/internal/terminal"
 )
 
 type chatCreateRequest struct {
-	AgentID           string `json:"agentId"`
-	WorkDir           string `json:"workDir,omitempty"`
-	ResumeID          string `json:"resumeId,omitempty"`
-	ACPSessionID      string `json:"acpSessionId,omitempty"`
-	UseActiveTerminal bool   `json:"useActiveTerminal,omitempty"`
+	AgentID            string `json:"agentId"`
+	WorkDir            string `json:"workDir,omitempty"`
+	ResumeID           string `json:"resumeId,omitempty"`
+	ACPSessionID       string `json:"acpSessionId,omitempty"`
+	UseActiveTerminal  bool   `json:"useActiveTerminal,omitempty"`
+	ActiveTerminalID   string `json:"activeTerminalId,omitempty"`
+	UseActiveBrowser   bool   `json:"useActiveBrowser,omitempty"`
+	ActiveBrowserTabID string `json:"activeBrowserTabId,omitempty"`
 }
 
 type chatCreateResponse struct {
@@ -57,11 +64,14 @@ type chatRestoreResponse struct {
 }
 
 type chatResumeRequest struct {
-	SessionID         string `json:"sessionId"`
-	AgentID           string `json:"agentId"`
-	WorkDir           string `json:"workDir"`
-	ACPSessionID      string `json:"acpSessionId"`
-	UseActiveTerminal bool   `json:"useActiveTerminal,omitempty"`
+	SessionID          string `json:"sessionId"`
+	AgentID            string `json:"agentId"`
+	WorkDir            string `json:"workDir"`
+	ACPSessionID       string `json:"acpSessionId"`
+	UseActiveTerminal  bool   `json:"useActiveTerminal,omitempty"`
+	ActiveTerminalID   string `json:"activeTerminalId,omitempty"`
+	UseActiveBrowser   bool   `json:"useActiveBrowser,omitempty"`
+	ActiveBrowserTabID string `json:"activeBrowserTabId,omitempty"`
 }
 
 var discoverAgentDescriptors = chat.DiscoverAgentDescriptors
@@ -74,11 +84,14 @@ type chatWSInbound struct {
 	Value       string           `json:"value,omitempty"`
 	Attachments []chatAttachment `json:"attachments,omitempty"`
 
-	PermissionID      string `json:"permissionId,omitempty"`
-	OptionID          string `json:"optionId,omitempty"`
-	Cancelled         bool   `json:"cancelled,omitempty"`
-	AutoApprove       bool   `json:"autoApprove,omitempty"`
-	UseActiveTerminal bool   `json:"useActiveTerminal,omitempty"`
+	PermissionID       string `json:"permissionId,omitempty"`
+	OptionID           string `json:"optionId,omitempty"`
+	Cancelled          bool   `json:"cancelled,omitempty"`
+	AutoApprove        bool   `json:"autoApprove,omitempty"`
+	UseActiveTerminal  bool   `json:"useActiveTerminal,omitempty"`
+	ActiveTerminalID   string `json:"activeTerminalId,omitempty"`
+	UseActiveBrowser   bool   `json:"useActiveBrowser,omitempty"`
+	ActiveBrowserTabID string `json:"activeBrowserTabId,omitempty"`
 }
 
 type chatAttachment struct {
@@ -89,7 +102,459 @@ type chatAttachment struct {
 
 type chatTerminalRunRequest struct {
 	SessionID string `json:"sessionId"`
-	Command   string `json:"command"`
+	Action    string `json:"action,omitempty"`
+	Command   string `json:"command,omitempty"`
+	TimeoutMS int    `json:"timeoutMs,omitempty"`
+	MaxBytes  int    `json:"maxBytes,omitempty"`
+}
+
+type chatBrowserRunRequest struct {
+	SessionID string   `json:"sessionId"`
+	Action    string   `json:"action"`
+	URL       string   `json:"url,omitempty"`
+	Selector  string   `json:"selector,omitempty"`
+	Text      string   `json:"text,omitempty"`
+	Key       string   `json:"key,omitempty"`
+	X         *float64 `json:"x,omitempty"`
+	Y         *float64 `json:"y,omitempty"`
+	DeltaX    float64  `json:"deltaX,omitempty"`
+	DeltaY    float64  `json:"deltaY,omitempty"`
+	Limit     int      `json:"limit,omitempty"`
+	TimeoutMS int      `json:"timeoutMs,omitempty"`
+}
+
+func summarizeBrowserRunRequest(req chatBrowserRunRequest) string {
+	parts := make([]string, 0, 8)
+	if url := strings.TrimSpace(req.URL); url != "" {
+		parts = append(parts, "url="+truncateBrowserLogValue(url, 120))
+	}
+	if selector := strings.TrimSpace(req.Selector); selector != "" {
+		parts = append(parts, "selector="+truncateBrowserLogValue(selector, 120))
+	}
+	if req.Text != "" {
+		parts = append(parts, "textBytes="+strconv.Itoa(len(req.Text)))
+		parts = append(parts, "text="+truncateBrowserLogValue(req.Text, 80))
+	}
+	if key := strings.TrimSpace(req.Key); key != "" {
+		parts = append(parts, "key="+truncateBrowserLogValue(key, 40))
+	}
+	if req.X != nil && req.Y != nil {
+		parts = append(parts, fmt.Sprintf("point=%.1f,%.1f", *req.X, *req.Y))
+	}
+	if req.DeltaX != 0 || req.DeltaY != 0 {
+		parts = append(parts, fmt.Sprintf("delta=%.1f,%.1f", req.DeltaX, req.DeltaY))
+	}
+	if req.Limit > 0 {
+		parts = append(parts, "limit="+strconv.Itoa(req.Limit))
+	}
+	if req.TimeoutMS > 0 {
+		parts = append(parts, "timeoutMs="+strconv.Itoa(req.TimeoutMS))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " ")
+}
+
+func truncateBrowserLogValue(value string, maxLen int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" {
+		return ""
+	}
+	if maxLen <= 0 || len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + "..."
+}
+
+func browserToolRawInput(req chatBrowserRunRequest) string {
+	payload := map[string]any{
+		"action": req.Action,
+	}
+	if strings.TrimSpace(req.URL) != "" {
+		payload["url"] = strings.TrimSpace(req.URL)
+	}
+	if strings.TrimSpace(req.Selector) != "" {
+		payload["selector"] = strings.TrimSpace(req.Selector)
+	}
+	if req.Text != "" {
+		payload["text"] = req.Text
+	}
+	if strings.TrimSpace(req.Key) != "" {
+		payload["key"] = strings.TrimSpace(req.Key)
+	}
+	if req.X != nil {
+		payload["x"] = *req.X
+	}
+	if req.Y != nil {
+		payload["y"] = *req.Y
+	}
+	if req.DeltaX != 0 {
+		payload["deltaX"] = req.DeltaX
+	}
+	if req.DeltaY != 0 {
+		payload["deltaY"] = req.DeltaY
+	}
+	if req.Limit > 0 {
+		payload["limit"] = req.Limit
+	}
+	if req.TimeoutMS > 0 {
+		payload["timeoutMs"] = req.TimeoutMS
+	}
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
+func browserActionContext(parent context.Context, timeoutMS int) (context.Context, context.CancelFunc) {
+	if timeoutMS <= 0 {
+		timeoutMS = 15000
+	}
+	if timeoutMS > 60000 {
+		timeoutMS = 60000
+	}
+	return context.WithTimeout(parent, time.Duration(timeoutMS)*time.Millisecond)
+}
+
+func browserToolOutcome(action string, detail string) string {
+	action = strings.TrimSpace(strings.ToLower(action))
+	detail = strings.TrimSpace(detail)
+	switch action {
+	case "goto", "navigate":
+		if detail != "" {
+			return "Opened " + detail
+		}
+		return "Opened page"
+	case "click":
+		if detail != "" {
+			return "Clicked " + detail
+		}
+		return "Clicked element"
+	case "type":
+		if detail != "" {
+			return "Typed " + detail
+		}
+		return "Typed text"
+	case "press":
+		if detail != "" {
+			return "Pressed " + detail
+		}
+		return "Pressed key"
+	case "scroll":
+		return "Scrolled page"
+	case "inspect":
+		if detail != "" {
+			return "Inspected " + detail
+		}
+		return "Inspected page"
+	case "screenshot":
+		if detail != "" {
+			return "Captured " + detail
+		}
+		return "Captured screenshot"
+	case "console_logs", "console":
+		if detail != "" {
+			return "Read " + detail
+		}
+		return "Read console logs"
+	case "network_requests", "network":
+		if detail != "" {
+			return "Read " + detail
+		}
+		return "Read network requests"
+	default:
+		if detail != "" {
+			return detail
+		}
+		return "Browser action completed"
+	}
+}
+
+func terminalToolRawInput(req chatTerminalRunRequest) string {
+	payload := map[string]any{"action": req.Action}
+	if req.Command != "" {
+		payload["command"] = req.Command
+	}
+	if req.TimeoutMS > 0 {
+		payload["timeoutMs"] = req.TimeoutMS
+	}
+	if req.MaxBytes > 0 {
+		payload["maxBytes"] = req.MaxBytes
+	}
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
+func terminalToolStart(req chatTerminalRunRequest) string {
+	if req.Action == "read" {
+		return "Reading recent active terminal output"
+	}
+	if req.Action == "start" {
+		return "Starting long-running command in active terminal:\n" + req.Command
+	}
+	return "Running command in active terminal:\n" + req.Command
+}
+
+var terminalANSIPattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+var terminalOSCSequencePattern = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+var powershellPromptPattern = regexp.MustCompile(`^PS\s+.+>\s*$`)
+var windowsDrivePromptPattern = regexp.MustCompile(`^[A-Za-z]:\\.*>\s*$`)
+var unixPromptPattern = regexp.MustCompile(`^(?:.+@.+:.+[#$%]|.+[#$%])\s*$`)
+
+func runTerminalCommand(ctx context.Context, session *terminal.ManagedSession, command string, timeoutMS int, expectPrompt bool) (string, error) {
+	if timeoutMS <= 0 {
+		timeoutMS = 10000
+	}
+	if timeoutMS > 60000 {
+		timeoutMS = 60000
+	}
+
+	baselineSnapshot := session.Snapshot(20000)
+	output, unsubscribe := session.Subscribe(false)
+	defer unsubscribe()
+
+	executedCommand, completionMarker := terminalCommandEnvelope(session.Profile, command)
+	if _, err := session.Write([]byte(executedCommand + "\r")); err != nil {
+		return "", err
+	}
+
+	var collected strings.Builder
+	deadline := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
+	defer deadline.Stop()
+	quiet := time.NewTimer(1200 * time.Millisecond)
+	defer quiet.Stop()
+	if !quiet.Stop() {
+		<-quiet.C
+	}
+
+	resetQuiet := func(duration time.Duration) {
+		if !quiet.Stop() {
+			select {
+			case <-quiet.C:
+			default:
+			}
+		}
+		quiet.Reset(duration)
+	}
+
+	sawOutput := false
+	for {
+		select {
+		case <-ctx.Done():
+			return terminalRunResult(command, collected.String(), "cancelled"), ctx.Err()
+		case data, ok := <-output:
+			if !ok {
+				return terminalRunResult(command, stripTerminalCompletionMarker(collected.String(), completionMarker), "terminal closed"), nil
+			}
+			if len(data) == 0 {
+				continue
+			}
+			sawOutput = true
+			collected.Write(data)
+			if terminalOutputContainsCompletionMarker(collected.String(), completionMarker) {
+				return terminalRunResult(command, stripTerminalCompletionMarker(collected.String(), completionMarker), "completed"), nil
+			}
+			if terminalOutputLooksComplete(collected.String()) {
+				resetQuiet(350 * time.Millisecond)
+			} else {
+				resetQuiet(1500 * time.Millisecond)
+			}
+		case <-quiet.C:
+			snapshot := session.Snapshot(30000)
+			if terminalOutputContainsCompletionMarker(collected.String(), completionMarker) {
+				return terminalRunResult(command, stripTerminalCompletionMarker(collected.String(), completionMarker), "completed"), nil
+			}
+			if terminalShellWaitingForInput(snapshot) && (sawOutput || terminalSnapshotChanged(baselineSnapshot, snapshot)) {
+				return terminalRunResult(command, stripTerminalCompletionMarker(collected.String(), completionMarker), "completed"), nil
+			}
+			if sawOutput {
+				resetQuiet(1500 * time.Millisecond)
+			} else {
+				resetQuiet(900 * time.Millisecond)
+			}
+		case <-deadline.C:
+			status := "still running after timeout"
+			snapshot := session.Snapshot(30000)
+			if terminalOutputContainsCompletionMarker(collected.String(), completionMarker) || terminalShellWaitingForInput(snapshot) {
+				status = "completed"
+			} else if !expectPrompt {
+				status, _ = terminalLiveObservationStatus(snapshot, session.LastOutputAt(), time.Now())
+			}
+			return terminalRunResult(command, stripTerminalCompletionMarker(collected.String(), completionMarker), status), nil
+		}
+	}
+}
+
+const interactiveToolMinInProgress = 450 * time.Millisecond
+const terminalCompletionMarkerPrefix = "\x1b]9ed-terminal-done;"
+const terminalRecentOutputWindow = 2 * time.Second
+
+func waitForInteractiveToolFloor(ctx context.Context, startedAt time.Time) {
+	remaining := interactiveToolMinInProgress - time.Since(startedAt)
+	if remaining <= 0 {
+		return
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+func terminalReadResult(session *terminal.ManagedSession, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = 20000
+	}
+	if maxBytes > 100000 {
+		maxBytes = 100000
+	}
+	snapshot := session.Snapshot(maxBytes)
+	status, decision := terminalLiveObservationStatus(snapshot, session.LastOutputAt(), time.Now())
+	return "Terminal tool result.\nTerminal status: " + status + "\n" + decision + "\n\nOutput:\n" + trimTerminalOutput(snapshot)
+}
+
+func terminalRunResult(command, rawOutput, status string) string {
+	output := trimTerminalOutput(rawOutput)
+	if output == "" {
+		output = "(no terminal output captured)"
+	}
+	return fmt.Sprintf("Terminal tool result.\nTerminal command: %s\nTerminal status: %s\n%s\n\nOutput:\n%s", command, status, terminalDecisionHint(command, output, status), output)
+}
+
+func terminalDecisionHint(command, output, status string) string {
+	lowerStatus := strings.ToLower(status)
+	if strings.Contains(lowerStatus, "still running") || strings.Contains(lowerStatus, "streaming output") {
+		return "Decision: command is still running. Do not send another terminal command yet. Use active_terminal_read to observe more output or wait until it reports waiting for input."
+	}
+	if strings.Contains(lowerStatus, "cancelled") || strings.Contains(lowerStatus, "closed") {
+		return "Decision: the command did not complete normally. Explain the partial output or run one targeted recovery command if needed."
+	}
+	if summary := summarizeProcessNameCommand(command, output); summary != "" {
+		return "Decision: sufficient_to_answer=true. Answer the user now using this result; do not run tasklist/Get-Process again just to confirm the same PID.\nSuggested final answer: " + summary
+	}
+	if summary := summarizePortProcess(output); summary != "" {
+		return "Decision: sufficient_to_answer=true. Answer the user now using this result; do not run another terminal command for the same port unless the user asks for more detail.\nSuggested final answer: " + summary
+	}
+	return "Decision: if this output contains the requested fact, answer now. Run another command only for missing information, not for redundant confirmation."
+}
+
+func terminalLiveObservationStatus(snapshot string, lastOutputAt, now time.Time) (string, string) {
+	if terminalShellWaitingForInput(snapshot) {
+		return "waiting for input", "Decision: the shell is idle and ready for another command. If this output already answers the user, respond now instead of reading again."
+	}
+	if !lastOutputAt.IsZero() && now.Sub(lastOutputAt) <= terminalRecentOutputWindow {
+		return "streaming output (process still running)", "Decision: terminal output is actively moving and the shell is not idle yet. Do not send another terminal command; use this as live observation or call active_terminal_read again if you need a fresher tail."
+	}
+	return "still running (quiet)", "Decision: the shell has not clearly returned to an idle prompt yet. The process still appears active even if it is currently quiet. Do not send another terminal command until active_terminal_read reports waiting for input."
+}
+
+func trimTerminalOutput(raw string) string {
+	text := stripTerminalControlSequences(raw)
+	text = strings.ReplaceAll(text, terminalCompletionMarkerPrefix, "")
+	text = strings.ReplaceAll(text, "\x07", "")
+	text = strings.ReplaceAll(text, "\x1b\\", "")
+	text = strings.ReplaceAll(text, "\u0007", "")
+	text = strings.ReplaceAll(text, "\u001b\\", "")
+	text = strings.ReplaceAll(text, "\u001b", "")
+	text = strings.ReplaceAll(text, "\u009c", "")
+	text = strings.ReplaceAll(text, "\u0000", "")
+	text = strings.ReplaceAll(text, "\u200b", "")
+	text = strings.ReplaceAll(text, "\u200c", "")
+	text = strings.ReplaceAll(text, "\u200d", "")
+	text = strings.ReplaceAll(text, "\ufeff", "")
+	text = strings.ReplaceAll(text, "\x00", "")
+	text = strings.ReplaceAll(text, "\x1a", "")
+	text = strings.ReplaceAll(text, "\x08", "")
+	text = strings.ReplaceAll(text, "\x0c", "")
+	text = strings.ReplaceAll(text, "\x0e", "")
+	text = strings.ReplaceAll(text, "\x0f", "")
+	text = strings.ReplaceAll(text, "\x7f", "")
+	text = strings.ReplaceAll(text, "\u009b", "")
+	text = strings.ReplaceAll(text, "\u0085", "")
+	text = strings.ReplaceAll(text, "\u2028", "\n")
+	text = strings.ReplaceAll(text, "\u2029", "\n")
+	text = strings.ReplaceAll(text, "\u000b", "\n")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	text = strings.TrimSpace(strings.Join(lines, "\n"))
+	const maxLen = 30000
+	if len(text) > maxLen {
+		return "...(truncated)\n" + text[len(text)-maxLen:]
+	}
+	return text
+}
+
+func terminalOutputLooksComplete(raw string) bool {
+	return terminalShellWaitingForInput(raw)
+}
+
+func stripTerminalControlSequences(raw string) string {
+	text := terminalOSCSequencePattern.ReplaceAllString(raw, "")
+	return terminalANSIPattern.ReplaceAllString(text, "")
+}
+
+func terminalShellWaitingForInput(raw string) bool {
+	line := terminalLastMeaningfulLine(raw)
+	if line == "" {
+		return false
+	}
+	if powershellPromptPattern.MatchString(line) {
+		return true
+	}
+	if windowsDrivePromptPattern.MatchString(line) {
+		return true
+	}
+	return unixPromptPattern.MatchString(line)
+}
+
+func terminalLastMeaningfulLine(raw string) string {
+	text := trimTerminalOutput(raw)
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func terminalSnapshotChanged(before, after string) bool {
+	return trimTerminalOutput(before) != trimTerminalOutput(after)
+}
+
+func terminalCommandEnvelope(profile terminal.ShellProfile, command string) (string, string) {
+	token := fmt.Sprintf("t%d", time.Now().UnixNano())
+	switch strings.ToLower(strings.TrimSpace(profile.ID)) {
+	case "pwsh", "powershell":
+		marker := terminalCompletionMarkerPrefix + token + "\a"
+		wrapped := fmt.Sprintf("& { %s }; [Console]::Out.Write(\"`e]9ed-terminal-done;%s`a\")", command, token)
+		return wrapped, marker
+	case "bash", "zsh", "sh", "git-bash":
+		marker := terminalCompletionMarkerPrefix + token + "\a"
+		wrapped := fmt.Sprintf("{ %s; }; printf '\\033]9ed-terminal-done;%s\\a'", command, token)
+		return wrapped, marker
+	default:
+		return command, ""
+	}
+}
+
+func terminalOutputContainsCompletionMarker(raw, marker string) bool {
+	return marker != "" && strings.Contains(raw, marker)
+}
+
+func stripTerminalCompletionMarker(raw, marker string) string {
+	if marker == "" {
+		return raw
+	}
+	return strings.ReplaceAll(raw, marker, "")
 }
 
 func (a *API) handleChatTerminalRun(w http.ResponseWriter, r *http.Request) {
@@ -107,8 +572,12 @@ func (a *API) handleChatTerminalRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.Action == "" {
+		req.Action = "run"
+	}
 	req.Command = strings.TrimSpace(req.Command)
-	if req.Command == "" {
+	if (req.Action == "run" || req.Action == "start") && req.Command == "" {
 		http.Error(w, "command is required", http.StatusBadRequest)
 		return
 	}
@@ -119,10 +588,6 @@ func (a *API) handleChatTerminalRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SessionID == "" {
 		http.Error(w, "no active chat stream", http.StatusBadRequest)
-		return
-	}
-	if a.isDuplicateTerminalRun(req.SessionID, req.Command) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate_ignored"})
 		return
 	}
 	if a.chatSessionManager == nil {
@@ -138,16 +603,342 @@ func (a *API) handleChatTerminalRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "active terminal integration is disabled for this chat session", http.StatusConflict)
 		return
 	}
+	terminalID := strings.TrimSpace(session.ActiveTerminalID())
+	if terminalID == "" {
+		http.Error(w, "no active terminal is linked to this chat session", http.StatusConflict)
+		return
+	}
+	term, ok := a.sessions.Get(terminalID)
+	if !ok {
+		http.Error(w, "linked terminal session was closed", http.StatusGone)
+		return
+	}
 
 	stream := a.chatStreams.GetOrCreate(req.SessionID, session, a.newChatEventPersister(req.SessionID))
+	a.chatStreams.Touch(req.SessionID)
+	toolName := "active_terminal_run"
+	if req.Action == "read" {
+		toolName = "active_terminal_read"
+	} else if req.Action == "start" {
+		toolName = "active_terminal_start"
+	}
+	toolCallID := fmt.Sprintf("active-terminal-%d", time.Now().UnixNano())
+	rawInput := terminalToolRawInput(req)
 	stream.publish(chat.ChatEvent{
-		Type:            "terminal_execute",
-		TerminalCommand: req.Command,
-		ToolTitle:       "active_terminal_run",
-		ToolKind:        "execute",
+		Type:         "tool_call",
+		ToolCallID:   toolCallID,
+		ToolTitle:    toolName,
+		ToolKind:     "execute",
+		ToolStatus:   "pending",
+		ToolRawInput: rawInput,
 	})
-	stream.publish(chat.ChatEvent{Type: "done", StopReason: "terminal_command_sent"})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+	stream.publish(chat.ChatEvent{
+		Type:         "tool_call_update",
+		ToolCallID:   toolCallID,
+		ToolTitle:    toolName,
+		ToolStatus:   "in_progress",
+		ToolContent:  terminalToolStart(req),
+		ToolRawInput: rawInput,
+	})
+	phaseStartedAt := time.Now()
+
+	var result string
+	var err error
+	switch req.Action {
+	case "run":
+		result, err = runTerminalCommand(r.Context(), term, req.Command, req.TimeoutMS, true)
+	case "start":
+		result, err = runTerminalCommand(r.Context(), term, req.Command, req.TimeoutMS, false)
+	case "read":
+		result = terminalReadResult(term, req.MaxBytes)
+	default:
+		err = fmt.Errorf("unsupported terminal action: %s", req.Action)
+	}
+	if err != nil {
+		waitForInteractiveToolFloor(r.Context(), phaseStartedAt)
+		stream.publish(chat.ChatEvent{
+			Type:         "tool_call_update",
+			ToolCallID:   toolCallID,
+			ToolTitle:    toolName,
+			ToolStatus:   "failed",
+			ToolContent:  err.Error(),
+			ToolRawInput: rawInput,
+		})
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	waitForInteractiveToolFloor(r.Context(), phaseStartedAt)
+	stream.publish(chat.ChatEvent{
+		Type:         "tool_call_update",
+		ToolCallID:   toolCallID,
+		ToolTitle:    toolName,
+		ToolStatus:   "completed",
+		ToolContent:  result,
+		ToolRawInput: rawInput,
+	})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(result))
+}
+
+func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	if a.browserMCPToken == "" || r.Header.Get("X-9ed-MCP-Token") != a.browserMCPToken {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if a.browser == nil {
+		http.Error(w, "browser is disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req chatBrowserRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.SessionID == "" {
+		if latestID, ok := a.chatStreams.LatestID(); ok {
+			req.SessionID = latestID
+		}
+	}
+	if req.SessionID == "" {
+		http.Error(w, "no active chat stream", http.StatusBadRequest)
+		return
+	}
+	if a.chatSessionManager == nil {
+		http.Error(w, "chat not available", http.StatusServiceUnavailable)
+		return
+	}
+	session, ok := a.chatSessionManager.Get(req.SessionID)
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if !session.UseActiveBrowserEnabled() {
+		http.Error(w, "active browser integration is disabled for this chat session", http.StatusConflict)
+		return
+	}
+	tabID := session.ActiveBrowserTabID()
+	if tabID == "" {
+		http.Error(w, "no active browser tab is linked to this chat session", http.StatusConflict)
+		return
+	}
+	tab, ok := a.browser.Tab(tabID)
+	if !ok {
+		http.Error(w, "linked browser tab was closed", http.StatusGone)
+		return
+	}
+	if tab.Transport != string(browser.TransportWebRTC) {
+		http.Error(w, "browser control requires a WebRTC browser tab", http.StatusConflict)
+		return
+	}
+	actionCtx, cancelAction := browserActionContext(r.Context(), req.TimeoutMS)
+	defer cancelAction()
+
+	startedAt := time.Now()
+	action := req.Action
+	toolName := strings.TrimSpace(r.Header.Get("X-9ed-MCP-Tool-Name"))
+	if toolName == "" {
+		toolName = action
+	}
+	payloadSummary := summarizeBrowserRunRequest(req)
+	stream := a.chatStreams.GetOrCreate(req.SessionID, session, a.newChatEventPersister(req.SessionID))
+	a.chatStreams.Touch(req.SessionID)
+	toolCallID := fmt.Sprintf("active-browser-%d", time.Now().UnixNano())
+	toolRawInput := browserToolRawInput(req)
+	stream.publish(chat.ChatEvent{
+		Type:         "tool_call",
+		ToolCallID:   toolCallID,
+		ToolTitle:    toolName,
+		ToolKind:     "browser",
+		ToolStatus:   "pending",
+		ToolRawInput: toolRawInput,
+	})
+	stream.publish(chat.ChatEvent{
+		Type:         "tool_call_update",
+		ToolCallID:   toolCallID,
+		ToolTitle:    toolName,
+		ToolStatus:   "in_progress",
+		ToolContent:  browserToolOutcome(action, payloadSummary),
+		ToolRawInput: toolRawInput,
+	})
+	phaseStartedAt := time.Now()
+	debug.BrowserMCPLog(
+		"bridge",
+		"info",
+		"tool=%s session=%s tab=%s action=%s payload=%s",
+		toolName,
+		req.SessionID,
+		tabID,
+		action,
+		payloadSummary,
+	)
+	logOutcome := func(err error, outcome string) {
+		waitForInteractiveToolFloor(actionCtx, phaseStartedAt)
+		if err != nil {
+			stream.publish(chat.ChatEvent{
+				Type:         "tool_call_update",
+				ToolCallID:   toolCallID,
+				ToolTitle:    toolName,
+				ToolStatus:   "failed",
+				ToolContent:  err.Error(),
+				ToolRawInput: toolRawInput,
+			})
+			status := a.browser.AutomationStatus()
+			debug.BrowserMCPLog(
+				"server",
+				"error",
+				"tool=%s session=%s tab=%s action=%s payload=%s duration=%s err=%v automation_running=%t automation_last_error=%q",
+				toolName,
+				req.SessionID,
+				tabID,
+				action,
+				payloadSummary,
+				time.Since(startedAt).Round(time.Millisecond),
+				err,
+				status.Running,
+				status.LastError,
+			)
+			return
+		}
+		stream.publish(chat.ChatEvent{
+			Type:         "tool_call_update",
+			ToolCallID:   toolCallID,
+			ToolTitle:    toolName,
+			ToolStatus:   "completed",
+			ToolContent:  browserToolOutcome(action, outcome),
+			ToolRawInput: toolRawInput,
+		})
+		debug.BrowserMCPLog(
+			"server",
+			"info",
+			"tool=%s session=%s tab=%s action=%s payload=%s duration=%s outcome=%s",
+			toolName,
+			req.SessionID,
+			tabID,
+			action,
+			payloadSummary,
+			time.Since(startedAt).Round(time.Millisecond),
+			outcome,
+		)
+	}
+
+	switch req.Action {
+	case "goto", "navigate":
+		result, err := a.browser.TabNavigate(actionCtx, tabID, req.URL)
+		if err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		logOutcome(nil, "url="+truncateBrowserLogValue(result.URL, 120))
+		writeJSON(w, http.StatusOK, result)
+	case "click":
+		if err := a.browser.TabClick(actionCtx, tabID, req.Selector, req.X, req.Y); err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
+		if inspectErr != nil {
+			logOutcome(nil, "clicked")
+			writeJSON(w, http.StatusOK, map[string]string{"status": "clicked"})
+			return
+		}
+		logOutcome(nil, "clicked title="+truncateBrowserLogValue(result.Title, 80))
+		writeJSON(w, http.StatusOK, result)
+	case "type":
+		if err := a.browser.TabType(actionCtx, tabID, req.Selector, req.Text); err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
+		if inspectErr != nil {
+			logOutcome(nil, "typed")
+			writeJSON(w, http.StatusOK, map[string]string{"status": "typed"})
+			return
+		}
+		logOutcome(nil, "typed title="+truncateBrowserLogValue(result.Title, 80))
+		writeJSON(w, http.StatusOK, result)
+	case "press":
+		if err := a.browser.TabPress(actionCtx, tabID, req.Key); err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
+		if inspectErr != nil {
+			logOutcome(nil, "pressed")
+			writeJSON(w, http.StatusOK, map[string]string{"status": "pressed"})
+			return
+		}
+		logOutcome(nil, "pressed title="+truncateBrowserLogValue(result.Title, 80))
+		writeJSON(w, http.StatusOK, result)
+	case "scroll":
+		if err := a.browser.TabScroll(actionCtx, tabID, req.DeltaX, req.DeltaY); err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
+		if inspectErr != nil {
+			logOutcome(nil, "scrolled")
+			writeJSON(w, http.StatusOK, map[string]string{"status": "scrolled"})
+			return
+		}
+		logOutcome(nil, "scrolled title="+truncateBrowserLogValue(result.Title, 80))
+		writeJSON(w, http.StatusOK, result)
+	case "inspect":
+		result, err := a.browser.TabInspect(actionCtx, tabID)
+		if err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		logOutcome(nil, "title="+truncateBrowserLogValue(result.Title, 80))
+		writeJSON(w, http.StatusOK, result)
+	case "screenshot":
+		data, err := a.browser.TabScreenshot(actionCtx, tabID)
+		if err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		path, err := saveBrowserCapture("active-browser", data)
+		if err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		logOutcome(nil, "path="+truncateBrowserLogValue(path, 120))
+		writeJSON(w, http.StatusOK, map[string]string{"path": path, "mimeType": "image/png"})
+	case "console_logs", "console":
+		logs, err := a.browser.TabConsoleLogs(tabID, req.Limit)
+		if err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		logOutcome(nil, fmt.Sprintf("entries=%d", len(logs)))
+		writeJSON(w, http.StatusOK, map[string]any{"entries": logs, "count": len(logs)})
+	case "network_requests", "network":
+		entries, err := a.browser.TabNetworkRequests(tabID, req.Limit)
+		if err != nil {
+			logOutcome(err, "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		logOutcome(nil, fmt.Sprintf("entries=%d", len(entries)))
+		writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries)})
+	default:
+		logOutcome(fmt.Errorf("unsupported browser action: %s", req.Action), "")
+		http.Error(w, "unsupported browser action: "+req.Action, http.StatusBadRequest)
+	}
 }
 
 func (a *API) isDuplicateTerminalRun(sessionID, command string) bool {
@@ -222,7 +1013,12 @@ func (a *API) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 		var session chat.ChatSession
 		var err error
 		resumedFrom := ""
-		opts := chat.SessionOptions{UseActiveTerminal: req.UseActiveTerminal}
+		opts := chat.SessionOptions{
+			UseActiveTerminal:  req.UseActiveTerminal,
+			ActiveTerminalID:   req.ActiveTerminalID,
+			UseActiveBrowser:   req.UseActiveBrowser,
+			ActiveBrowserTabID: req.ActiveBrowserTabID,
+		}
 		previousLiveID := ""
 		if req.ResumeID != "" {
 			if liveID, ok := a.chatSessionManager.LiveIDForRecordID(req.ResumeID); ok {
@@ -501,6 +1297,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		switch msg.Type {
 		case "message":
 			a.chatStreams.Touch(sessionID)
+			stream.StartTurn()
 			content := msg.Content
 			if msg.Context != nil && len(msg.Context) > 0 {
 				content = formatContextMessage(msg.Content, msg.Context)
@@ -538,7 +1335,10 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			session.SetAutoApprove(msg.AutoApprove)
 
 		case "set_use_active_terminal":
-			session.SetUseActiveTerminal(msg.UseActiveTerminal)
+			session.SetUseActiveTerminal(msg.UseActiveTerminal, msg.ActiveTerminalID)
+
+		case "set_use_active_browser":
+			session.SetUseActiveBrowser(msg.UseActiveBrowser, msg.ActiveBrowserTabID)
 
 		default:
 			stream.publish(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})
@@ -681,7 +1481,12 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 	var err error
 	resumed := true
 	resumeErr := ""
-	opts := chat.SessionOptions{UseActiveTerminal: req.UseActiveTerminal}
+	opts := chat.SessionOptions{
+		UseActiveTerminal:  req.UseActiveTerminal,
+		ActiveTerminalID:   req.ActiveTerminalID,
+		UseActiveBrowser:   req.UseActiveBrowser,
+		ActiveBrowserTabID: req.ActiveBrowserTabID,
+	}
 	previousLiveID := ""
 	if liveID, ok := a.chatSessionManager.LiveIDForRecordID(req.SessionID); ok {
 		previousLiveID = liveID

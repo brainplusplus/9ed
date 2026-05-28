@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -32,20 +33,23 @@ func main() {
 		killProcessOnPort(cfg.Port)
 	}
 
+	srv := server.New(cfg)
+	serverErrCh := make(chan error, 1)
+	go func() {
+		serverErrCh <- srv.ListenAndServe()
+	}()
+
+	waitForPortListening(cfg.Port, 5*time.Second)
+
 	var tn *tunnel.Tunnel
 	if cfg.Tunnel {
 		var err error
 		tn, err = tunnel.Start(cfg.TunnelEngine, cfg.Port)
 		if err != nil {
 			log.Printf("tunnel: %v (continuing without tunnel)", err)
+		} else if tn != nil {
+			srv.SetTunnel(tn.URL)
 		}
-	}
-
-	srv := server.New(cfg)
-
-	// Inject live tunnel URL into server (updates on watchdog restart).
-	if tn != nil {
-		srv.SetTunnel(tn.URL)
 	}
 
 	sigCh := make(chan os.Signal, 2)
@@ -66,9 +70,9 @@ func main() {
 	}()
 
 	printStartupInfo(cfg, tn)
-	if err := srv.ListenAndServe(); err != nil {
+	if err := <-serverErrCh; err != nil && err != http.ErrServerClosed {
 		if tn != nil {
-			tn.Stop()
+			_ = tn.Stop()
 		}
 		log.Fatal(err)
 	}
@@ -106,12 +110,13 @@ func killProcessOnPort(port string) {
 	}
 
 	debug.Printf("killing existing process %d on port %s", pid, port)
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return
+	if err := killProcessTree(pid); err != nil {
+		debug.Printf("failed to kill process tree for pid %d: %v", pid, err)
+		proc, findErr := os.FindProcess(pid)
+		if findErr == nil {
+			_ = proc.Kill()
+		}
 	}
-	_ = proc.Kill()
 	waitForPortAvailable(port, 5*time.Second)
 }
 
@@ -126,6 +131,19 @@ func waitForPortAvailable(port string, timeout time.Duration) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	log.Printf("port %s still appears busy after %s; continuing startup", port, timeout)
+}
+
+func waitForPortListening(port string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	log.Printf("port %s was not accepting connections after %s; attempting tunnel startup anyway", port, timeout)
 }
 
 func findPIDOnPort(port string) int {

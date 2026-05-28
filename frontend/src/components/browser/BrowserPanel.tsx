@@ -1,10 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { activateBrowserTab, captureBrowserElementScreenshot, createBrowserTab, deleteBrowserTab, getBrowserState, navigateBrowserTab } from '../../api';
+import { activateBrowserTab, browserTabScreenshotUrl, captureBrowserElementScreenshot, createBrowserTab, deleteBrowserTab, getBrowserMCPDebugLog, getBrowserState, goBackBrowserTab, goForwardBrowserTab, inspectBrowserTabNavigate, inspectBrowserTabPoint, mouseDownBrowserTab, mouseMoveBrowserTab, mouseUpBrowserTab, navigateBrowserTab, pasteBrowserTabClipboard, pressBrowserTabKey, reloadBrowserTab, scrollBrowserTab, setBrowserTabViewport, stopBrowserTab, syncBrowserTabState, typeBrowserTabText, uploadBrowserTabFiles } from '../../api';
 import { useChatStore } from '../../stores/chat';
 import { useWorkspaceStore } from '../../stores/workspace';
-import type { BrowserAutomationStatus, BrowserSelectionMode, BrowserTab } from '../../types';
+import type { BrowserAutomationStatus, BrowserElementSelection, BrowserMCPDebugEntry, BrowserSelectionMode, BrowserTab, BrowserTransport } from '../../types';
 import { useInspectMode } from './useInspectMode';
-import { InspectOverlay, SelectedHighlight, InspectMiniPanel } from './InspectOverlay';
+import { InspectOverlay, RemoteInspectOverlay, SelectedHighlight, InspectMiniPanel } from './InspectOverlay';
 
 const DEFAULT_URL = 'localhost:3000';
 const VIEWPORT_PRESETS = {
@@ -17,18 +17,163 @@ const VIEWPORT_PRESETS = {
 
 type ViewportMode = keyof typeof VIEWPORT_PRESETS;
 const FIXED_VIEWPORT_STAGE_X_PADDING = 36;
-const RESPONSIVE_FIT_MIN_WIDTH = 1024;
+const WEBRTC_FRAME_REFRESH_TIMEOUT_MS = 8000;
 
 type BrowserProxyMessage = {
   __nineBrowser: true;
-  type: 'open-tab' | 'close-tab' | 'focus-tab' | 'post-message';
+  type: 'open-tab' | 'close-tab' | 'focus-tab' | 'post-message' | 'location-change';
   tabId: string;
   url?: string;
   target?: string;
+  title?: string;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
 };
+
+type RemoteTooltip = {
+  top: number;
+  left: number;
+  label: string;
+  sublabel?: string;
+};
+
+function formatDebugTimestamp(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '--:--:--';
+  }
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
 
 function displayTitle(tab: BrowserTab): string {
   return tab.title || tab.url.replace(/^https?:\/\//, '');
+}
+
+function buildRemoteTooltip(selection: BrowserElementSelection, scaleX: number, scaleY: number): RemoteTooltip {
+  const rect = selection.boundingRect;
+  const box = selection.boxModel;
+  const label = [
+    selection.tagName.toLowerCase(),
+    selection.attributes?.id ? `#${selection.attributes.id}` : '',
+    selection.attributes?.class ? `.${selection.attributes.class.split(/\s+/).filter(Boolean).slice(0, 2).join('.')}` : '',
+  ].join('');
+  const dims = rect ? `${Math.round(rect.width)}x${Math.round(rect.height)}` : '';
+  const subtitleParts = [dims];
+  if (box) {
+    subtitleParts.push(`margin ${Math.round(box.margin.top)} ${Math.round(box.margin.right)} ${Math.round(box.margin.bottom)} ${Math.round(box.margin.left)}`);
+  }
+  return {
+    top: Math.max(4, ((rect?.y ?? 0) * scaleY) - 32),
+    left: Math.max(4, ((rect?.x ?? 0) * scaleX) + 8),
+    label,
+    sublabel: subtitleParts.filter(Boolean).join(' | '),
+  };
+}
+
+function isPrintableKey(event: React.KeyboardEvent<HTMLDivElement>): boolean {
+  return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
+function toPlaywrightKey(event: React.KeyboardEvent<HTMLDivElement>): string | null {
+  const modifiers: string[] = [];
+  if (event.ctrlKey) modifiers.push('Control');
+  if (event.metaKey) modifiers.push('Meta');
+  if (event.altKey) modifiers.push('Alt');
+  if (event.shiftKey && event.key.length > 1) modifiers.push('Shift');
+
+  const keyMap: Record<string, string> = {
+    ' ': 'Space',
+    Escape: 'Escape',
+    Enter: 'Enter',
+    Tab: 'Tab',
+    Backspace: 'Backspace',
+    Delete: 'Delete',
+    ArrowUp: 'ArrowUp',
+    ArrowDown: 'ArrowDown',
+    ArrowLeft: 'ArrowLeft',
+    ArrowRight: 'ArrowRight',
+    Home: 'Home',
+    End: 'End',
+    PageUp: 'PageUp',
+    PageDown: 'PageDown',
+  };
+  const key = keyMap[event.key] ?? (event.key.length === 1 ? event.key.toUpperCase() : event.key);
+  if (!key) return null;
+  return modifiers.length > 0 ? `${modifiers.join('+')}+${key}` : key;
+}
+
+function isTransientWebRTCError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  return (
+    message.includes('aborted without reason')
+    || message.includes('signal is aborted')
+    || message.includes('aborterror')
+    || message.includes('canceled')
+    || message.includes('broken pipe')
+    || message.includes('epipe')
+    || message.includes('pipe closed')
+    || message.includes('connection closed')
+    || message.includes('browser has been closed')
+    || message.includes('target page, context or browser has been closed')
+  );
+}
+
+function isRequestCanceledError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+  return message.includes('request canceled') || message.includes('signal is aborted') || message.includes('aborterror');
+}
+
+function decodeWebRTCFrame(blob: Blob, signal: AbortSignal): Promise<{ objectUrl: string; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('signal is aborted'));
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    let settled = false;
+
+    const cleanup = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener('abort', handleAbort);
+    };
+
+    const fail = (err: Error) => {
+      cleanup();
+      URL.revokeObjectURL(objectUrl);
+      reject(err);
+    };
+
+    const handleAbort = () => {
+      fail(new Error('signal is aborted'));
+    };
+
+    const image = new Image();
+    image.onload = () => {
+      if (settled) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      cleanup();
+      resolve({
+        objectUrl,
+        width: image.naturalWidth || 0,
+        height: image.naturalHeight || 0,
+      });
+    };
+    image.onerror = () => {
+      fail(new Error('Failed to decode WebRTC browser frame'));
+    };
+    signal.addEventListener('abort', handleAbort, { once: true });
+    image.src = objectUrl;
+  });
 }
 
 /* ── Inline SVG icon components ── */
@@ -63,6 +208,26 @@ function IconInspect() {
     <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6.5 2a4.5 4.5 0 0 1 3.4 7.45l3.55 3.55-1.05 1.05-3.55-3.55A4.5 4.5 0 1 1 6.5 2z" />
       <circle cx="6.5" cy="6.5" r="2" />
+    </svg>
+  );
+}
+
+function IconUpload() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 10.75V2.5" />
+      <path d="M4.75 5.75 8 2.5l3.25 3.25" />
+      <path d="M2.5 10.75v1.75A1 1 0 0 0 3.5 13.5h9a1 1 0 0 0 1-1v-1.75" />
+    </svg>
+  );
+}
+
+function IconDebug() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5.25 5.75h5.5v4.5h-5.5z" />
+      <path d="M6.5 2.5h3M8 2.5v1.25M3.5 6.25h1.75M10.75 6.25h1.75M4.5 12.25l1-1.5M11.5 12.25l-1-1.5" />
+      <path d="M6.75 8h.01M9.25 8h.01" />
     </svg>
   );
 }
@@ -158,12 +323,18 @@ export function BrowserPanel() {
   const panelRef = useRef<HTMLElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const browserUploadInputRef = useRef<HTMLInputElement | null>(null);
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [address, setAddress] = useState(DEFAULT_URL);
   const [loading, setLoading] = useState(false);
+  const [navigationBusy, setNavigationBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [automation, setAutomation] = useState<BrowserAutomationStatus | null>(null);
+  const [browserMCPDebugEnabled, setBrowserMCPDebugEnabled] = useState(false);
+  const [browserMCPEntries, setBrowserMCPEntries] = useState<BrowserMCPDebugEntry[]>([]);
+  const [showBrowserMCPDebugPanel, setShowBrowserMCPDebugPanel] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
   const tabsRef = useRef<BrowserTab[]>([]);
   const creatingDefaultProjectTabRef = useRef<Set<string>>(new Set());
@@ -172,20 +343,52 @@ export function BrowserPanel() {
   const [customHeight, setCustomHeight] = useState(720);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [autoContentSize, setAutoContentSize] = useState({ width: 0, height: 0 });
+  void autoContentSize;
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showMiniPanel, setShowMiniPanel] = useState(false);
   const [selectionCaptureBusy, setSelectionCaptureBusy] = useState(false);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [webrtcImageSrc, setWebrtcImageSrc] = useState<string | null>(null);
+  const [webrtcFrameLoading, setWebrtcFrameLoading] = useState(false);
+  const [webrtcImageNaturalSize, setWebrtcImageNaturalSize] = useState({ width: 0, height: 0 });
+  const [remoteHoverSelection, setRemoteHoverSelection] = useState<BrowserElementSelection | null>(null);
+  const [remoteTooltip, setRemoteTooltip] = useState<RemoteTooltip | null>(null);
+  const [remoteSelectedCandidate, setRemoteSelectedCandidate] = useState<BrowserElementSelection | null>(null);
   const addressEditingRef = useRef(false);
+  const createMenuRef = useRef<HTMLDivElement | null>(null);
+  const webrtcSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const webrtcObjectUrlRef = useRef<string | null>(null);
+  const webrtcRefreshInFlightRef = useRef(false);
+  const webrtcRefreshPendingRef = useRef(false);
+  const webrtcRefreshNonceRef = useRef(0);
+  const webrtcRefreshAbortRef = useRef<AbortController | null>(null);
+  const browserNavigateAbortRef = useRef<AbortController | null>(null);
+  const activeTabIdRef = useRef<string | null>(null);
+  const webrtcImageSrcRef = useRef<string | null>(null);
+  const remoteInspectSeqRef = useRef(0);
+  const remoteInspectBusyRef = useRef(false);
+  const remotePendingPointRef = useRef<{ x: number; y: number } | null>(null);
+  const webrtcPointerDownRef = useRef(false);
+  const webrtcPointerIdRef = useRef<number | null>(null);
+  const webrtcDragMovePointRef = useRef<{ x: number; y: number } | null>(null);
+  const webrtcDragMoveInFlightRef = useRef(false);
+  const wheelDeltaRef = useRef({ x: 0, y: 0 });
+  const wheelFlushTimerRef = useRef<number | null>(null);
+  const interactionSeqRef = useRef(0);
   const browserSelection = useChatStore((s) => s.browserSelection);
   const browserSelectionMode = useChatStore((s) => s.browserSelectionMode);
   const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
   const setBrowserSelectionMode = useChatStore((s) => s.setBrowserSelectionMode);
   const setBrowserSelectionCapture = useChatStore((s) => s.setBrowserSelectionCapture);
+  const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
+  const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
+  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
   const addBrowserTab = useWorkspaceStore((s) => s.addBrowserTab);
   const removeBrowserTab = useWorkspaceStore((s) => s.removeBrowserTab);
   const setActiveBrowserTab = useWorkspaceStore((s) => s.setActiveBrowserTab);
+  const reconcileBrowserTabs = useWorkspaceStore((s) => s.reconcileBrowserTabs);
 
   const projectTabs = useMemo(() => {
     const tabIds = new Set(activeProject?.browserTabIds ?? []);
@@ -196,6 +399,46 @@ export function BrowserPanel() {
     [activeProject?.activeBrowserTabId, projectTabs],
   );
   const activeTabId = activeTab?.id ?? null;
+  const activeTabIsWebRTC = activeTab?.transport === 'webrtc';
+  const resolveBrowserProjectId = useCallback((tabId?: string | null) => {
+    const store = useWorkspaceStore.getState();
+    if (tabId) {
+      const owner = store.projects.find((project) => (project.browserTabIds ?? []).includes(tabId));
+      if (owner) {
+        return owner.id;
+      }
+    }
+    return store.activeProjectId ?? activeProjectId ?? null;
+  }, [activeProjectId]);
+
+  const refreshBrowserState = useCallback(async () => {
+    const state = await getBrowserState();
+    setTabs(state.tabs);
+    setAutomation(state.automation);
+    reconcileBrowserTabs(state.tabs.map((tab) => tab.id));
+  }, [reconcileBrowserTabs]);
+
+  const refreshBrowserMCPDebugLog = useCallback(async () => {
+    const state = await getBrowserMCPDebugLog(80);
+    setBrowserMCPDebugEnabled(state.enabled);
+    setBrowserMCPEntries(state.entries);
+  }, []);
+
+  const replaceWebRTCImage = useCallback((nextUrl: string | null) => {
+    setWebrtcImageSrc(() => {
+      const previous = webrtcObjectUrlRef.current;
+      webrtcObjectUrlRef.current = nextUrl;
+      webrtcImageSrcRef.current = nextUrl;
+      if (previous && previous !== nextUrl) {
+        URL.revokeObjectURL(previous);
+      }
+      return nextUrl;
+    });
+  }, []);
+
+  const clearWebRTCImage = useCallback(() => {
+    replaceWebRTCImage(null);
+  }, [replaceWebRTCImage]);
 
   const updateStageSize = useCallback(() => {
     const stage = stageRef.current;
@@ -221,6 +464,13 @@ export function BrowserPanel() {
     clearSelection,
   } = useInspectMode(iframeRef, stageRef, activeTab);
 
+  const handleClearSelection = useCallback(() => {
+    clearSelection();
+    setRemoteHoverSelection(null);
+    setRemoteTooltip(null);
+    setRemoteSelectedCandidate(null);
+  }, [clearSelection]);
+
   const selectionKey = useMemo(() => {
     if (!browserSelection) return null;
     return `${browserSelection.tabId ?? activeTab?.id ?? ''}:${browserSelection.uniqueSelector ?? browserSelection.selector}:${browserSelection.url}`;
@@ -240,20 +490,18 @@ export function BrowserPanel() {
       return 1;
     }
     if (viewportMode === 'responsive') {
-      const contentWidth = Math.max(stageSize.width, autoContentSize.width, RESPONSIVE_FIT_MIN_WIDTH);
-      return Math.min(stageSize.width / contentWidth, 1);
+      return 1;
     }
     const availableWidth = Math.max(1, stageSize.width - FIXED_VIEWPORT_STAGE_X_PADDING);
     return Math.min(availableWidth / viewport.width, 1);
-  }, [autoContentSize.width, stageSize.height, stageSize.width, viewport.width, viewportMode]);
+  }, [stageSize.height, stageSize.width, viewport.width, viewportMode]);
   const scaledViewportStyle = useMemo(() => {
     if (viewportMode === 'responsive') {
       if (stageSize.width === 0 || stageSize.height === 0) {
         return undefined;
       }
-      const contentWidth = Math.max(stageSize.width, autoContentSize.width, RESPONSIVE_FIT_MIN_WIDTH);
       return {
-        width: `${Math.max(1, Math.round(contentWidth * viewportScale))}px`,
+        width: `${Math.max(320, Math.round(stageSize.width))}px`,
         height: `${Math.max(1, stageSize.height)}px`,
       };
     }
@@ -261,17 +509,15 @@ export function BrowserPanel() {
       width: `${Math.max(1, Math.round(viewport.width * viewportScale))}px`,
       height: `${Math.max(1, Math.round(viewport.height * viewportScale))}px`,
     };
-  }, [autoContentSize.width, stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode, viewportScale]);
+  }, [stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode, viewportScale]);
   const frameStyle = useMemo(() => {
     if (viewportMode === 'responsive') {
       if (stageSize.width === 0 || stageSize.height === 0) {
         return undefined;
       }
-      const contentWidth = Math.max(stageSize.width, autoContentSize.width, RESPONSIVE_FIT_MIN_WIDTH);
       return {
-        width: `${Math.max(1, Math.round(contentWidth))}px`,
-        height: `${Math.max(1, Math.round(stageSize.height / viewportScale))}px`,
-        transform: `scale(${viewportScale})`,
+        width: `${Math.max(320, Math.round(stageSize.width))}px`,
+        height: `${Math.max(320, Math.round(stageSize.height))}px`,
       };
     }
     return {
@@ -279,7 +525,33 @@ export function BrowserPanel() {
       height: `${viewport.height}px`,
       transform: `scale(${viewportScale})`,
     };
-  }, [autoContentSize.width, stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode, viewportScale]);
+  }, [stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode, viewportScale]);
+  const remoteViewport = useMemo(() => {
+    if (viewportMode === 'responsive') {
+      return {
+        width: Math.max(320, Math.round(stageSize.width || 320)),
+        height: Math.max(320, Math.round(stageSize.height || 320)),
+      };
+    }
+    return { width: viewport.width, height: viewport.height };
+  }, [stageSize.height, stageSize.width, viewport.height, viewport.width, viewportMode]);
+  const inspectViewport = useMemo(() => {
+    if (webrtcImageNaturalSize.width > 0 && webrtcImageNaturalSize.height > 0) {
+      return {
+        width: webrtcImageNaturalSize.width,
+        height: webrtcImageNaturalSize.height,
+      };
+    }
+    return remoteViewport;
+  }, [remoteViewport, webrtcImageNaturalSize.height, webrtcImageNaturalSize.width]);
+  const remoteOverlayScale = useMemo(() => {
+    const width = Math.max(1, inspectViewport.width);
+    const height = Math.max(1, inspectViewport.height);
+    return {
+      x: remoteViewport.width / width,
+      y: remoteViewport.height / height,
+    };
+  }, [inspectViewport.height, inspectViewport.width, remoteViewport.height, remoteViewport.width]);
 
   const updateAutoContentSize = useCallback(() => {
     if (viewportMode !== 'responsive') {
@@ -315,6 +587,58 @@ export function BrowserPanel() {
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+
+  useEffect(() => {
+    return () => {
+      if (wheelFlushTimerRef.current !== null) {
+        window.clearTimeout(wheelFlushTimerRef.current);
+        wheelFlushTimerRef.current = null;
+      }
+      browserNavigateAbortRef.current?.abort();
+      browserNavigateAbortRef.current = null;
+      webrtcRefreshAbortRef.current?.abort();
+      webrtcRefreshAbortRef.current = null;
+      if (webrtcObjectUrlRef.current) {
+        URL.revokeObjectURL(webrtcObjectUrlRef.current);
+        webrtcObjectUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    browserNavigateAbortRef.current?.abort();
+    browserNavigateAbortRef.current = null;
+    webrtcRefreshAbortRef.current?.abort();
+    webrtcRefreshAbortRef.current = null;
+    webrtcPointerDownRef.current = false;
+    webrtcPointerIdRef.current = null;
+    webrtcDragMovePointRef.current = null;
+    webrtcDragMoveInFlightRef.current = false;
+    setNavigationBusy(false);
+    setRemoteHoverSelection(null);
+    setRemoteTooltip(null);
+    setRemoteSelectedCandidate(null);
+    webrtcRefreshPendingRef.current = false;
+    webrtcRefreshInFlightRef.current = false;
+    setWebrtcFrameLoading(false);
+    setWebrtcImageNaturalSize({ width: 0, height: 0 });
+    clearWebRTCImage();
+  }, [activeTabId]);
+
+  useEffect(() => {
+    if (!createMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (createMenuRef.current?.contains(target)) return;
+      setCreateMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [createMenuOpen]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -353,6 +677,134 @@ export function BrowserPanel() {
     return () => window.clearInterval(interval);
   }, [activeTab, reloadNonce, updateAutoContentSize, viewportMode]);
 
+  const requestWebRTCFrameRefresh = useCallback(() => {
+    if (!activeTabIdRef.current || !activeTabIsWebRTC) {
+      return;
+    }
+    if (webrtcRefreshInFlightRef.current) {
+      webrtcRefreshPendingRef.current = true;
+      return;
+    }
+
+    const tabId = activeTabIdRef.current;
+    const requestNonce = ++webrtcRefreshNonceRef.current;
+    const controller = new AbortController();
+    let timedOut = false;
+    webrtcRefreshAbortRef.current?.abort();
+    webrtcRefreshAbortRef.current = controller;
+    webrtcRefreshInFlightRef.current = true;
+    webrtcRefreshPendingRef.current = false;
+    if (!webrtcImageSrcRef.current) {
+      setWebrtcFrameLoading(true);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, WEBRTC_FRAME_REFRESH_TIMEOUT_MS);
+
+    void fetch(browserTabScreenshotUrl(tabId, requestNonce), {
+      credentials: 'include',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || 'Failed to load WebRTC browser frame');
+        }
+        return response.blob();
+      })
+      .then((blob) => decodeWebRTCFrame(blob, controller.signal))
+      .then(({ objectUrl, width, height }) => {
+        if (requestNonce !== webrtcRefreshNonceRef.current || activeTabIdRef.current !== tabId) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        if (width > 0 && height > 0) {
+          setWebrtcImageNaturalSize({ width, height });
+        }
+        replaceWebRTCImage(objectUrl);
+        setError(null);
+      })
+      .catch((err) => {
+        if (requestNonce !== webrtcRefreshNonceRef.current || activeTabIdRef.current !== tabId) {
+          return;
+        }
+        if (timedOut) {
+          if (!webrtcImageSrcRef.current) {
+            setError('WebRTC browser frame timed out');
+          }
+          return;
+        }
+        if (isTransientWebRTCError(err)) {
+          return;
+        }
+        if (!webrtcImageSrcRef.current) {
+          setError(err instanceof Error ? err.message : 'Failed to load WebRTC browser frame');
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+        const isCurrentRequest = (
+          webrtcRefreshAbortRef.current === controller
+          && requestNonce === webrtcRefreshNonceRef.current
+          && activeTabIdRef.current === tabId
+        );
+        if (webrtcRefreshAbortRef.current === controller) {
+          webrtcRefreshAbortRef.current = null;
+        }
+        if (isCurrentRequest) {
+          setWebrtcFrameLoading(false);
+        }
+        if (isCurrentRequest) {
+          webrtcRefreshInFlightRef.current = false;
+        }
+        if (isCurrentRequest && webrtcRefreshPendingRef.current) {
+          webrtcRefreshPendingRef.current = false;
+          requestWebRTCFrameRefresh();
+        }
+      });
+  }, [activeTabIsWebRTC, replaceWebRTCImage]);
+
+  useEffect(() => {
+    if (!activeTabIsWebRTC || !activeTabId) {
+      return;
+    }
+    requestWebRTCFrameRefresh();
+    const interval = window.setInterval(() => {
+      void refreshBrowserState().catch(() => {});
+      requestWebRTCFrameRefresh();
+    }, 1500);
+    return () => window.clearInterval(interval);
+  }, [activeTabId, activeTabIsWebRTC, refreshBrowserState, reloadNonce, requestWebRTCFrameRefresh]);
+
+  useEffect(() => {
+    if (!activeTabIsWebRTC || !activeTabId) {
+      setRemoteHoverSelection(null);
+      setRemoteTooltip(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void setBrowserTabViewport(activeTabId, remoteViewport.width, remoteViewport.height)
+        .then(() => {
+          if (!cancelled) {
+            requestWebRTCFrameRefresh();
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError(err instanceof Error ? err.message : 'Failed to sync WebRTC viewport');
+          }
+        });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeTabId, activeTabIsWebRTC, remoteViewport.height, remoteViewport.width, requestWebRTCFrameRefresh]);
+
   useEffect(() => {
     function handleFullscreenChange() {
       setIsFullscreen(document.fullscreenElement === panelRef.current);
@@ -372,6 +824,7 @@ export function BrowserPanel() {
       try {
         const response = await captureBrowserElementScreenshot({
           url: browserSelection.url,
+          tabId: activeTabIsWebRTC ? (browserSelection.tabId ?? activeTab?.id) : undefined,
           selectors: [browserSelection.uniqueSelector ?? '', browserSelection.selector].filter(Boolean),
           name: browserSelection.tagName.toLowerCase(),
         });
@@ -398,15 +851,13 @@ export function BrowserPanel() {
 
     void ensureCapture();
     return () => { cancelled = true; };
-  }, [browserSelection, browserSelectionCapture?.selectorKey, browserSelectionMode, selectionKey, setBrowserSelectionCapture]);
+  }, [activeTab?.id, activeTabIsWebRTC, browserSelection, browserSelectionCapture?.selectorKey, browserSelectionMode, selectionKey, setBrowserSelectionCapture]);
 
   useEffect(() => {
     let alive = true;
-    getBrowserState()
-      .then((state) => {
+    refreshBrowserState()
+      .then(() => {
         if (!alive) return;
-        setTabs(state.tabs);
-        setAutomation(state.automation);
         return null;
       })
       .catch((err: Error) => {
@@ -418,7 +869,30 @@ export function BrowserPanel() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [refreshBrowserState]);
+
+  useEffect(() => {
+    let alive = true;
+    refreshBrowserMCPDebugLog()
+      .catch(() => {
+        if (!alive) return;
+        setBrowserMCPDebugEnabled(false);
+        setBrowserMCPEntries([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [refreshBrowserMCPDebugLog]);
+
+  useEffect(() => {
+    if (!browserMCPDebugEnabled) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void refreshBrowserMCPDebugLog().catch(() => {});
+    }, 1500);
+    return () => window.clearInterval(interval);
+  }, [browserMCPDebugEnabled, refreshBrowserMCPDebugLog]);
 
   useEffect(() => {
     if (initializing || !activeProjectId) return;
@@ -430,7 +904,7 @@ export function BrowserPanel() {
     }
     if (creatingDefaultProjectTabRef.current.has(activeProjectId)) return;
     creatingDefaultProjectTabRef.current.add(activeProjectId);
-    createBrowserTab(DEFAULT_URL)
+    createBrowserTab(DEFAULT_URL, 'proxy')
       .then((tab) => {
         setTabs((current) => [...current, tab]);
         addBrowserTab(activeProjectId, tab.id);
@@ -458,9 +932,14 @@ export function BrowserPanel() {
       if (data.type === 'open-tab' && data.url) {
         try {
           setError(null);
-          const tab = await createBrowserTab(data.url);
-          setTabs((current) => [...current, tab]);
-          if (activeProjectId) addBrowserTab(activeProjectId, tab.id);
+          const tab = await createBrowserTab(data.url, 'proxy');
+          setTabs((current) => (current.some((item) => item.id === tab.id) ? current : [...current, tab]));
+          const runtimeProjectId = resolveBrowserProjectId(data.tabId);
+          if (runtimeProjectId) {
+            addBrowserTab(runtimeProjectId, tab.id);
+            setActiveBrowserTab(runtimeProjectId, tab.id);
+          }
+          await activateBrowserTab(tab.id);
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to open browser tab');
         }
@@ -472,12 +951,49 @@ export function BrowserPanel() {
         if (!existing) {
           return;
         }
-        await handleCloseTab(data.tabId);
+        const projectId = resolveBrowserProjectId(data.tabId);
+        const nextTabs = tabsRef.current.filter((tab) => tab.id !== data.tabId);
+        setTabs(nextTabs);
+        if (projectId) {
+          removeBrowserTab(projectId, data.tabId);
+        }
+        try {
+          await deleteBrowserTab(data.tabId);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to close browser tab');
+        }
         return;
       }
 
       if (data.type === 'focus-tab') {
-        await handleSelectTab(data.tabId);
+        const projectId = resolveBrowserProjectId(data.tabId);
+        if (projectId) {
+          setActiveBrowserTab(projectId, data.tabId);
+        }
+        try {
+          await activateBrowserTab(data.tabId);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to activate browser tab');
+        }
+        return;
+      }
+
+      if (data.type === 'location-change' && data.url) {
+        const title = data.title ?? '';
+        const canGoBack = Boolean(data.canGoBack);
+        const canGoForward = Boolean(data.canGoForward);
+        setNavigationBusy(false);
+        setTabs((current) => current.map((tab) => (
+          tab.id === data.tabId
+            ? { ...tab, url: data.url!, title: title || tab.title, canGoBack, canGoForward }
+            : tab
+        )));
+        void syncBrowserTabState(data.tabId, {
+          url: data.url,
+          title,
+          canGoBack,
+          canGoForward,
+        }).catch(() => {});
       }
     }
 
@@ -485,37 +1001,65 @@ export function BrowserPanel() {
     return () => {
       window.removeEventListener('message', handleProxyMessage);
     };
-  }, [activeTabId]);
+  }, [activeTabId, addBrowserTab, activeProjectId, removeBrowserTab, resolveBrowserProjectId, setActiveBrowserTab]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!address.trim()) return;
+    const navigateController = new AbortController();
+    browserNavigateAbortRef.current?.abort();
+    browserNavigateAbortRef.current = navigateController;
     setLoading(true);
+    setNavigationBusy(Boolean(activeTab));
     setError(null);
     try {
       const tab = activeTab
-        ? await navigateBrowserTab(activeTab.id, address)
-        : await createBrowserTab(address);
+        ? await navigateBrowserTab(activeTab.id, address, navigateController.signal)
+        : await createBrowserTab(address, 'proxy');
+      if (browserNavigateAbortRef.current === navigateController) {
+        browserNavigateAbortRef.current = null;
+      }
       setTabs((current) => {
         const exists = current.some((item) => item.id === tab.id);
         return exists ? current.map((item) => (item.id === tab.id ? tab : item)) : [...current, tab];
       });
       if (activeProjectId) addBrowserTab(activeProjectId, tab.id);
       setReloadNonce((value) => value + 1);
+      if (!activeTab || activeTab.transport === 'webrtc') {
+        setNavigationBusy(false);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to navigate');
+      if (browserNavigateAbortRef.current === navigateController) {
+        browserNavigateAbortRef.current = null;
+      }
+      if (activeTab) {
+        addressEditingRef.current = false;
+        setAddress(activeTab.url);
+      }
+      setNavigationBusy(false);
+      if (!isRequestCanceledError(err)) {
+        const message = err instanceof Error ? err.message : 'Failed to navigate';
+        setError(message === 'Request timeout' ? 'Browser navigation timed out' : message);
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleNewTab() {
+  async function handleNewTab(transport: BrowserTransport = 'proxy') {
     setLoading(true);
     setError(null);
+    setCreateMenuOpen(false);
     try {
-      const tab = await createBrowserTab(DEFAULT_URL);
-      setTabs((current) => [...current, tab]);
-      if (activeProjectId) addBrowserTab(activeProjectId, tab.id);
+      const tab = await createBrowserTab(DEFAULT_URL, transport);
+      setTabs((current) => (current.some((item) => item.id === tab.id) ? current : [...current, tab]));
+      const runtimeProjectId = useWorkspaceStore.getState().activeProjectId ?? activeProjectId;
+      if (runtimeProjectId) {
+        addBrowserTab(runtimeProjectId, tab.id);
+        setActiveBrowserTab(runtimeProjectId, tab.id);
+      }
+      await activateBrowserTab(tab.id);
+      setAddress(tab.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create tab');
     } finally {
@@ -523,10 +1067,10 @@ export function BrowserPanel() {
     }
   }
 
-  async function handleCloseTab(tabId: string) {
+  async function handleCloseTab(tabId: string, projectId = resolveBrowserProjectId(tabId)) {
     const nextTabs = tabsRef.current.filter((tab) => tab.id !== tabId);
     setTabs(nextTabs);
-    if (activeProjectId) removeBrowserTab(activeProjectId, tabId);
+    if (projectId) removeBrowserTab(projectId, tabId);
     try {
       await deleteBrowserTab(tabId);
     } catch (err) {
@@ -534,13 +1078,506 @@ export function BrowserPanel() {
     }
   }
 
+  const handleStopLoading = useCallback(async () => {
+    browserNavigateAbortRef.current?.abort();
+    browserNavigateAbortRef.current = null;
+    setLoading(false);
+    setNavigationBusy(false);
+    if (!activeTab) {
+      return;
+    }
+    if (activeTab.transport === 'webrtc') {
+      void stopBrowserTab(activeTab.id)
+        .then(() => {
+          requestWebRTCFrameRefresh();
+          void refreshBrowserState().catch(() => {});
+        })
+        .catch(() => {});
+      return;
+    }
+    const frameWindow = iframeRef.current?.contentWindow;
+    frameWindow?.stop?.();
+  }, [activeTab, refreshBrowserState, requestWebRTCFrameRefresh]);
+
   function handleReload() {
+    if (navigationBusy) {
+      void handleStopLoading();
+      return;
+    }
+    if (!activeTab) return;
     setAutoContentSize({ width: 0, height: 0 });
+    setError(null);
+    setNavigationBusy(true);
+    if (activeTab.transport === 'webrtc') {
+      const reloadController = new AbortController();
+      browserNavigateAbortRef.current?.abort();
+      browserNavigateAbortRef.current = reloadController;
+      void reloadBrowserTab(activeTab.id, reloadController.signal)
+        .then((tab) => {
+          if (browserNavigateAbortRef.current === reloadController) {
+            browserNavigateAbortRef.current = null;
+          }
+          setTabs((current) => current.map((entry) => (entry.id === tab.id ? tab : entry)));
+          requestWebRTCFrameRefresh();
+        })
+        .catch((err) => {
+          if (browserNavigateAbortRef.current === reloadController) {
+            browserNavigateAbortRef.current = null;
+          }
+          if (!isRequestCanceledError(err)) {
+            const message = err instanceof Error ? err.message : 'Failed to reload browser';
+            setError(message === 'Request timeout' ? 'Browser reload timed out' : message);
+          }
+        })
+        .finally(() => {
+          setNavigationBusy(false);
+        });
+      return;
+    }
     setReloadNonce((value) => value + 1);
   }
 
-  async function handleSelectTab(tabId: string) {
-    if (activeProjectId) setActiveBrowserTab(activeProjectId, tabId);
+  async function handleBack() {
+    if (!activeTab) return;
+    if (navigationBusy) {
+      return;
+    }
+    setError(null);
+    setNavigationBusy(true);
+    try {
+      if (activeTab.transport === 'webrtc') {
+        const tab = await goBackBrowserTab(activeTab.id);
+        setTabs((current) => current.map((entry) => (entry.id === tab.id ? tab : entry)));
+        setNavigationBusy(false);
+        return;
+      }
+      const frameWindow = iframeRef.current?.contentWindow;
+      frameWindow?.history.back();
+    } catch (err) {
+      setNavigationBusy(false);
+      setError(err instanceof Error ? err.message : 'Failed to go back');
+    }
+  }
+
+  async function handleForward() {
+    if (!activeTab) return;
+    if (navigationBusy) {
+      return;
+    }
+    setError(null);
+    setNavigationBusy(true);
+    try {
+      if (activeTab.transport === 'webrtc') {
+        const tab = await goForwardBrowserTab(activeTab.id);
+        setTabs((current) => current.map((entry) => (entry.id === tab.id ? tab : entry)));
+        setNavigationBusy(false);
+        return;
+      }
+      const frameWindow = iframeRef.current?.contentWindow;
+      frameWindow?.history.forward();
+    } catch (err) {
+      setNavigationBusy(false);
+      setError(err instanceof Error ? err.message : 'Failed to go forward');
+    }
+  }
+
+  useEffect(() => {
+    if (!inspectMode) {
+      setRemoteHoverSelection(null);
+      setRemoteTooltip(null);
+      setRemoteSelectedCandidate(null);
+    }
+  }, [inspectMode]);
+
+  const clientPointToViewport = useCallback((clientX: number, clientY: number) => {
+    const surface = webrtcSurfaceRef.current;
+    if (!surface) return null;
+    const rect = surface.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const relX = clientX - rect.left;
+    const relY = clientY - rect.top;
+    if (relX < 0 || relY < 0 || relX > rect.width || relY > rect.height) return null;
+    return {
+      x: (relX / rect.width) * inspectViewport.width,
+      y: (relY / rect.height) * inspectViewport.height,
+    };
+  }, [inspectViewport.height, inspectViewport.width]);
+
+  const bumpWebRTCFrame = useCallback((delays: number[] = [0, 120, 320]) => {
+    const seq = ++interactionSeqRef.current;
+    delays.forEach((delay) => {
+      window.setTimeout(() => {
+        if (seq === interactionSeqRef.current) {
+          requestWebRTCFrameRefresh();
+        }
+      }, delay);
+    });
+  }, [requestWebRTCFrameRefresh]);
+
+  const handleUploadFiles = useCallback(async (files: Iterable<File>) => {
+    if (!activeTab || activeTab.transport !== 'webrtc') {
+      return;
+    }
+    setUploadBusy(true);
+    setError(null);
+    try {
+      const tab = await uploadBrowserTabFiles(activeTab.id, files);
+      setTabs((current) => current.map((entry) => (entry.id === tab.id ? tab : entry)));
+      bumpWebRTCFrame([0, 120, 280, 520]);
+      void refreshBrowserState().catch(() => {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload files to WebRTC browser');
+    } finally {
+      setUploadBusy(false);
+      if (browserUploadInputRef.current) {
+        browserUploadInputRef.current.value = '';
+      }
+    }
+  }, [activeTab, bumpWebRTCFrame, refreshBrowserState]);
+
+  const handleUploadButtonClick = useCallback(() => {
+    if (!activeTab || activeTab.transport !== 'webrtc' || uploadBusy) {
+      return;
+    }
+    browserUploadInputRef.current?.click();
+  }, [activeTab, uploadBusy]);
+
+  const handleUploadInputChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+    void handleUploadFiles(files);
+  }, [handleUploadFiles]);
+
+  const runRemoteInspect = useCallback(async (point: { x: number; y: number }, commitSelection: boolean) => {
+    if (!activeTabId) return;
+    remoteInspectBusyRef.current = true;
+    const seq = ++remoteInspectSeqRef.current;
+    try {
+      const selection = await inspectBrowserTabPoint(activeTabId, point.x, point.y);
+      if (seq !== remoteInspectSeqRef.current) {
+        return;
+      }
+      setRemoteHoverSelection(selection);
+      setRemoteTooltip(buildRemoteTooltip(selection, remoteOverlayScale.x, remoteOverlayScale.y));
+      setRemoteSelectedCandidate(selection);
+      if (commitSelection) {
+        setBrowserSelection(selection);
+        if (!useActiveBrowser) {
+          toggleUseActiveBrowser();
+        }
+        if (inspectMode) {
+          toggleInspectMode();
+        }
+      }
+    } catch (err) {
+      if (commitSelection) {
+        setError(err instanceof Error ? err.message : 'Failed to inspect browser element');
+      }
+    } finally {
+      remoteInspectBusyRef.current = false;
+      const pending = remotePendingPointRef.current;
+      remotePendingPointRef.current = null;
+      if (pending && !commitSelection) {
+        void runRemoteInspect(pending, false);
+      }
+    }
+  }, [activeTabId, inspectMode, remoteOverlayScale.x, remoteOverlayScale.y, setBrowserSelection, toggleInspectMode, toggleUseActiveBrowser, useActiveBrowser]);
+
+  const queueRemoteInspect = useCallback((point: { x: number; y: number }, commitSelection = false) => {
+    if (commitSelection) {
+      remotePendingPointRef.current = null;
+      void runRemoteInspect(point, true);
+      return;
+    }
+    if (remoteInspectBusyRef.current) {
+      remotePendingPointRef.current = point;
+      return;
+    }
+    void runRemoteInspect(point, false);
+  }, [runRemoteInspect]);
+
+  useEffect(() => {
+    if (!inspectMode || !activeTabIsWebRTC) {
+      return;
+    }
+    webrtcSurfaceRef.current?.focus();
+    if (remoteHoverSelection || remoteSelectedCandidate) {
+      return;
+    }
+    queueRemoteInspect({
+      x: inspectViewport.width / 2,
+      y: inspectViewport.height / 2,
+    }, false);
+  }, [activeTabIsWebRTC, inspectMode, inspectViewport.height, inspectViewport.width, queueRemoteInspect, remoteHoverSelection, remoteSelectedCandidate]);
+
+  const flushWebRTCDragMove = useCallback(() => {
+    if (!activeTabId || !webrtcPointerDownRef.current) {
+      webrtcDragMovePointRef.current = null;
+      return;
+    }
+    const point = webrtcDragMovePointRef.current;
+    if (!point) {
+      return;
+    }
+    webrtcDragMovePointRef.current = null;
+    webrtcDragMoveInFlightRef.current = true;
+    void mouseMoveBrowserTab(activeTabId, point.x, point.y)
+      .then(() => {
+        requestWebRTCFrameRefresh();
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to move in WebRTC browser');
+      })
+      .finally(() => {
+        webrtcDragMoveInFlightRef.current = false;
+        if (webrtcPointerDownRef.current && webrtcDragMovePointRef.current) {
+          flushWebRTCDragMove();
+        }
+      });
+  }, [activeTabId, requestWebRTCFrameRefresh]);
+
+  const handleWebRTCPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const point = clientPointToViewport(event.clientX, event.clientY);
+    if (inspectMode) {
+      if (!point) {
+        setRemoteHoverSelection(null);
+        setRemoteTooltip(null);
+        return;
+      }
+      queueRemoteInspect(point, false);
+      return;
+    }
+    if (!webrtcPointerDownRef.current || !point || !activeTabId) {
+      return;
+    }
+    webrtcDragMovePointRef.current = point;
+    if (!webrtcDragMoveInFlightRef.current) {
+      flushWebRTCDragMove();
+    }
+  }, [activeTabId, clientPointToViewport, flushWebRTCDragMove, inspectMode, queueRemoteInspect]);
+
+  const handleWebRTCPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (inspectMode || !activeTabId || event.button !== 0) {
+      return;
+    }
+    const point = clientPointToViewport(event.clientX, event.clientY);
+    if (!point) {
+      return;
+    }
+    webrtcSurfaceRef.current?.focus();
+    webrtcPointerDownRef.current = true;
+    webrtcPointerIdRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+    void mouseDownBrowserTab(activeTabId, point.x, point.y)
+      .then(() => {
+        requestWebRTCFrameRefresh();
+      })
+      .catch((err) => {
+        webrtcPointerDownRef.current = false;
+        webrtcPointerIdRef.current = null;
+        setError(err instanceof Error ? err.message : 'Failed to press mouse in WebRTC browser');
+      });
+  }, [activeTabId, clientPointToViewport, inspectMode, requestWebRTCFrameRefresh]);
+
+  const handleWebRTCClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const point = clientPointToViewport(event.clientX, event.clientY);
+    if (!point) return;
+    if (!inspectMode) return;
+    event.preventDefault();
+    event.stopPropagation();
+    queueRemoteInspect(point, true);
+  }, [clientPointToViewport, inspectMode, queueRemoteInspect]);
+
+  const handleWebRTCPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (inspectMode || !activeTabId || !webrtcPointerDownRef.current) {
+      return;
+    }
+    const point = clientPointToViewport(event.clientX, event.clientY);
+    webrtcPointerDownRef.current = false;
+    webrtcPointerIdRef.current = null;
+    webrtcDragMovePointRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!point) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    void mouseUpBrowserTab(activeTabId, point.x, point.y)
+      .then(() => {
+        bumpWebRTCFrame([0, 80, 220]);
+        void refreshBrowserState().catch(() => {});
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to release mouse in WebRTC browser');
+      });
+  }, [activeTabId, bumpWebRTCFrame, clientPointToViewport, inspectMode, refreshBrowserState]);
+
+  const handleWebRTCPointerCancel = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const point = clientPointToViewport(event.clientX, event.clientY);
+    if (!activeTabId || !webrtcPointerDownRef.current) {
+      webrtcPointerDownRef.current = false;
+      webrtcPointerIdRef.current = null;
+      webrtcDragMovePointRef.current = null;
+      return;
+    }
+    webrtcPointerDownRef.current = false;
+    webrtcPointerIdRef.current = null;
+    webrtcDragMovePointRef.current = null;
+    if (!point) {
+      return;
+    }
+    void mouseUpBrowserTab(activeTabId, point.x, point.y).catch(() => {});
+  }, [activeTabId, clientPointToViewport]);
+
+  const runRemoteNavigate = useCallback(async (direction: 'up' | 'down' | 'left' | 'right') => {
+    if (!activeTabId) return;
+    const tabSelection = browserSelection?.tabId === activeTabId ? browserSelection : null;
+    const target = remoteSelectedCandidate ?? remoteHoverSelection ?? tabSelection;
+    const selector = target?.uniqueSelector ?? target?.selector;
+    if (!selector) return;
+    try {
+      const selection = await inspectBrowserTabNavigate(activeTabId, selector, direction);
+      setRemoteHoverSelection(selection);
+      setRemoteSelectedCandidate(selection);
+      setRemoteTooltip(buildRemoteTooltip(selection, remoteOverlayScale.x, remoteOverlayScale.y));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to navigate inspected element');
+    }
+  }, [activeTabId, browserSelection, remoteHoverSelection, remoteOverlayScale.x, remoteOverlayScale.y, remoteSelectedCandidate]);
+
+  const handleWebRTCKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!inspectMode) {
+      if (!activeTabId) return;
+      if (isPrintableKey(event)) {
+        event.preventDefault();
+        void typeBrowserTabText(activeTabId, event.key)
+          .then(() => {
+            bumpWebRTCFrame();
+            void refreshBrowserState().catch(() => {});
+          })
+          .catch((err) => {
+            setError(err instanceof Error ? err.message : 'Failed to type in WebRTC browser');
+          });
+        return;
+      }
+      const key = toPlaywrightKey(event);
+      if (!key) return;
+      event.preventDefault();
+      void pressBrowserTabKey(activeTabId, key)
+        .then(() => {
+          bumpWebRTCFrame();
+          void refreshBrowserState().catch(() => {});
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : 'Failed to send key to WebRTC browser');
+        });
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      toggleInspectMode();
+      return;
+    }
+    if (event.key === 'Enter') {
+      const selection = remoteSelectedCandidate ?? remoteHoverSelection;
+      if (!selection) return;
+      event.preventDefault();
+      setBrowserSelection(selection);
+      if (!useActiveBrowser) {
+        toggleUseActiveBrowser();
+      }
+      toggleInspectMode();
+      return;
+    }
+    const directionMap: Record<string, 'up' | 'down' | 'left' | 'right'> = {
+      ArrowUp: 'up',
+      ArrowDown: 'down',
+      ArrowLeft: 'left',
+      ArrowRight: 'right',
+    };
+    const direction = directionMap[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    void runRemoteNavigate(direction);
+  }, [activeTabId, bumpWebRTCFrame, inspectMode, remoteHoverSelection, remoteSelectedCandidate, runRemoteNavigate, setBrowserSelection, toggleInspectMode, toggleUseActiveBrowser, useActiveBrowser]);
+
+  const handleWebRTCPaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (inspectMode || !activeTabId) return;
+    const text = event.clipboardData.getData('text/plain');
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (files.length === 0 && !text) return;
+    event.preventDefault();
+    if (files.length > 0) {
+      void pasteBrowserTabClipboard(activeTabId, { text, files })
+        .then(() => {
+          bumpWebRTCFrame([0, 150, 400, 650]);
+          void refreshBrowserState().catch(() => {});
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : 'Failed to paste clipboard into WebRTC browser');
+        });
+      return;
+    }
+    void typeBrowserTabText(activeTabId, text)
+      .then(() => {
+        bumpWebRTCFrame([0, 150, 400]);
+        void refreshBrowserState().catch(() => {});
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to paste into WebRTC browser');
+      });
+  }, [activeTabId, bumpWebRTCFrame, inspectMode, refreshBrowserState]);
+
+  const flushWebRTCWheel = useCallback(() => {
+    if (!activeTabId) return;
+    const { x, y } = wheelDeltaRef.current;
+    wheelDeltaRef.current = { x: 0, y: 0 };
+    wheelFlushTimerRef.current = null;
+    if (x === 0 && y === 0) return;
+    void scrollBrowserTab(activeTabId, x, y)
+      .then(() => {
+        bumpWebRTCFrame();
+        void refreshBrowserState().catch(() => {});
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to scroll WebRTC browser');
+      });
+  }, [activeTabId, bumpWebRTCFrame]);
+
+  const handleWebRTCWheel = useCallback((event: WheelEvent) => {
+    if (inspectMode || !activeTabId) return;
+    event.preventDefault();
+    wheelDeltaRef.current.x += event.deltaX;
+    wheelDeltaRef.current.y += event.deltaY;
+    if (wheelFlushTimerRef.current !== null) return;
+    wheelFlushTimerRef.current = window.setTimeout(flushWebRTCWheel, 40);
+  }, [activeTabId, flushWebRTCWheel, inspectMode]);
+
+  useEffect(() => {
+    const surface = webrtcSurfaceRef.current;
+    if (!surface || !activeTabIsWebRTC) {
+      return;
+    }
+    surface.addEventListener('wheel', handleWebRTCWheel, { passive: false });
+    return () => {
+      surface.removeEventListener('wheel', handleWebRTCWheel);
+    };
+  }, [activeTabIsWebRTC, handleWebRTCWheel]);
+
+  async function handleSelectTab(tabId: string, projectId = resolveBrowserProjectId(tabId)) {
+    if (projectId) setActiveBrowserTab(projectId, tabId);
     try {
       await activateBrowserTab(tabId);
     } catch (err) {
@@ -588,31 +1625,61 @@ export function BrowserPanel() {
   return (
     <section ref={panelRef} className={`browser-panel${isFullscreen ? ' fullscreen' : ''}`}>
       <div className="browser-tab-strip">
-        {projectTabs.map((tab) => (
-          <div key={tab.id} className={`browser-tab-chip${tab.id === activeTab?.id ? ' active' : ''}`}>
+        <div className="browser-tab-rail">
+          {projectTabs.map((tab) => (
+            <div key={tab.id} className={`browser-tab-chip${tab.id === activeTab?.id ? ' active' : ''}`}>
             <button className="browser-tab-button" type="button" onClick={() => void handleSelectTab(tab.id)} title={tab.url}>
               <span className="browser-tab-dot" />
-              <span className="browser-tab-title">{displayTitle(tab)}</span>
+              <span className="browser-tab-copy">
+                <span className="browser-tab-title">{displayTitle(tab)}</span>
+                <span className={`browser-tab-transport browser-tab-transport-${tab.transport}`}>
+                  {tab.transport === 'webrtc' ? 'WebRTC' : 'Proxy'}
+                </span>
+              </span>
             </button>
-            <button className="browser-tab-close" type="button" onClick={() => handleCloseTab(tab.id)} aria-label={`Close ${displayTitle(tab)}`}>
-              <IconClose />
+              <button className="browser-tab-close" type="button" onClick={() => handleCloseTab(tab.id)} aria-label={`Close ${displayTitle(tab)}`}>
+                <IconClose />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="browser-tab-actions">
+          <div ref={createMenuRef} className={`browser-newtab-wrap${createMenuOpen ? ' open' : ''}`}>
+            <button className="browser-icon-btn" type="button" onClick={() => setCreateMenuOpen((value) => !value)} title="New browser tab">
+              <IconPlus />
             </button>
+            {createMenuOpen && (
+              <div className="browser-newtab-menu">
+                <button type="button" onClick={() => void handleNewTab('proxy')}>
+                  Proxy Tab
+                </button>
+                <button type="button" onClick={() => void handleNewTab('webrtc')}>
+                  WebRTC Tab
+                </button>
+              </div>
+            )}
           </div>
-        ))}
-        <button className="browser-icon-btn" type="button" onClick={handleNewTab} title="New tab">
-          <IconPlus />
-        </button>
+        </div>
       </div>
 
+      <input
+        ref={browserUploadInputRef}
+        className="browser-hidden-upload"
+        type="file"
+        multiple={activeTab?.fileChooserMultiple ?? true}
+        tabIndex={-1}
+        onChange={handleUploadInputChange}
+      />
+
       <form className="browser-toolbar" onSubmit={handleSubmit}>
-        <button className="browser-icon-btn" type="button" title="Back" disabled>
+        <button className="browser-icon-btn" type="button" title="Back" onClick={() => void handleBack()} disabled={!activeTab?.canGoBack}>
           <IconChevronLeft />
         </button>
-        <button className="browser-icon-btn" type="button" title="Forward" disabled>
+        <button className="browser-icon-btn" type="button" title="Forward" onClick={() => void handleForward()} disabled={!activeTab?.canGoForward}>
           <IconChevronRight />
         </button>
-        <button className="browser-icon-btn" type="button" title="Reload" onClick={handleReload} disabled={!activeTab}>
-          <IconReload />
+        <button className="browser-icon-btn" type="button" title={navigationBusy ? 'Cancel loading' : 'Reload'} onClick={handleReload} disabled={!activeTab}>
+          {navigationBusy ? <IconClose /> : <IconReload />}
         </button>
         <button
           className={`browser-icon-btn${inspectMode ? ' active' : ''}`}
@@ -623,6 +1690,27 @@ export function BrowserPanel() {
         >
           <IconInspect />
         </button>
+        <button
+          className={`browser-icon-btn${activeTab?.fileChooserPending ? ' active' : ''}`}
+          type="button"
+          title={activeTab?.transport === 'webrtc'
+            ? (activeTab.fileChooserPending ? 'Choose files for the pending upload dialog' : 'Upload files to the active WebRTC page')
+            : 'File upload is handled natively in proxy tabs'}
+          onClick={handleUploadButtonClick}
+          disabled={!activeTab || activeTab.transport !== 'webrtc' || uploadBusy}
+        >
+          <IconUpload />
+        </button>
+        {browserMCPDebugEnabled && (
+          <button
+            className={`browser-icon-btn${showBrowserMCPDebugPanel ? ' active' : ''}`}
+            type="button"
+            title={showBrowserMCPDebugPanel ? 'Hide browser MCP debug panel' : 'Show browser MCP debug panel'}
+            onClick={() => setShowBrowserMCPDebugPanel((value) => !value)}
+          >
+            <IconDebug />
+          </button>
+        )}
         <input
           className="browser-address"
           value={address}
@@ -708,12 +1796,35 @@ export function BrowserPanel() {
           {error || automation?.lastError}
         </div>
       )}
+      {browserMCPDebugEnabled && showBrowserMCPDebugPanel && (
+        <div className="browser-debug-log" aria-live="polite">
+          <div className="browser-debug-log-header">
+            <span>Browser MCP Debug</span>
+            <span>{browserMCPEntries.length > 0 ? `${browserMCPEntries.length} entries` : 'Waiting for activity'}</span>
+          </div>
+          <div className="browser-debug-log-list">
+            {browserMCPEntries.length === 0 ? (
+              <div className="browser-debug-log-empty">No browser MCP activity yet.</div>
+            ) : browserMCPEntries.map((entry, index) => (
+              <div key={`${entry.timestamp}-${entry.source}-${index}`} className={`browser-debug-log-entry level-${entry.level || 'info'}`}>
+                <span className="browser-debug-log-time">{formatDebugTimestamp(entry.timestamp)}</span>
+                <span className={`browser-debug-log-source source-${entry.source || 'server'}`}>{entry.source || 'server'}</span>
+                <span className="browser-debug-log-message">{entry.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {inspectMode && (
         <div className="browser-inspect-tip">
-          <span>Inspect mode — hover and click to select for AI chat. Press Esc to cancel.</span>
+          <span>
+            {activeTabIsWebRTC
+              ? 'Inspect mode — move over the WebRTC surface, use arrow keys to navigate, Enter to select, and Esc to cancel.'
+              : 'Inspect mode — hover and click to select for AI chat. Press Esc to cancel.'}
+          </span>
           <span className="kbd-hint">
-            <kbd>↑↓</kbd> navigate
-            <kbd>Enter</kbd> select
+            <kbd>↑↓</kbd>
+            <kbd>Enter</kbd>
             <kbd>Esc</kbd> cancel
           </span>
         </div>
@@ -724,7 +1835,7 @@ export function BrowserPanel() {
           mode={browserSelectionMode}
           captureReady={browserSelectionCapture?.selectorKey === selectionKey}
           captureBusy={selectionCaptureBusy}
-          onClear={clearSelection}
+          onClear={handleClearSelection}
           onReselect={toggleInspectMode}
           onTogglePanel={() => setShowMiniPanel((v) => !v)}
           onChangeMode={(mode) => setBrowserSelectionMode(mode)}
@@ -736,52 +1847,99 @@ export function BrowserPanel() {
         {activeTab ? (
           <div className="browser-viewport-stage">
             <div className={`browser-viewport-shell${viewportMode === 'responsive' ? ' responsive' : ''}`} style={scaledViewportStyle}>
-              <iframe
-                ref={iframeRef}
-                key={`${activeTab.id}-${reloadNonce}`}
-                className={`browser-frame${viewportMode === 'responsive' ? ' responsive' : ''}`}
-                style={{ ...frameStyle, pointerEvents: inspectMode ? 'none' : 'auto' }}
-                src={activeTab.proxyPath}
-                title={displayTitle(activeTab)}
-                onLoad={() => {
-                  updateAutoContentSize();
-                  window.setTimeout(updateAutoContentSize, 250);
-                  window.setTimeout(updateAutoContentSize, 1000);
-                }}
-                sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-              />
-              {/* Event-capture overlay — catches mouse events when iframe has pointer-events:none */}
-              {inspectMode && (
-                <div className="browser-inspect-hitlayer" />
+              {activeTabIsWebRTC ? (
+                <div
+                  ref={webrtcSurfaceRef}
+                  className={`browser-webrtc-frame${viewportMode === 'responsive' ? ' responsive' : ''}${inspectMode ? ' inspect' : ''}`}
+                  style={frameStyle}
+                  tabIndex={0}
+                  onPointerMove={handleWebRTCPointerMove}
+                  onPointerDown={handleWebRTCPointerDown}
+                  onPointerUp={handleWebRTCPointerUp}
+                  onPointerCancel={handleWebRTCPointerCancel}
+                  onMouseLeave={() => {
+                    if (inspectMode) {
+                      setRemoteHoverSelection(null);
+                      setRemoteTooltip(null);
+                    }
+                  }}
+                  onClick={handleWebRTCClick}
+                  onKeyDown={handleWebRTCKeyDown}
+                  onPaste={handleWebRTCPaste}
+                >
+                  <img
+                    className="browser-webrtc-image"
+                    src={webrtcImageSrc ?? undefined}
+                    alt={displayTitle(activeTab)}
+                    draggable={false}
+                  />
+                  {webrtcFrameLoading && !webrtcImageSrc && !error && (
+                    <div className="browser-webrtc-loading">
+                      <div className="browser-loading-spinner" />
+                      <span className="browser-loading-text">Loading browser frame…</span>
+                    </div>
+                  )}
+                  <RemoteInspectOverlay
+                    hoverSelection={remoteHoverSelection}
+                    selection={browserSelection?.tabId === activeTab.id ? browserSelection : null}
+                    tooltip={remoteTooltip}
+                    inspectMode={inspectMode}
+                    scaleX={remoteOverlayScale.x}
+                    scaleY={remoteOverlayScale.y}
+                  />
+                  <InspectMiniPanel
+                    selection={browserSelection?.tabId === activeTab.id ? browserSelection : null}
+                    visible={showMiniPanel}
+                    onClose={() => setShowMiniPanel(false)}
+                  />
+                </div>
+              ) : (
+                <>
+                  <iframe
+                    ref={iframeRef}
+                    key={`${activeTab.id}-${reloadNonce}`}
+                    className={`browser-frame${viewportMode === 'responsive' ? ' responsive' : ''}`}
+                    style={{ ...frameStyle, pointerEvents: inspectMode ? 'none' : 'auto' }}
+                    src={activeTab.proxyPath}
+                    title={displayTitle(activeTab)}
+                    onLoad={() => {
+                      setNavigationBusy(false);
+                      updateAutoContentSize();
+                      window.setTimeout(updateAutoContentSize, 250);
+                      window.setTimeout(updateAutoContentSize, 1000);
+                    }}
+                    sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+                  />
+                  {inspectMode && (
+                    <div className="browser-inspect-hitlayer" />
+                  )}
+                  <InspectOverlay
+                    boxModel={inspectState.hoveredBoxModel}
+                    outerRect={inspectState.hoveredRect}
+                    tooltip={inspectState.tooltip}
+                    iframeRef={iframeRef}
+                    inspectMode={inspectMode}
+                    selection={browserSelection}
+                  />
+                  {!inspectMode && browserSelection && (
+                    <SelectedHighlight
+                      selection={browserSelection}
+                      iframeRef={iframeRef}
+                    />
+                  )}
+                  <InspectMiniPanel
+                    selection={browserSelection}
+                    visible={showMiniPanel}
+                    onClose={() => setShowMiniPanel(false)}
+                  />
+                </>
               )}
-              {/* Canvas overlay for inspect highlight (Tier 1-2) */}
-              <InspectOverlay
-                boxModel={inspectState.hoveredBoxModel}
-                outerRect={inspectState.hoveredRect}
-                tooltip={inspectState.tooltip}
-                iframeRef={iframeRef}
-                inspectMode={inspectMode}
-                selection={browserSelection}
-              />
-              {/* Persistent selected element highlight */}
-              {!inspectMode && browserSelection && (
-                <SelectedHighlight
-                  selection={browserSelection}
-                  iframeRef={iframeRef}
-                />
-              )}
-              {/* Mini panel for detailed inspect (Tier 4) */}
-              <InspectMiniPanel
-                selection={browserSelection}
-                visible={showMiniPanel}
-                onClose={() => setShowMiniPanel(false)}
-              />
             </div>
           </div>
         ) : (
           <div className="browser-empty">
             <IconGlobe />
-            <button className="browser-go-btn" type="button" onClick={handleNewTab}>
+            <button className="browser-go-btn" type="button" onClick={() => void handleNewTab('proxy')}>
               Open Browser
             </button>
           </div>

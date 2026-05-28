@@ -101,9 +101,11 @@ type ConfigBarProps = {
   setConfigOption?: (configId: string, value: string) => void;
   setAutoApprove?: (enabled: boolean) => void;
   connected?: boolean;
+  busy?: boolean;
+  busyLabel?: string | null;
 };
 
-export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }: ConfigBarProps) {
+export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, busy = false, busyLabel = null }: ConfigBarProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
@@ -113,23 +115,50 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
   const toggleAutoApprove = useChatStore((s) => s.toggleAutoApprove);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
-  const browserSelection = useChatStore((s) => s.browserSelection);
-  const browserSelectionMode = useChatStore((s) => s.browserSelectionMode);
-  const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
   const restartActiveSessionForTerminal = useChatStore((s) => s.restartActiveSessionForTerminal);
+  const restartActiveSessionForBrowser = useChatStore((s) => s.restartActiveSessionForBrowser);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId && sessionBelongsToWorkDir(s, activeProject?.path));
   const configOptions = activeSession?.configOptions ?? [];
   const hasActiveSession = !!activeSession;
+  const activeBrowserTabId = activeProject?.activeBrowserTabId ?? null;
+  const browserCurrentEnabled = !!(activeSession?.useActiveBrowser ?? useActiveBrowser);
+  const terminalCurrentEnabled = !!activeSession?.useActiveTerminal;
+  const browserCanRestart = !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
+  const browserCanEnable = browserCanRestart && !!activeBrowserTabId;
+  const browserToggleEnabled = !activeSession ? true : (browserCurrentEnabled ? browserCanRestart : browserCanEnable);
+  const browserToggleTitle = browserCurrentEnabled
+    ? (browserCanRestart
+      ? 'Restart this ready agent session with or without the active browser MCP bridge'
+      : 'Browser can be toggled when the agent is Ready')
+    : (!activeBrowserTabId
+      ? 'No browser tab active in this project'
+      : (browserCanEnable
+        ? 'Restart this ready agent session with or without the active browser MCP bridge'
+        : 'Browser can be toggled when the agent is Ready'));
   const terminalReady = !!activeTerminalId && !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
   const terminalToggleTitle = !activeTerminalId
     ? 'No terminal active'
     : terminalReady
       ? 'Restart this ready agent session with or without the active terminal MCP bridge'
       : 'Terminal can be toggled when the agent is Ready';
+  const browserStatus = !activeSession
+    ? (useActiveBrowser ? 'Browser MCP pending' : 'Browser MCP off')
+    : activeSession.status === 'connecting' && browserCurrentEnabled
+      ? 'Browser MCP reconnecting'
+      : browserCurrentEnabled
+        ? 'Browser MCP on'
+        : 'Browser MCP off';
+  const terminalStatus = !activeSession
+    ? (useActiveTerminal ? 'Terminal MCP pending' : 'Terminal MCP off')
+    : activeSession.status === 'connecting' && terminalCurrentEnabled
+      ? 'Terminal MCP reconnecting'
+      : terminalCurrentEnabled
+        ? 'Terminal MCP on'
+        : 'Terminal MCP off';
 
   const handleChange = (configId: string, value: string) => {
     setOpenDropdown(null);
@@ -144,23 +173,14 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
 
   const handleBrowserToggle = () => {
     const enabled = !(activeSession?.useActiveBrowser ?? useActiveBrowser);
-    if (enabled !== useActiveBrowser) {
-      toggleUseActiveBrowser();
+    if (!activeSession) {
+      if (enabled !== useActiveBrowser) {
+        toggleUseActiveBrowser();
+      }
+      return;
     }
-    if (!activeSession) return;
-    useChatStore.setState((state) => ({
-      sessions: state.sessions.map((session) => (
-        session.id === activeSession.id
-          ? {
-              ...session,
-              useActiveBrowser: enabled,
-              browserSelection: enabled ? browserSelection : null,
-              browserSelectionMode,
-              browserSelectionCapture: enabled ? browserSelectionCapture : null,
-            }
-          : session
-      )),
-    }));
+    if (!browserToggleEnabled) return;
+    void restartActiveSessionForBrowser(enabled);
   };
 
   const handleTerminalToggle = () => {
@@ -170,6 +190,20 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
 
   return (
     <div className="chat-config-bar">
+      {busyLabel && (
+        <div className="chat-config-status" aria-live="polite">
+          <span className="chat-connecting-spinner chat-inline-spinner" />
+          <span className="chat-config-status-label">{busyLabel}</span>
+        </div>
+      )}
+      <div className="chat-config-mcp-statuses" aria-live="polite">
+        <span className={`chat-config-mcp-status${browserCurrentEnabled ? ' active' : ''}`}>
+          {browserStatus}
+        </span>
+        <span className={`chat-config-mcp-status${terminalCurrentEnabled ? ' active' : ''}`}>
+          {terminalStatus}
+        </span>
+      </div>
       {configOptions.map((opt) => (
         <ConfigDropdown
           key={opt.id}
@@ -178,7 +212,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
           isOpen={!hasActiveSession ? false : openDropdown === opt.id}
           onToggle={() => hasActiveSession && setOpenDropdown(openDropdown === opt.id ? null : opt.id)}
           onChange={(value) => handleChange(opt.id, value)}
-          disabled={!hasActiveSession}
+          disabled={!hasActiveSession || busy}
         />
       ))}
       <label className="chat-config-toggle" title="Auto-approve all tool permissions (yolo mode)">
@@ -186,6 +220,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
           type="checkbox"
           checked={autoApprove}
           onChange={handleAutoApproveToggle}
+          disabled={busy}
         />
         <span className="chat-config-toggle-label">🔓 Auto</span>
       </label>
@@ -194,14 +229,19 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
           type="checkbox"
           checked={includeIgnored}
           onChange={toggleIncludeIgnored}
+          disabled={busy}
         />
         <span className="chat-config-toggle-label">@ ignored</span>
       </label>
-      <label className="chat-config-toggle" title="Send the active in-app browser page as extra context to the agent">
+      <label
+        className={`chat-config-toggle${activeSession && !browserToggleEnabled ? ' disabled' : ''}`}
+        title={browserToggleTitle}
+      >
         <input
           type="checkbox"
-          checked={activeSession?.useActiveBrowser ?? useActiveBrowser}
+          checked={browserCurrentEnabled}
           onChange={handleBrowserToggle}
+          disabled={busy || (!!activeSession && !browserToggleEnabled)}
         />
         <span className="chat-config-toggle-label">Browser</span>
       </label>
@@ -213,7 +253,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false }
           type="checkbox"
           checked={!!activeSession?.useActiveTerminal}
           onChange={handleTerminalToggle}
-          disabled={!terminalReady}
+          disabled={busy || !terminalReady}
         />
         <span className="chat-config-toggle-label">Terminal</span>
       </label>

@@ -578,8 +578,12 @@ func (s *apiFakeChatSession) ACPSessionID() string                              
 func (s *apiFakeChatSession) IsResumed() bool                                       { return false }
 func (s *apiFakeChatSession) RespondPermission(chat.PermissionResponse)             {}
 func (s *apiFakeChatSession) SetAutoApprove(bool)                                   {}
-func (s *apiFakeChatSession) SetUseActiveTerminal(bool)                             {}
+func (s *apiFakeChatSession) SetUseActiveTerminal(bool, string)                     {}
 func (s *apiFakeChatSession) UseActiveTerminalEnabled() bool                        { return false }
+func (s *apiFakeChatSession) ActiveTerminalID() string                              { return "" }
+func (s *apiFakeChatSession) SetUseActiveBrowser(bool, string)                      {}
+func (s *apiFakeChatSession) UseActiveBrowserEnabled() bool                         { return false }
+func (s *apiFakeChatSession) ActiveBrowserTabID() string                            { return "" }
 
 type fakeManager struct {
 	removedID string

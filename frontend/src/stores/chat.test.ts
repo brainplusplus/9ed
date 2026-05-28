@@ -311,7 +311,7 @@ describe('useChatStore restore/session identity', () => {
     const ok = await useChatStore.getState().resumeSession('record-missing-acp');
 
     expect(ok).toBe(true);
-    expect(resumeChatSession).toHaveBeenCalledWith('record-missing-acp', 'opencode', '/repo', undefined, false);
+    expect(resumeChatSession).toHaveBeenCalledWith('record-missing-acp', 'opencode', '/repo', undefined, false, undefined, false, undefined);
     const active = useChatStore.getState().sessions[0];
     expect(active.id).toBe('live-created');
     expect(active.recordId).toBe('record-missing-acp');

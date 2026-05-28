@@ -35,6 +35,62 @@ function ToolCallStatusIcon({ status }: { status: string }) {
   }
 }
 
+export function displayToolTitle(title: string): string {
+  const value = title.trim();
+  if (!value) return 'Tool step';
+  const mapped: Record<string, string> = {
+    '9ed_browser_goto': '9ed_browser_goto',
+    '9ed_browser_click': '9ed_browser_click',
+    '9ed_browser_type': '9ed_browser_type',
+    '9ed_browser_press': '9ed_browser_press',
+    '9ed_browser_scroll': '9ed_browser_scroll',
+    '9ed_browser_inspect': '9ed_browser_inspect',
+    '9ed_browser_screenshot': '9ed_browser_screenshot',
+    '9ed_browser_console_logs': '9ed_browser_console_logs',
+    '9ed_browser_network_requests': '9ed_browser_network_requests',
+    active_browser_goto: '9ed_browser_goto',
+    active_browser_click: '9ed_browser_click',
+    active_browser_type: '9ed_browser_type',
+    active_browser_press: '9ed_browser_press',
+    active_browser_scroll: '9ed_browser_scroll',
+    active_browser_inspect: '9ed_browser_inspect',
+    active_browser_screenshot: '9ed_browser_screenshot',
+    active_browser_console_logs: '9ed_browser_console_logs',
+    active_browser_network_requests: '9ed_browser_network_requests',
+    active_terminal_run: 'active_terminal_run',
+    active_terminal_read: 'active_terminal_read',
+  };
+  return mapped[value] ?? value.replace(/^active_/, '').replace(/_/g, ' ');
+}
+
+export function describeToolInput(tc: import('../../types').ToolCallInfo): string | null {
+  if (!tc.rawInput) return null;
+  try {
+    const parsed = JSON.parse(tc.rawInput) as Record<string, unknown>;
+    if (typeof parsed.url === 'string' && parsed.url.trim()) return parsed.url.trim();
+    if (typeof parsed.selector === 'string' && parsed.selector.trim()) return parsed.selector.trim();
+    if (typeof parsed.key === 'string' && parsed.key.trim()) return `key ${parsed.key.trim()}`;
+    if (typeof parsed.text === 'string' && parsed.text.trim()) {
+      const text = parsed.text.trim();
+      return text.length > 48 ? `${text.slice(0, 48)}...` : text;
+    }
+    if (typeof parsed.deltaY === 'number' || typeof parsed.deltaX === 'number') {
+      return `dx ${String(parsed.deltaX ?? 0)}, dy ${String(parsed.deltaY ?? 0)}`;
+    }
+    if (typeof parsed.command === 'string' && parsed.command.trim()) return parsed.command.trim();
+  } catch {
+    return tc.rawInput.length > 72 ? `${tc.rawInput.slice(0, 72)}...` : tc.rawInput;
+  }
+  return null;
+}
+
+export function describeToolStep(tc?: import('../../types').ToolCallInfo | null): string {
+  if (!tc) return 'working';
+  const title = displayToolTitle(tc.title);
+  const detail = describeToolInput(tc);
+  return detail ? `${title} - ${detail}` : title;
+}
+
 /** Detect if language is terminal-runnable */
 /** Inline code — no run button */
 function MarkdownCode({ className, children, ...props }: React.ComponentProps<'code'> & { node?: unknown }) {
@@ -236,16 +292,20 @@ function ToolCallCard({ tc }: { tc: import('../../types').ToolCallInfo }) {
   const [expanded, setExpanded] = useState(false);
   const hasDetails = !!(tc.content || (tc.locations && tc.locations.length > 0));
   const fileName = tc.locations?.[0]?.path?.split(/[/\\]/).pop();
+  const summary = describeToolInput(tc);
+  const phase = tc.status === 'completed' ? 'tool_done' : tc.status === 'failed' ? 'tool_failed' : 'tool_calling';
 
   return (
     <div className={`tool-call tool-call-${tc.status}`} onClick={() => hasDetails && setExpanded(!expanded)}>
       <div className="tool-call-header">
         <ToolCallStatusIcon status={tc.status} />
         <span className="tool-call-icon">{toolKindIcon(tc.kind)}</span>
-        <span className="tool-call-title">{tc.title}</span>
+        <span className="tool-call-phase">{phase}</span>
+        <span className="tool-call-title">{displayToolTitle(tc.title)}</span>
         {fileName && <span className="tool-call-file">{fileName}</span>}
         {hasDetails && <span className="tool-call-expand">{expanded ? '▾' : '▸'}</span>}
       </div>
+      {summary && <div className="tool-call-summary">{summary}</div>}
       {expanded && (
         <div className="tool-call-details">
           {tc.locations && tc.locations.map((loc, i) => (

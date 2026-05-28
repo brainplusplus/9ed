@@ -272,6 +272,11 @@ func (a *Adapter) Done() <-chan struct{} {
 	return a.client.Done()
 }
 
+// Err returns the client/subprocess error that caused Done to close, if any.
+func (a *Adapter) Err() error {
+	return a.client.Err()
+}
+
 // Close terminates the ACP subprocess gracefully.
 func (a *Adapter) Close() error {
 	a.mu.Lock()

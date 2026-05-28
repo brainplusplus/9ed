@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserAutomation, isBackendTemporarilyUnavailable, navigateBrowserAutomation, startBrowserAutomation } from '../api';
-import { useChatStore } from '../stores/chat';
+import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserTab, isBackendTemporarilyUnavailable } from '../api';
+import { normalizeWorkDir, useChatStore } from '../stores/chat';
 import { useWorkspaceStore } from '../stores/workspace';
 import { getTerminalHandle } from '../terminalRegistry';
 import { terminalCommandDialect, terminalShellLabel } from '../terminalIntegration';
 import type { Attachment } from '../components/chat/ChatInput';
-import type { BrowserElementSelection, BrowserSelectionMode, ChatEvent, ChatSessionKind, CodeContext, TerminalContext } from '../types';
+import type { BrowserElementSelection, BrowserInspectResult, BrowserSelectionMode, ChatEvent, ChatSessionKind, CodeContext, TerminalContext } from '../types';
 import type { QueuedMessage } from '../stores/chat';
 
 const CONNECT_TIMEOUT_MS = 10000;
 const INITIAL_CONNECT_DELAY_MS = 250;
 const MAX_RECONNECT_ATTEMPTS = 6;
 const RECONNECT_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
+const STREAM_STALL_MS = 15000;
 
 type UseChatSessionResult = {
   sendMessage: (content: string, context?: CodeContext, attachments?: Attachment[]) => Promise<void>;
@@ -44,10 +45,59 @@ function isConnectableSession(session: { kind: ChatSessionKind; status?: string 
   return session.kind !== 'archived' && session.status !== 'error';
 }
 
+function summarizeChatEvent(event: ChatEvent): string {
+  switch (event.type) {
+    case 'tool_call':
+    case 'tool_call_update': {
+      const title = event.toolTitle ?? 'tool';
+      const status = event.toolStatus ? ` ${event.toolStatus}` : '';
+      return `${event.type} ${title}${status}`;
+    }
+    case 'done':
+      return `done${event.stopReason ? ` (${event.stopReason})` : ''}`;
+    case 'error':
+      return `error${event.error ? `: ${event.error}` : ''}`;
+    case 'permission_request':
+      return `permission_request ${event.permissionTitle ?? ''}`.trim();
+    case 'text':
+      return `text chunk (${(event.text ?? '').length} chars)`;
+    case 'thinking':
+      return `thinking chunk (${(event.thinking ?? '').length} chars)`;
+    default:
+      return event.type;
+  }
+}
+
+function isInvalidBrowserToolEvent(event: ChatEvent): boolean {
+  const title = (event.toolTitle ?? '').toLowerCase();
+  const kind = (event.toolKind ?? '').toLowerCase();
+  const status = (event.toolStatus ?? '').toLowerCase();
+  const error = (event.error ?? '').toLowerCase();
+  const text = `${title} ${kind} ${status} ${error}`;
+  if (!text.includes('invalid tool') && !text.includes('unknown tool') && !text.includes('tool not found')) {
+    return false;
+  }
+  return (
+    text.includes('browser')
+    || text.includes('active_browser_')
+    || text.includes('active browser')
+  );
+}
+
 async function buildActiveBrowserContext(selection: BrowserElementSelection | null, mode: BrowserSelectionMode, preferredTabId?: string | null): Promise<string | null> {
   const state = await getBrowserState();
-  const activeTab = state.tabs.find((tab) => tab.id === preferredTabId) ?? state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
+  const linkedTabId = preferredTabId?.trim() || selection?.tabId?.trim() || '';
+  const activeTab = linkedTabId
+    ? state.tabs.find((tab) => tab.id === linkedTabId) ?? null
+    : (state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0] ?? null);
   if (!activeTab) {
+    if (linkedTabId) {
+      return [
+        '[Active browser context]',
+        `Linked browser tab ${linkedTabId} is no longer available for this session.`,
+        'Browser control status: unavailable until this project has an active WebRTC browser tab again.',
+      ].join('\n');
+    }
     return null;
   }
 
@@ -58,15 +108,14 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
   ];
 
   try {
-    await startBrowserAutomation();
-    let inspected = await navigateBrowserAutomation(activeTab.url);
-    if (!inspected.text) {
-      inspected = await inspectBrowserAutomation();
+    let inspected: BrowserInspectResult | null = null;
+    if (activeTab.transport === 'webrtc') {
+      inspected = await inspectBrowserTab(activeTab.id);
     }
-    if (inspected.title && inspected.title !== activeTab.title) {
+    if (inspected?.title && inspected.title !== activeTab.title) {
       lines.push(`Automation title: ${inspected.title}`);
     }
-    if (inspected.text) {
+    if (inspected?.text) {
       lines.push('Visible page text:');
       lines.push(inspected.text.slice(0, 6000));
     }
@@ -128,6 +177,13 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
     lines.push(selection.outerHTML.slice(0, 3000));
   }
 
+  if (activeTab.transport === 'webrtc') {
+    lines.push('Browser control: Use MCP tools 9ed_browser_goto, 9ed_browser_click, 9ed_browser_type, 9ed_browser_press, 9ed_browser_scroll, 9ed_browser_inspect, 9ed_browser_screenshot, 9ed_browser_console_logs, and 9ed_browser_network_requests for browser actions in this active tab. Browser actions accept timeoutMs when the page or action may be slow; default is 15000ms and max is 60000ms. Use the shortest useful chain: navigate, inspect when needed, click/type once, then answer when the requested page state is reached.');
+  } else {
+    lines.push('Browser control: unavailable for this linked tab because it uses Proxy transport. Switch this project to an active WebRTC browser tab if you want the agent to control the browser directly.');
+  }
+  lines.push('Browser workflow: after every browser tool result, inspect the returned observation and immediately decide whether to call another browser tool or answer the user naturally. Do not wait silently after a completed browser tool, and do not repeat inspection once URL/title/visible text already confirms success.');
+
   return lines.join('\n');
 }
 
@@ -140,7 +196,7 @@ function buildActiveTerminalContext(context: TerminalContext): string {
     `Shell: ${terminalShellLabel(context.shellType)}`,
     `Command dialect: ${terminalCommandDialect(context.shellType)}`,
     `CWD: ${context.cwd || '(unknown)'}`,
-    'Use MCP tool active_terminal_run for terminal work so commands run in this active terminal. Send one command per tool call, do not repeat the same command, and end the turn when the requested terminal action is complete.',
+    'Use MCP tool active_terminal_run for terminal work when the command is expected to finish and return the shell to idle. Use active_terminal_start for long-running commands like npm run start, dev servers, log tails, watchers, or anything expected to keep running. Prefer one information-dense command over several confirmation commands. Treat the terminal as completed only when the shell has clearly returned to idle. After a completed result contains the requested fact, answer naturally and do not call tasklist/Get-Process/read again for the same fact. Do not wait silently after a completed terminal tool. Use active_terminal_read only to inspect a command that is still running and pay attention to whether it reports streaming output, still running quietly, or waiting for input again before sending another terminal command.',
   ];
 
   if (context.scrollback.trim()) {
@@ -164,14 +220,22 @@ export function useChatSession(): UseChatSessionResult {
   const browserSelectionCapture = useChatStore((s) => s.browserSelectionCapture);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
+  const projects = useWorkspaceStore((s) => s.projects);
   const addMessage = useChatStore((s) => s.addMessage);
   const handleChatEvent = useChatStore((s) => s.handleChatEvent);
   const setSessionStatus = useChatStore((s) => s.setSessionStatus);
+  const setSessionStalled = useChatStore((s) => s.setSessionStalled);
+  const appendSessionDebug = useChatStore((s) => s.appendSessionDebug);
   const setSessionKind = useChatStore((s) => s.setSessionKind);
+  const restartActiveSessionForBrowser = useChatStore((s) => s.restartActiveSessionForBrowser);
   const finalizeAssistantMessage = useChatStore((s) => s.finalizeAssistantMessage);
   const dequeueMessage = useChatStore((s) => s.dequeueMessage);
   const refreshSessionState = useChatStore((s) => s.refreshSessionState);
   const resumeSession = useChatStore((s) => s.resumeSession);
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId) ?? null,
+    [activeSessionId, sessions],
+  );
 
   const connectionsRef = useRef<Map<string, ChatConnection>>(new Map());
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
@@ -190,7 +254,15 @@ export function useChatSession(): UseChatSessionResult {
   const sendQueuedRef = useRef<((queued: QueuedMessage) => Promise<void>) | null>(null);
   const setSessionKindRef = useRef(setSessionKind);
   setSessionKindRef.current = setSessionKind;
+  const restartActiveSessionForBrowserRef = useRef(restartActiveSessionForBrowser);
+  restartActiveSessionForBrowserRef.current = restartActiveSessionForBrowser;
+  const appendSessionDebugRef = useRef(appendSessionDebug);
+  appendSessionDebugRef.current = appendSessionDebug;
   const upgradedRef = useRef<Set<string>>(new Set());
+  const browserToolRecoveryRef = useRef<Map<string, number>>(new Map());
+  const stallTimersRef = useRef<Map<string, number>>(new Map());
+  const lastTerminalControlKeyRef = useRef<string>('');
+  const lastBrowserControlKeyRef = useRef<string>('');
 
   const connectionTargets = useMemo(
     () => sessions
@@ -221,6 +293,34 @@ export function useChatSession(): UseChatSessionResult {
     }
   }, []);
 
+  const clearStallTimer = useCallback((sessionId: string) => {
+    const timer = stallTimersRef.current.get(sessionId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      stallTimersRef.current.delete(sessionId);
+    }
+  }, []);
+
+  const scheduleStallTimer = useCallback((sessionId: string) => {
+    clearStallTimer(sessionId);
+    stallTimersRef.current.set(sessionId, window.setTimeout(() => {
+      const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+      if (session?.status === 'streaming') {
+        useChatStore.getState().setSessionStalled(sessionId, true);
+        const lastTool = [...session.messages].reverse().find((msg) => msg.role === 'tool_call' && msg.toolCall);
+        const lastToolStatus = lastTool?.toolCall?.status;
+        const lastToolTitle = lastTool?.toolCall?.title ?? 'unknown';
+        appendSessionDebugRef.current(sessionId, {
+          source: 'session',
+          level: 'warn',
+          message: lastToolStatus === 'completed'
+            ? `stall detected: last tool completed (${lastToolTitle}) but no done event arrived`
+            : `stall detected: no new updates after ${Math.round(STREAM_STALL_MS / 1000)}s; last step ${lastToolTitle}`,
+        });
+      }
+    }, STREAM_STALL_MS));
+  }, [clearStallTimer]);
+
   const stopConnection = useCallback((sessionId: string) => {
     const conn = connectionsRef.current.get(sessionId);
     if (!conn) return;
@@ -233,8 +333,15 @@ export function useChatSession(): UseChatSessionResult {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       ws.close();
     }
+    browserToolRecoveryRef.current.delete(sessionId);
+    clearStallTimer(sessionId);
+    appendSessionDebugRef.current(sessionId, {
+      source: 'ws',
+      level: 'info',
+      message: 'socket disposed',
+    });
     updateActiveConnected();
-  }, [clearConnectionTimers, updateActiveConnected]);
+  }, [clearConnectionTimers, clearStallTimer, updateActiveConnected]);
 
   const startConnection = useCallback((sessionId: string, kind: ChatSessionKind) => {
     const existing = connectionsRef.current.get(sessionId);
@@ -302,6 +409,11 @@ export function useChatSession(): UseChatSessionResult {
       conn.seq = seq;
       conn.connecting = true;
       setConnecting();
+      appendSessionDebugRef.current(sessionId, {
+        source: 'ws',
+        level: 'info',
+        message: `connecting (attempt ${conn.reconnectAttempts + 1})`,
+      });
 
       try {
         const liveSessions = await getLiveChatSessions();
@@ -313,6 +425,11 @@ export function useChatSession(): UseChatSessionResult {
           if (!resumed) {
             setSessionStatus(sessionId, 'error');
           }
+          appendSessionDebugRef.current(sessionId, {
+            source: 'session',
+            level: 'warn',
+            message: 'live session missing; attempted resume',
+          });
           return;
         }
       } catch (error) {
@@ -329,6 +446,11 @@ export function useChatSession(): UseChatSessionResult {
         }
         setSessionStatus(sessionId, 'error');
         stopConnection(sessionId);
+        appendSessionDebugRef.current(sessionId, {
+          source: 'ws',
+          level: 'error',
+          message: `preflight failed: ${error instanceof Error ? error.message : 'unknown error'}`,
+        });
         return;
       }
 
@@ -382,6 +504,12 @@ export function useChatSession(): UseChatSessionResult {
         conn.connecting = false;
         conn.reconnectAttempts = 0;
         setSessionStatus(sessionId, 'idle');
+        setSessionStalled(sessionId, false);
+        appendSessionDebugRef.current(sessionId, {
+          source: 'ws',
+          level: 'info',
+          message: shouldSync ? 'socket opened and state resynced' : 'socket opened',
+        });
         updateActiveConnected();
         if (shouldSync) {
           void refreshSessionStateRef.current(sessionId);
@@ -396,7 +524,30 @@ export function useChatSession(): UseChatSessionResult {
         if (seq !== conn.seq || conn.disposed) return;
         try {
           const data = JSON.parse(event.data) as ChatEvent;
+          appendSessionDebugRef.current(sessionId, {
+            source: data.type === 'tool_call' || data.type === 'tool_call_update' ? 'tool' : 'ws',
+            level: data.type === 'error' ? 'error' : 'info',
+            message: `recv ${summarizeChatEvent(data)}`,
+          });
           handleChatEventRef.current(sessionId, data);
+          if (data.type === 'done' || data.type === 'error') {
+            clearStallTimer(sessionId);
+          } else {
+            scheduleStallTimer(sessionId);
+          }
+
+          if (isInvalidBrowserToolEvent(data)) {
+            const now = Date.now();
+            const lastRecoveryAt = browserToolRecoveryRef.current.get(sessionId) ?? 0;
+            if (now - lastRecoveryAt > 10_000) {
+              browserToolRecoveryRef.current.set(sessionId, now);
+              const state = useChatStore.getState();
+              const session = state.sessions.find((s) => s.id === sessionId);
+              if (session?.useActiveBrowser) {
+                void restartActiveSessionForBrowserRef.current(true, true);
+              }
+            }
+          }
 
           if (data.type === 'done') {
             finalizeRef.current(sessionId);
@@ -407,6 +558,11 @@ export function useChatSession(): UseChatSessionResult {
             }
           }
         } catch {
+          appendSessionDebugRef.current(sessionId, {
+            source: 'ws',
+            level: 'error',
+            message: 'failed to parse ws message',
+          });
         }
       };
 
@@ -420,6 +576,12 @@ export function useChatSession(): UseChatSessionResult {
           conn.ws = null;
         }
         conn.connecting = false;
+        clearStallTimer(sessionId);
+        appendSessionDebugRef.current(sessionId, {
+          source: 'ws',
+          level: 'warn',
+          message: 'socket closed; scheduling reconnect',
+        });
         updateActiveConnected();
         scheduleReconnect();
       };
@@ -432,6 +594,12 @@ export function useChatSession(): UseChatSessionResult {
         }
         updateActiveConnected();
         conn.connecting = false;
+        clearStallTimer(sessionId);
+        appendSessionDebugRef.current(sessionId, {
+          source: 'ws',
+          level: 'error',
+          message: 'socket error',
+        });
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
           ws.close();
         } else {
@@ -504,6 +672,13 @@ export function useChatSession(): UseChatSessionResult {
       };
       addMessage(activeSessionId, userMessage);
       setSessionStatus(activeSessionId, 'streaming');
+      setSessionStalled(activeSessionId, false);
+      scheduleStallTimer(activeSessionId);
+      appendSessionDebugRef.current(activeSessionId, {
+        source: 'client',
+        level: 'info',
+        message: `sent user message (${content.length} chars${attachments?.length ? `, ${attachments.length} attachment(s)` : ''})`,
+      });
 
       let outboundContent = content;
       const browserEnabled = activeSession?.useActiveBrowser ?? useActiveBrowser;
@@ -517,7 +692,7 @@ export function useChatSession(): UseChatSessionResult {
       let outboundAttachments = attachments ? [...attachments] : undefined;
       if (browserEnabled) {
         try {
-          const browserProject = useWorkspaceStore.getState().projects.find((project) => project.path === activeSession?.workDir);
+          const browserProject = useWorkspaceStore.getState().projects.find((project) => normalizeWorkDir(project.path) === normalizeWorkDir(activeSession?.workDir));
           const browserContext = await buildActiveBrowserContext(browserSelectionForSession, effectiveBrowserSelectionMode, browserProject?.activeBrowserTabId);
           if (browserContext) {
             outboundContent = `${browserContext}\n\n[User request]\n${content}`;
@@ -567,8 +742,13 @@ export function useChatSession(): UseChatSessionResult {
         payload.attachments = outboundAttachments;
       }
       conn.ws.send(JSON.stringify(payload));
+      appendSessionDebugRef.current(activeSessionId, {
+        source: 'ws',
+        level: 'info',
+        message: 'ws message payload sent',
+      });
     },
-    [activeSessionId, addMessage, browserSelection, browserSelectionCapture, browserSelectionMode, setSessionStatus, useActiveBrowser, useActiveTerminal, activeTerminalId],
+    [activeSessionId, addMessage, browserSelection, browserSelectionCapture, browserSelectionMode, scheduleStallTimer, setSessionStalled, setSessionStatus, useActiveBrowser, useActiveTerminal, activeTerminalId],
   );
 
   sendQueuedRef.current = async (queued: QueuedMessage) => {
@@ -580,15 +760,44 @@ export function useChatSession(): UseChatSessionResult {
     const ws = connectionsRef.current.get(activeSessionId)?.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     ws.send(JSON.stringify(payload));
+    const type = typeof payload === 'object' && payload !== null && 'type' in (payload as Record<string, unknown>)
+      ? String((payload as Record<string, unknown>).type)
+      : 'control';
+    appendSessionDebugRef.current(activeSessionId, {
+      source: 'client',
+      level: 'info',
+      message: `sent control ${type}`,
+    });
     return true;
   }, [activeSessionId]);
 
   useEffect(() => {
-    sendControl({
+    const payload = {
       type: 'set_use_active_terminal',
       useActiveTerminal: useActiveTerminal && !!activeTerminalId,
-    });
+      activeTerminalId: activeTerminalId,
+    };
+    const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
+    if (controlKey === lastTerminalControlKeyRef.current) return;
+    if (sendControl(payload)) {
+      lastTerminalControlKeyRef.current = controlKey;
+    }
   }, [activeTerminalId, connected, sendControl, useActiveTerminal]);
+
+  useEffect(() => {
+    const project = projects.find((entry) => normalizeWorkDir(entry.path) === normalizeWorkDir(activeSession?.workDir));
+    const browserTabId = project?.activeBrowserTabId ?? null;
+    const payload = {
+      type: 'set_use_active_browser',
+      useActiveBrowser: (activeSession?.useActiveBrowser ?? useActiveBrowser) && !!browserTabId,
+      activeBrowserTabId: browserTabId,
+    };
+    const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
+    if (controlKey === lastBrowserControlKeyRef.current) return;
+    if (sendControl(payload)) {
+      lastBrowserControlKeyRef.current = controlKey;
+    }
+  }, [activeSession?.useActiveBrowser, activeSession?.workDir, connected, projects, sendControl, useActiveBrowser]);
 
   const cancel = useCallback(() => {
     if (!activeSessionId) return;
@@ -601,9 +810,16 @@ export function useChatSession(): UseChatSessionResult {
       });
     }
     if (sendControl({ type: 'cancel' })) {
+      clearStallTimer(activeSessionId);
       setSessionStatus(activeSessionId, 'idle');
+      setSessionStalled(activeSessionId, false);
+      appendSessionDebugRef.current(activeSessionId, {
+        source: 'session',
+        level: 'warn',
+        message: 'turn cancelled by user',
+      });
     }
-  }, [activeSessionId, sendControl, setSessionStatus]);
+  }, [activeSessionId, clearStallTimer, sendControl, setSessionStalled, setSessionStatus]);
 
   const setConfigOption = useCallback((configId: string, value: string) => {
     sendControl({ type: 'set_config_option', configId, value });

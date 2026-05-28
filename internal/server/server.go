@@ -36,6 +36,8 @@ type Server struct {
 	tunnelFn        func() string
 	settingsTunnels *tunnel.Manager
 	fileWatcher     *watcher.FileWatcher
+	browserMgr      *browser.Manager
+	chatStore       *chat.ChatStore
 }
 
 func New(cfg config.Config) *Server {
@@ -49,6 +51,7 @@ func New(cfg config.Config) *Server {
 
 	chatSessionMgr := chat.NewSessionManager()
 	terminalMCPToken := randomToken()
+	browserMCPToken := randomToken()
 	cwd, _ := os.Getwd()
 	chat.SetActiveTerminalMCPServers([]acp.MCPServer{{
 		Name:    "9ed-active-terminal",
@@ -57,6 +60,15 @@ func New(cfg config.Config) *Server {
 		Env: []acp.EnvVariable{
 			{Name: "NINE_ED_MCP_ENDPOINT", Value: "http://127.0.0.1:" + cfg.Port + "/api/chat/terminal/run"},
 			{Name: "NINE_ED_MCP_TOKEN", Value: terminalMCPToken},
+		},
+	}})
+	chat.SetActiveBrowserMCPServers([]acp.MCPServer{{
+		Name:    "9ed-active-browser",
+		Command: "go",
+		Args:    []string{"run", filepath.Join(cwd, "cmd", "active-browser-mcp")},
+		Env: []acp.EnvVariable{
+			{Name: "NINE_ED_BROWSER_MCP_ENDPOINT", Value: "http://127.0.0.1:" + cfg.Port + "/api/chat/browser/run"},
+			{Name: "NINE_ED_BROWSER_MCP_TOKEN", Value: browserMCPToken},
 		},
 	}})
 
@@ -83,6 +95,7 @@ func New(cfg config.Config) *Server {
 		SettingsTunnels:    settingsTunnels,
 		TunnelURL:          func() string { return "" }, // placeholder, set via SetTunnel
 		TerminalMCPToken:   terminalMCPToken,
+		BrowserMCPToken:    browserMCPToken,
 	})
 
 	return &Server{
@@ -91,6 +104,8 @@ func New(cfg config.Config) *Server {
 		tunnelFn:        func() string { return "" },
 		settingsTunnels: settingsTunnels,
 		fileWatcher:     fw,
+		browserMgr:      browserMgr,
+		chatStore:       chatStore,
 	}
 }
 
@@ -120,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 
 	outer := http.NewServeMux()
 	outer.Handle("/api/chat/terminal/run", s.api.Handler())
+	outer.Handle("/api/chat/browser/run", s.api.Handler())
 	outer.Handle("/", protected)
 	return outer
 }
@@ -139,6 +155,14 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Shutdown() {
 	if s.settingsTunnels != nil {
 		s.settingsTunnels.Shutdown()
+	}
+	if s.browserMgr != nil {
+		s.browserMgr.Close()
+		s.browserMgr = nil
+	}
+	if s.chatStore != nil {
+		_ = s.chatStore.Close()
+		s.chatStore = nil
 	}
 	if s.fileWatcher != nil {
 		_ = s.fileWatcher.Close()

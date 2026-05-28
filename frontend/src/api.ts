@@ -1,8 +1,9 @@
-import type { AppConfig, BrowserInspectResult, BrowserState, BrowserTab, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, SettingsAboutInfo, SettingsTunnel, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
+import type { AppConfig, BrowserInspectResult, BrowserMCPDebugLog, BrowserState, BrowserTab, BrowserTransport, ChatAgent, CodeContext, DirEntry, FileContent, GitBranch, GitCommit, GitFileStatus, GitStash, GutterChange, HistoryMessageRecord, HistorySessionRecord, SettingsAboutInfo, SettingsTunnel, TranscriptEventRecord, TranscriptSnapshotRecord, SearchResult, SessionResponse, ShellProfile } from './types';
 
 const RESTORE_REQUEST_TIMEOUT_MS = 8000;
 const RESUME_REQUEST_TIMEOUT_MS = 30000;
 const SHORT_REQUEST_TIMEOUT_MS = 5000;
+const BROWSER_NAVIGATION_TIMEOUT_MS = 20000;
 const BACKEND_UNAVAILABLE_COOLDOWN_MS = 3000;
 
 let backendUnavailableUntil = 0;
@@ -16,9 +17,15 @@ export function isBackendTemporarilyUnavailable(): boolean {
 }
 
 function isRetryableNetworkError(error: unknown): boolean {
+  if (!(error instanceof TypeError)) return false;
+  const message = (error.message || '').toLowerCase();
+  if (!message) return true;
   return (
-    error instanceof TypeError ||
-    (error instanceof DOMException && error.name === 'AbortError')
+    message.includes('failed to fetch')
+    || message.includes('networkerror')
+    || message.includes('network request failed')
+    || message.includes('load failed')
+    || message.includes('connection refused')
   );
 }
 
@@ -27,16 +34,32 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
     throw new Error('Backend temporarily unavailable');
   }
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const upstreamSignal = init.signal;
+  const abortFromUpstream = () => {
+    controller.abort(upstreamSignal?.reason ?? new Error('request-canceled'));
+  };
+  if (upstreamSignal?.aborted) {
+    abortFromUpstream();
+  } else if (upstreamSignal) {
+    upstreamSignal.addEventListener('abort', abortFromUpstream, { once: true });
+  }
+  const timer = window.setTimeout(() => controller.abort(new Error('request-timeout')), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      if (upstreamSignal?.aborted) {
+        throw new Error('Request canceled');
+      }
+      throw new Error('Request timeout');
+    }
     if (isRetryableNetworkError(error)) {
       markBackendUnavailable();
     }
     throw error;
   } finally {
     window.clearTimeout(timer);
+    upstreamSignal?.removeEventListener('abort', abortFromUpstream);
   }
 }
 
@@ -448,14 +471,14 @@ export type CreatedChatSession = {
   acpSessionId?: string;
 };
 
-export async function createChatSession(agentId: string, workDir?: string, useActiveTerminal = false): Promise<CreatedChatSession> {
+export async function createChatSession(agentId: string, workDir?: string, useActiveTerminal = false, activeTerminalId?: string | null, useActiveBrowser = false, activeBrowserTabId?: string | null): Promise<CreatedChatSession> {
   const response = await fetch('/api/chat/sessions', {
     method: 'POST',
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ agentId, workDir, useActiveTerminal }),
+    body: JSON.stringify({ agentId, workDir, useActiveTerminal, activeTerminalId, useActiveBrowser, activeBrowserTabId }),
   });
   return parseResponse<CreatedChatSession>(response);
 }
@@ -510,12 +533,12 @@ export async function getRestorableChatSession(workDir: string, preferredSession
   return parseResponse<RestorableChatSession>(response);
 }
 
-export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId?: string, useActiveTerminal = false): Promise<CreatedChatSession | RestorableChatSession> {
+export async function resumeChatSession(sessionId: string, agentId: string, workDir: string, acpSessionId?: string, useActiveTerminal = false, activeTerminalId?: string | null, useActiveBrowser = false, activeBrowserTabId?: string | null): Promise<CreatedChatSession | RestorableChatSession> {
   const response = await fetchWithTimeout('/api/chat/sessions/resume', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, agentId, workDir, acpSessionId, useActiveTerminal }),
+    body: JSON.stringify({ sessionId, agentId, workDir, acpSessionId, useActiveTerminal, activeTerminalId, useActiveBrowser, activeBrowserTabId }),
   }, RESUME_REQUEST_TIMEOUT_MS);
   return parseResponse<CreatedChatSession | RestorableChatSession>(response);
 }
@@ -671,28 +694,34 @@ export async function getBrowserState(): Promise<BrowserState> {
   return parseResponse<BrowserState>(response);
 }
 
+export async function getBrowserMCPDebugLog(limit = 80): Promise<BrowserMCPDebugLog> {
+  const response = await fetchWithTimeout(`/api/browser/debug/mcp?limit=${encodeURIComponent(String(limit))}`, { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
+  return parseResponse<BrowserMCPDebugLog>(response);
+}
+
 export async function getBrowserTabs(): Promise<BrowserTab[]> {
   const response = await fetchWithTimeout('/api/browser/tabs', { credentials: 'include' }, SHORT_REQUEST_TIMEOUT_MS);
   return parseResponse<BrowserTab[]>(response);
 }
 
-export async function createBrowserTab(url: string): Promise<BrowserTab> {
+export async function createBrowserTab(url: string, transport: BrowserTransport = 'proxy'): Promise<BrowserTab> {
   const response = await fetch('/api/browser/tabs', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, transport }),
   });
   return parseResponse<BrowserTab>(response);
 }
 
-export async function navigateBrowserTab(tabId: string, url: string): Promise<BrowserTab> {
-  const response = await fetch(`/api/browser/tabs/${tabId}/navigate`, {
+export async function navigateBrowserTab(tabId: string, url: string, signal?: AbortSignal): Promise<BrowserTab> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/navigate`, {
     method: 'POST',
     credentials: 'include',
+    signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
-  });
+  }, BROWSER_NAVIGATION_TIMEOUT_MS);
   return parseResponse<BrowserTab>(response);
 }
 
@@ -704,6 +733,52 @@ export async function activateBrowserTab(tabId: string): Promise<BrowserTab> {
   return parseResponse<BrowserTab>(response);
 }
 
+export async function syncBrowserTabState(tabId: string, input: { url: string; title?: string; canGoBack: boolean; canGoForward: boolean }): Promise<BrowserTab> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/sync`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function goBackBrowserTab(tabId: string): Promise<BrowserTab> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/back`, {
+    method: 'POST',
+    credentials: 'include',
+  }, BROWSER_NAVIGATION_TIMEOUT_MS);
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function goForwardBrowserTab(tabId: string): Promise<BrowserTab> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/forward`, {
+    method: 'POST',
+    credentials: 'include',
+  }, BROWSER_NAVIGATION_TIMEOUT_MS);
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function reloadBrowserTab(tabId: string, signal?: AbortSignal): Promise<BrowserTab> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/reload`, {
+    method: 'POST',
+    credentials: 'include',
+    signal,
+  }, BROWSER_NAVIGATION_TIMEOUT_MS);
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function stopBrowserTab(tabId: string): Promise<void> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/stop`, {
+    method: 'POST',
+    credentials: 'include',
+  }, SHORT_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to stop browser tab');
+  }
+}
+
 export async function deleteBrowserTab(tabId: string): Promise<void> {
   const response = await fetch(`/api/browser/tabs/${tabId}`, {
     method: 'DELETE',
@@ -713,6 +788,181 @@ export async function deleteBrowserTab(tabId: string): Promise<void> {
     const message = await response.text();
     throw new Error(message || 'Failed to close browser tab');
   }
+}
+
+export async function inspectBrowserTab(tabId: string): Promise<BrowserInspectResult> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/inspect`, { credentials: 'include' }, RESUME_REQUEST_TIMEOUT_MS);
+  return parseResponse<BrowserInspectResult>(response);
+}
+
+export async function inspectBrowserTabPoint(tabId: string, x: number, y: number): Promise<import('./types').BrowserElementSelection> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/inspect-point`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  });
+  return parseResponse<import('./types').BrowserElementSelection>(response);
+}
+
+export async function inspectBrowserTabNavigate(tabId: string, selector: string, direction: 'up' | 'down' | 'left' | 'right'): Promise<import('./types').BrowserElementSelection> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/inspect-navigate`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selector, direction }),
+  });
+  return parseResponse<import('./types').BrowserElementSelection>(response);
+}
+
+export async function setBrowserTabViewport(tabId: string, width: number, height: number): Promise<void> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/viewport`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ width, height }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to resize browser viewport');
+  }
+}
+
+export async function clickBrowserTabAt(tabId: string, x: number, y: number): Promise<void> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/click`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  }, SHORT_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to click browser tab');
+  }
+}
+
+export async function mouseDownBrowserTab(tabId: string, x: number, y: number): Promise<void> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/mouse-down`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  }, SHORT_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to press mouse on browser tab');
+  }
+}
+
+export async function mouseMoveBrowserTab(tabId: string, x: number, y: number): Promise<void> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/mouse-move`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  }, SHORT_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to move mouse on browser tab');
+  }
+}
+
+export async function mouseUpBrowserTab(tabId: string, x: number, y: number): Promise<void> {
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/mouse-up`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x, y }),
+  }, SHORT_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to release mouse on browser tab');
+  }
+}
+
+export async function uploadBrowserTabFiles(tabId: string, files: Iterable<File>): Promise<BrowserTab> {
+  const form = new FormData();
+  let count = 0;
+  for (const file of files) {
+    form.append('files', file, file.name);
+    count += 1;
+  }
+  if (count === 0) {
+    throw new Error('No files selected');
+  }
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/upload`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  }, RESUME_REQUEST_TIMEOUT_MS);
+  return parseResponse<BrowserTab>(response);
+}
+
+export async function pasteBrowserTabClipboard(tabId: string, input: { text?: string; files?: Iterable<File> }): Promise<void> {
+  const form = new FormData();
+  if (input.text) {
+    form.append('text', input.text);
+  }
+  let fileCount = 0;
+  for (const file of input.files ?? []) {
+    form.append('files', file, file.name);
+    fileCount += 1;
+  }
+  if (!input.text && fileCount === 0) {
+    throw new Error('Clipboard payload is empty');
+  }
+  const response = await fetchWithTimeout(`/api/browser/tabs/${tabId}/paste`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  }, RESUME_REQUEST_TIMEOUT_MS);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to paste clipboard into browser tab');
+  }
+}
+
+export async function typeBrowserTabText(tabId: string, text: string): Promise<void> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/type`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to type in browser tab');
+  }
+}
+
+export async function pressBrowserTabKey(tabId: string, key: string): Promise<void> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/press`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to press browser key');
+  }
+}
+
+export async function scrollBrowserTab(tabId: string, deltaX: number, deltaY: number): Promise<void> {
+  const response = await fetch(`/api/browser/tabs/${tabId}/scroll`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deltaX, deltaY }),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || 'Failed to scroll browser tab');
+  }
+}
+
+export function browserTabScreenshotUrl(tabId: string, nonce: number): string {
+  return `/api/browser/tabs/${encodeURIComponent(tabId)}/screenshot?nonce=${nonce}`;
 }
 
 export async function startBrowserAutomation(): Promise<void> {
@@ -741,7 +991,7 @@ export async function inspectBrowserAutomation(): Promise<BrowserInspectResult> 
   return parseResponse<BrowserInspectResult>(response);
 }
 
-export async function captureBrowserElementScreenshot(input: { url: string; selectors: string[]; name?: string }): Promise<{ path: string; dataUrl: string; mimeType: string }> {
+export async function captureBrowserElementScreenshot(input: { url: string; tabId?: string; selectors: string[]; name?: string }): Promise<{ path: string; dataUrl: string; mimeType: string }> {
   const response = await fetch('/api/browser/automation/element-screenshot', {
     method: 'POST',
     credentials: 'include',

@@ -20,6 +20,15 @@ export type MiniPanelProps = {
   onClose: () => void;
 };
 
+type RemoteInspectOverlayProps = {
+  hoverSelection: BrowserElementSelection | null;
+  selection: BrowserElementSelection | null;
+  tooltip: InspectTooltipData | null;
+  inspectMode: boolean;
+  scaleX: number;
+  scaleY: number;
+};
+
 /* ── Canvas overlay drawing ── */
 
 export function InspectOverlay({
@@ -171,6 +180,81 @@ export function InspectOverlay({
   );
 }
 
+export function RemoteInspectOverlay({
+  hoverSelection,
+  selection,
+  tooltip,
+  inspectMode,
+  scaleX,
+  scaleY,
+}: RemoteInspectOverlayProps) {
+  const hoverRects = hoverSelection?.boxModel ? scaleBoxRects(computeBoxRects(hoverSelection.boxModel), scaleX, scaleY) : null;
+  const hoverRect = hoverSelection?.boundingRect ? computeBoundingRect(hoverSelection.boundingRect, scaleX, scaleY) : null;
+  const selectedRect = selection?.boundingRect ? computeBoundingRect(selection.boundingRect, scaleX, scaleY) : null;
+  const selectedTag = selection?.tagName?.toLowerCase();
+  const hoverLabels = hoverSelection?.boxModel ? computeRemoteLabels(hoverSelection.boxModel, hoverRects) : null;
+
+  return (
+    <>
+      {hoverRect && inspectMode && (
+        <div className="browser-remote-overlay" aria-hidden="true">
+          {hoverLabels && (
+            <>
+              <RemoteRulers rect={hoverRect} />
+              <RemoteLabel text={hoverLabels.marginTop} left={hoverRect.left + hoverRect.width / 2} top={hoverRect.top - Math.max(12, (hoverSelection!.boxModel!.margin.top / 2) * scaleY)} />
+              <RemoteLabel text={hoverLabels.marginBottom} left={hoverRect.left + hoverRect.width / 2} top={hoverRect.top + hoverRect.height + Math.max(12, (hoverSelection!.boxModel!.margin.bottom / 2) * scaleY)} />
+              <RemoteLabel text={hoverLabels.marginLeft} left={hoverRect.left - Math.max(18, (hoverSelection!.boxModel!.margin.left / 2) * scaleX)} top={hoverRect.top + hoverRect.height / 2} />
+              <RemoteLabel text={hoverLabels.marginRight} left={hoverRect.left + hoverRect.width + Math.max(18, (hoverSelection!.boxModel!.margin.right / 2) * scaleX)} top={hoverRect.top + hoverRect.height / 2} />
+              <RemoteLabel text={hoverLabels.content} left={hoverRect.left + hoverRect.width / 2} top={hoverRect.top + hoverRect.height + 16} />
+            </>
+          )}
+          <div
+            className="browser-remote-hover-box"
+            style={{
+              left: `${hoverRect.left}px`,
+              top: `${hoverRect.top}px`,
+              width: `${hoverRect.width}px`,
+              height: `${hoverRect.height}px`,
+            }}
+          />
+        </div>
+      )}
+      {selectedRect && !inspectMode && (
+        <div className="browser-remote-selected" aria-hidden="true">
+          <div
+            className="browser-remote-selected-box"
+            style={{
+              left: `${selectedRect.left}px`,
+              top: `${selectedRect.top}px`,
+              width: `${selectedRect.width}px`,
+              height: `${selectedRect.height}px`,
+            }}
+          >
+            {selectedTag && <span className="browser-remote-selected-badge">Selected {selectedTag}</span>}
+          </div>
+        </div>
+      )}
+      {tooltip && inspectMode && (
+        <div className="browser-inspect-tooltip-v2" style={{ top: tooltip.top, left: tooltip.left }}>
+          <span className="inspect-tooltip-label">{tooltip.label}</span>
+          {tooltip.sublabel && (
+            <span className="inspect-tooltip-sub">{tooltip.sublabel}</span>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function computeBoundingRect(rect: { width: number; height: number; x: number; y: number }, scaleX: number, scaleY: number) {
+  return {
+    left: rect.x * scaleX,
+    top: rect.y * scaleY,
+    width: rect.width * scaleX,
+    height: rect.height * scaleY,
+  };
+}
+
 /* ── Drawing helpers ── */
 
 function drawFilledRect(
@@ -187,6 +271,102 @@ function drawFilledRect(
   ctx.strokeStyle = stroke;
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+
+function computeBoxRects(box: BoxModelLayers) {
+  const content = {
+    left: box.contentRect.x,
+    top: box.contentRect.y,
+    width: box.contentRect.width,
+    height: box.contentRect.height,
+  };
+  const padding = {
+    left: content.left - box.padding.left,
+    top: content.top - box.padding.top,
+    width: content.width + box.padding.left + box.padding.right,
+    height: content.height + box.padding.top + box.padding.bottom,
+  };
+  const border = {
+    left: padding.left - box.border.left,
+    top: padding.top - box.border.top,
+    width: padding.width + box.border.left + box.border.right,
+    height: padding.height + box.border.top + box.border.bottom,
+  };
+  const margin = {
+    left: border.left - box.margin.left,
+    top: border.top - box.margin.top,
+    width: border.width + box.margin.left + box.margin.right,
+    height: border.height + box.margin.top + box.margin.bottom,
+  };
+  return { margin, border, padding, content };
+}
+
+function scaleBoxRects(
+  rects: ReturnType<typeof computeBoxRects>,
+  scaleX: number,
+  scaleY: number,
+) {
+  const scaleRect = (rect: { left: number; top: number; width: number; height: number }) => ({
+    left: rect.left * scaleX,
+    top: rect.top * scaleY,
+    width: rect.width * scaleX,
+    height: rect.height * scaleY,
+  });
+  return {
+    margin: scaleRect(rects.margin),
+    border: scaleRect(rects.border),
+    padding: scaleRect(rects.padding),
+    content: scaleRect(rects.content),
+  };
+}
+
+function RemoteRulers({
+  rect,
+}: {
+  rect: { left: number; top: number; width: number; height: number };
+}) {
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  return (
+    <>
+      <div className="browser-remote-ruler horizontal" style={{ top: `${centerY}px`, left: '0', right: '0' }} />
+      <div className="browser-remote-ruler vertical" style={{ left: `${centerX}px`, top: '0', bottom: '0' }} />
+    </>
+  );
+}
+
+function RemoteLabel({
+  text,
+  left,
+  top,
+}: {
+  text: string;
+  left: number;
+  top: number;
+}) {
+  if (!text) return null;
+  return (
+    <span
+      className="browser-remote-dim-label"
+      style={{ left: `${left}px`, top: `${top}px` }}
+    >
+      {text}
+    </span>
+  );
+}
+
+function computeRemoteLabels(
+  box: BoxModelLayers,
+  rects: ReturnType<typeof computeBoxRects> | null,
+) {
+  if (!rects) return null;
+  return {
+    marginTop: box.margin.top > 0 ? `↑${Math.round(box.margin.top)}` : '',
+    marginBottom: box.margin.bottom > 0 ? `↓${Math.round(box.margin.bottom)}` : '',
+    marginLeft: box.margin.left > 0 ? `←${Math.round(box.margin.left)}` : '',
+    marginRight: box.margin.right > 0 ? `→${Math.round(box.margin.right)}` : '',
+    content: `${Math.round(rects.content.width)} x ${Math.round(rects.content.height)}`,
+  };
 }
 
 function drawRulers(

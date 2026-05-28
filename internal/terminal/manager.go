@@ -3,6 +3,7 @@ package terminal
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -29,13 +30,14 @@ type PtySession interface {
 type SpawnFunc func(profile ShellProfile) (PtySession, error)
 
 type ManagedSession struct {
-	ID          string       `json:"id"`
-	Profile     ShellProfile `json:"profile"`
-	pty         PtySession
-	mu          sync.Mutex
-	replay      []byte
-	subscribers map[chan []byte]struct{}
-	closeOnce   sync.Once
+	ID           string       `json:"id"`
+	Profile      ShellProfile `json:"profile"`
+	pty          PtySession
+	mu           sync.Mutex
+	replay       []byte
+	lastOutputAt time.Time
+	subscribers  map[chan []byte]struct{}
+	closeOnce    sync.Once
 }
 
 func (s *ManagedSession) Read(p []byte) (int, error) {
@@ -86,6 +88,24 @@ func (s *ManagedSession) Subscribe(includeReplay bool) (<-chan []byte, func()) {
 	return ch, unsubscribe
 }
 
+func (s *ManagedSession) Snapshot(maxBytes int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if maxBytes <= 0 || maxBytes > len(s.replay) {
+		maxBytes = len(s.replay)
+	}
+	if maxBytes == 0 {
+		return ""
+	}
+	return string(append([]byte(nil), s.replay[len(s.replay)-maxBytes:]...))
+}
+
+func (s *ManagedSession) LastOutputAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastOutputAt
+}
+
 func (s *ManagedSession) startOutputPump() {
 	go func() {
 		buffer := make([]byte, 4096)
@@ -107,6 +127,7 @@ func (s *ManagedSession) broadcast(data []byte) {
 
 	s.mu.Lock()
 	s.replay = append(s.replay, chunk...)
+	s.lastOutputAt = time.Now()
 	if len(s.replay) > replayBufferMaxBytes {
 		s.replay = append([]byte(nil), s.replay[len(s.replay)-replayBufferMaxBytes:]...)
 	}

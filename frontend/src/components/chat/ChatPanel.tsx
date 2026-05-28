@@ -4,7 +4,7 @@ import { normalizeWorkDir, sessionBelongsToWorkDir, useChatStore } from '../../s
 import { useWorkspaceStore } from '../../stores/workspace';
 import { useChatSession } from '../../hooks/useChatSession';
 import { getChatAgents, createChatSession } from '../../api';
-import { ChatMessage } from './ChatMessage';
+import { ChatMessage, describeToolStep } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { ChatQueue } from './ChatQueue';
 import { PermissionDialog } from './PermissionDialog';
@@ -14,6 +14,21 @@ import { ChatSessionList } from './ChatSessionList';
 import type { ChatSessionInfo } from '../../types';
 
 const AGENT_RETRY_DELAYS_MS = [500, 1500, 4000];
+
+function formatDebugTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  return date.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function ChatDebugIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d="M7 4h6l1 2h2a1 1 0 0 1 1 1v6a3 3 0 0 1-3 3h-1l-2 2h-2l-2-2H6a3 3 0 0 1-3-3V7a1 1 0 0 1 1-1h2l1-2Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="8" cy="10" r="1.2" fill="currentColor" />
+      <circle cx="12" cy="10" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
 
 function ContextUsageBar({ contextUsed, contextWindow, costAmount, costCurrency }: { contextUsed?: number; contextWindow?: number; costAmount?: number; costCurrency?: string }) {
   if (!contextUsed || !contextWindow || contextWindow <= 0) return null;
@@ -72,6 +87,7 @@ export function ChatPanel() {
   const [createMenuStyle, setCreateMenuStyle] = useState<Record<string, string>>({});
   const [agentsLoading, setAgentsLoading] = useState(agents.length === 0);
   const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [showChatDebugPanel, setShowChatDebugPanel] = useState(false);
 
   const projectSessions = sessions.filter((session) => sessionBelongsToWorkDir(session, activeProject?.path));
   const activeSession = projectSessions.find((sess) => sess.id === activeSessionId) ?? null;
@@ -82,6 +98,18 @@ export function ChatPanel() {
   const isConnecting = activeSession?.status === 'connecting' || creating;
   const isArchived = activeSession?.kind === 'archived';
   const canResumeArchived = Boolean(activeSession?.kind === 'archived' && activeSession.agentId && activeSession.workDir);
+  const showConfigBar = !isArchived || isConnecting || restoring;
+  const lastLiveToolCall = activeSession
+    ? [...activeSession.messages].reverse().find((message) => message.role === 'tool_call' && message.toolCall)
+    : undefined;
+  const liveStepLabel = lastLiveToolCall?.toolCall ? describeToolStep(lastLiveToolCall.toolCall) : null;
+  const configBusyLabel = restoring
+    ? 'Restoring session...'
+    : creating
+      ? 'Creating agent session...'
+      : (activeSession?.status === 'connecting' ? 'Reconnecting session...' : null);
+  const debugEntries = activeSession?.debugEntries ?? [];
+  const lastEventAgoSeconds = activeSession?.lastEventAt ? Math.max(0, Math.round((Date.now() - activeSession.lastEventAt) / 1000)) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +173,12 @@ export function ChatPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages?.length, lastMsgContent]);
 
+  useEffect(() => {
+    if (activeSession?.stalled) {
+      setShowChatDebugPanel(true);
+    }
+  }, [activeSession?.stalled]);
+
   useLayoutEffect(() => {
     if (!createMenuOpen || !createMenuButtonRef.current) return;
 
@@ -196,7 +230,9 @@ export function ChatPanel() {
     setCreating(true);
     try {
       const terminalEnabled = useActiveTerminal && !!activeTerminalId;
-      const created = await createChatSession(agentId, activeProject?.path, terminalEnabled);
+      const browserTabId = activeProject?.activeBrowserTabId ?? null;
+      const browserEnabled = useActiveBrowser && !!browserTabId;
+      const created = await createChatSession(agentId, activeProject?.path, terminalEnabled, terminalEnabled ? activeTerminalId : undefined, browserEnabled, browserTabId);
       const session: ChatSessionInfo = {
         id: created.id,
         recordId: created.resumedFrom ?? created.id,
@@ -210,10 +246,10 @@ export function ChatPanel() {
         acpSessionId: created.acpSessionId,
         useActiveTerminal: terminalEnabled,
         terminalId: terminalEnabled ? activeTerminalId : undefined,
-        useActiveBrowser,
-        browserSelection,
+        useActiveBrowser: browserEnabled,
+        browserSelection: browserEnabled ? browserSelection : null,
         browserSelectionMode,
-        browserSelectionCapture,
+        browserSelectionCapture: browserEnabled ? browserSelectionCapture : null,
       };
       createSessionStore(session);
     } catch {
@@ -260,6 +296,17 @@ export function ChatPanel() {
         </div>
         <div className="chat-header-actions">
           <ChatSessionList />
+          {activeSession && (
+            <button
+              className={`chat-new-btn chat-new-btn-icon${showChatDebugPanel ? ' active' : ''}`}
+              type="button"
+              title={showChatDebugPanel ? 'Hide chat debug panel' : 'Show chat debug panel'}
+              aria-label={showChatDebugPanel ? 'Hide chat debug panel' : 'Show chat debug panel'}
+              onClick={() => setShowChatDebugPanel((value) => !value)}
+            >
+              <span className="chat-debug-btn-icon"><ChatDebugIcon /></span>
+            </button>
+          )}
           <div className="chat-agent-create-wrap">
             <button
               ref={createMenuButtonRef}
@@ -303,25 +350,50 @@ export function ChatPanel() {
         </div>
       </div>
 
-      {restoring ? (
-        <div className="chat-empty">
-          <div className="chat-connecting">
-            <span className="chat-connecting-spinner" />
-            Restoring session...
+      <div className="chat-main">
+        {restoring ? (
+          <div className="chat-empty">
+            <div className="chat-connecting">
+              <span className="chat-connecting-spinner" />
+              Restoring session...
+            </div>
           </div>
-        </div>
-      ) : isConnecting && !activeSession ? (
-        <div className="chat-empty">
-          <div className="chat-connecting">
-            <span className="chat-connecting-spinner" />
-            Connecting to agent...
+        ) : isConnecting && !activeSession ? (
+          <div className="chat-empty">
+            <div className="chat-connecting">
+              <span className="chat-connecting-spinner" />
+              Connecting to agent...
+            </div>
           </div>
-        </div>
-      ) : !activeSession ? (
-        <div className="chat-empty">Press + to start a chat</div>
-      ) : (
-        <>
+        ) : !activeSession ? (
+          <div className="chat-empty">Press + to start a chat</div>
+        ) : (
           <div className="chat-messages">
+            {showChatDebugPanel && (
+              <div className="chat-debug-log" aria-live="polite">
+                <div className="chat-debug-log-header">
+                  <span>Chat Debug</span>
+                  <span>{debugEntries.length > 0 ? `${debugEntries.length} entries` : 'Waiting for activity'}</span>
+                </div>
+                <div className="chat-debug-log-summary">
+                  <span>Status: {activeSession.status}{activeSession.stalled ? ' (stalled)' : ''}</span>
+                  <span>Connected: {connected ? 'yes' : 'no'}</span>
+                  <span>Last event: {lastEventAgoSeconds === null ? 'n/a' : `${lastEventAgoSeconds}s ago`}</span>
+                  <span>Last step: {liveStepLabel ?? 'n/a'}</span>
+                </div>
+                <div className="chat-debug-log-list">
+                  {debugEntries.length === 0 ? (
+                    <div className="chat-debug-log-empty">No chat debug activity yet.</div>
+                  ) : debugEntries.slice().reverse().map((entry, index) => (
+                    <div key={`${entry.timestamp}-${entry.source}-${index}`} className={`chat-debug-log-entry level-${entry.level}`}>
+                      <span className="chat-debug-log-time">{formatDebugTimestamp(entry.timestamp)}</span>
+                      <span className={`chat-debug-log-source source-${entry.source}`}>{entry.source}</span>
+                      <span className="chat-debug-log-message">{entry.message}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {activeSession.messages.map((msg, idx) => (
               <ChatMessage
                 key={msg.id}
@@ -337,26 +409,39 @@ export function ChatPanel() {
               />
             )}
             {isStreaming && !activeSession.pendingPermission && (
-              <div className="chat-streaming">
+              <div className={`chat-streaming${activeSession.stalled ? ' stalled' : ''}`}>
                 <span className="chat-typing-indicator"><span /><span /><span /></span>
+                <span className="chat-streaming-label">
+                  {activeSession.stalled
+                    ? `No new update for a while.${liveStepLabel ? ` Last step: ${liveStepLabel}.` : ''}`
+                    : (liveStepLabel ? `Working: ${liveStepLabel}` : 'Working...')}
+                </span>
               </div>
             )}
             <div ref={messagesEndRef} />
           </div>
-          <div className="chat-bottom-bar">
-            <ContextUsageBar contextUsed={activeSession?.contextUsed} contextWindow={activeSession?.contextWindow} costAmount={activeSession?.costAmount} costCurrency={activeSession?.costCurrency} />
-            {!isArchived && activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
-            {!isArchived && <ConfigBar setConfigOption={setConfigOption} setAutoApprove={setAutoApprove} connected={connected} />}
-            <ChatInput
-              onSend={handleSend}
-              onCancel={cancel}
-              streaming={isStreaming}
-              disabled={(isArchived && !canResumeArchived) || isConnecting}
-              canSend={connected}
-            />
-          </div>
-        </>
-      )}
+        )}
+      </div>
+      <div className="chat-bottom-bar">
+        <ContextUsageBar contextUsed={activeSession?.contextUsed} contextWindow={activeSession?.contextWindow} costAmount={activeSession?.costAmount} costCurrency={activeSession?.costCurrency} />
+        {!isArchived && activeSession && <ChatQueue sessionId={activeSession.id} onSendNow={handleSend} />}
+        {showConfigBar && (
+          <ConfigBar
+            setConfigOption={setConfigOption}
+            setAutoApprove={setAutoApprove}
+            connected={connected}
+            busy={isConnecting || restoring}
+            busyLabel={configBusyLabel}
+          />
+        )}
+        <ChatInput
+          onSend={handleSend}
+          onCancel={cancel}
+          streaming={isStreaming}
+          disabled={(isArchived && !canResumeArchived) || isConnecting}
+          canSend={connected}
+        />
+      </div>
     </div>
   );
 }

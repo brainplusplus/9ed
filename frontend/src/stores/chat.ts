@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import type { BrowserElementCapture, BrowserElementSelection, BrowserSelectionMode, ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo } from '../types';
+import type { BrowserElementCapture, BrowserElementSelection, BrowserSelectionMode, ChatAgent, ChatMessage, ChatSessionInfo, ChatEvent, ChatSessionKind, HistoryMessageRecord, HistorySessionRecord, ToolCallInfo, TranscriptEventRecord, SlashCommandInfo, ConfigOptionInfo, ChatDebugEntry } from '../types';
 import { getChatHistory, getChatSessionState, saveChatMessage, deleteChatHistory, getRestorableChatSession, resumeChatSession } from '../api';
 import { getTerminalConnection } from '../terminalConnection';
 import { getTerminalHandle } from '../terminalRegistry';
+import { useWorkspaceStore } from './workspace';
 
 export type ChatRestoreError = {
   sessionId: string;
@@ -20,6 +21,7 @@ const resumeRequests = new Map<string, Promise<boolean>>();
 const CHAT_AGENTS_STORAGE_KEY = '9ed.chatAgents.v1';
 const recentlyRoutedTerminalCommands = new Map<string, number>();
 const TERMINAL_COMMAND_DEDUPE_MS = 1500;
+const CHAT_DEBUG_MAX_ENTRIES = 120;
 
 function chatStorage(): Storage | null {
   if (typeof window === 'undefined') return null;
@@ -86,6 +88,8 @@ type ChatState = {
   handleChatEvent: (sessionId: string, event: ChatEvent) => void;
   finalizeAssistantMessage: (sessionId: string) => void;
   setSessionStatus: (sessionId: string, status: ChatSessionInfo['status']) => void;
+  setSessionStalled: (sessionId: string, stalled: boolean) => void;
+  appendSessionDebug: (sessionId: string, entry: Omit<ChatDebugEntry, 'timestamp'> & { timestamp?: number }) => void;
   setSessionKind: (sessionId: string, kind: ChatSessionKind) => void;
   toggleChat: () => void;
   deleteSession: (id: string) => void;
@@ -110,6 +114,7 @@ type ChatState = {
   toggleUseActiveTerminal: () => void;
   setUseActiveTerminal: (enabled: boolean) => void;
   restartActiveSessionForTerminal: (enabled: boolean) => Promise<boolean>;
+  restartActiveSessionForBrowser: (enabled: boolean, force?: boolean) => Promise<boolean>;
   setActiveTerminalId: (id: string | null) => void;
 };
 
@@ -155,6 +160,25 @@ function shouldEnableTerminalForAgent(state: Pick<ChatState, 'useActiveTerminal'
   return state.useActiveTerminal && !!state.activeTerminalId;
 }
 
+function activeBrowserTabForWorkDir(workDir?: string | null): string | undefined {
+  const normalized = normalizeWorkDir(workDir);
+  if (!normalized) return undefined;
+  const project = useWorkspaceStore.getState().projects.find((entry) => normalizeWorkDir(entry.path) === normalized);
+  return project?.activeBrowserTabId ?? undefined;
+}
+
+function activeBrowserStateForWorkDir(state: Pick<ChatState, 'useActiveBrowser' | 'browserSelection' | 'browserSelectionMode' | 'browserSelectionCapture'>, workDir?: string | null) {
+  const tabId = activeBrowserTabForWorkDir(workDir);
+  const enabled = state.useActiveBrowser && !!tabId;
+  return {
+    enabled,
+    tabId,
+    selection: enabled ? state.browserSelection : null,
+    selectionMode: state.browserSelectionMode,
+    selectionCapture: enabled ? state.browserSelectionCapture : null,
+  };
+}
+
 function fallbackTitle(agentId: string, title?: string): string {
   const agentLabels: Record<string, string> = {
     opencode: 'OpenCode',
@@ -198,6 +222,18 @@ function findLastIndex<T>(arr: T[], predicate: (item: T) => boolean): number {
     if (predicate(arr[i])) return i;
   }
   return -1;
+}
+
+function appendDebugEntry(entries: ChatDebugEntry[] | undefined, entry: Omit<ChatDebugEntry, 'timestamp'> & { timestamp?: number }): ChatDebugEntry[] {
+  const nextEntry: ChatDebugEntry = {
+    timestamp: entry.timestamp ?? Date.now(),
+    source: entry.source,
+    level: entry.level,
+    message: entry.message,
+  };
+  const next = [...(entries ?? []), nextEntry];
+  if (next.length <= CHAT_DEBUG_MAX_ENTRIES) return next;
+  return next.slice(next.length - CHAT_DEBUG_MAX_ENTRIES);
 }
 
 type ReplayResult = {
@@ -407,7 +443,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   }),
 
   createSession: (session) => {
-    const normalized = { ...session, recordId: session.recordId ?? session.id, kind: session.kind ?? 'live' };
+      const normalized = {
+        ...session,
+        recordId: session.recordId ?? session.id,
+        kind: session.kind ?? 'live',
+        lastEventAt: session.lastEventAt ?? session.createdAt,
+        stalled: false,
+        debugEntries: session.debugEntries ?? [],
+      };
     set((state) => {
       const nextState = {
         ...state,
@@ -465,13 +508,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const msgs = [...s.messages];
         const last = msgs[msgs.length - 1];
         const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        const eventAt = Date.now();
 
         switch (event.type) {
           case 'text': {
             if (last && last.role === 'assistant') {
               msgs[msgs.length - 1] = { ...last, content: last.content + (event.text ?? '') };
             } else {
-              msgs.push({ id: genId(), role: 'assistant', content: event.text ?? '', timestamp: Date.now() });
+              msgs.push({ id: genId(), role: 'assistant', content: event.text ?? '', timestamp: eventAt });
             }
             break;
           }
@@ -491,7 +535,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               locations: event.toolLocations,
               rawInput: event.toolRawInput,
             };
-            msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall: tc, timestamp: Date.now() });
+            msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall: tc, timestamp: eventAt });
             break;
           }
 
@@ -527,17 +571,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
 
           case 'plan':
-            msgs.push({ id: genId(), role: 'plan', content: '', plan: event.planEntries ?? [], timestamp: Date.now() });
+            msgs.push({ id: genId(), role: 'plan', content: '', plan: event.planEntries ?? [], timestamp: eventAt });
             break;
 
           case 'commands':
-            return { ...s, commands: event.commands ?? [], messages: msgs };
+            return { ...s, commands: event.commands ?? [], messages: msgs, lastEventAt: eventAt, stalled: false };
 
           case 'config_options':
-            return { ...s, configOptions: event.configOptions ?? [], messages: msgs };
+            return { ...s, configOptions: event.configOptions ?? [], messages: msgs, lastEventAt: eventAt, stalled: false };
 
           case 'title':
-            return { ...s, title: event.title ?? s.title, messages: msgs };
+            return { ...s, title: event.title ?? s.title, messages: msgs, lastEventAt: eventAt, stalled: false };
 
           case 'session_info':
           case 'usage_update': {
@@ -547,13 +591,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (event.contextUsed !== undefined) patches.contextUsed = event.contextUsed;
             if (event.costAmount !== undefined) patches.costAmount = event.costAmount;
             if (event.costCurrency !== undefined) patches.costCurrency = event.costCurrency;
-            return { ...s, ...patches };
+            return { ...s, ...patches, lastEventAt: eventAt, stalled: false };
           }
 
           case 'permission_request':
             return {
               ...s,
               messages: msgs,
+              lastEventAt: eventAt,
+              stalled: false,
               pendingPermission: {
                 permissionId: event.permissionId ?? '',
                 title: event.permissionTitle ?? '',
@@ -564,7 +610,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             };
 
           case 'done':
-            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined };
+            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined, lastEventAt: eventAt, stalled: false };
 
           case 'terminal_execute': {
             if (event.terminalCommand) {
@@ -583,20 +629,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (idx >= 0) {
               msgs[idx] = { ...msgs[idx], toolCall: { ...msgs[idx].toolCall!, ...toolCall } };
             } else {
-              msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall, timestamp: Date.now() });
+              msgs.push({ id: genId(), role: 'tool_call', content: '', toolCall, timestamp: eventAt });
             }
-            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined };
+            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined, lastEventAt: eventAt, stalled: false };
           }
 
           case 'error': {
             if (last && last.role === 'assistant') {
               msgs[msgs.length - 1] = { ...last, content: last.content + `\n\n⚠️ ${event.error ?? 'Unknown error'}` };
             }
-            return { ...s, messages: msgs, status: 'error', pendingPermission: undefined };
+            return { ...s, messages: msgs, status: 'error', pendingPermission: undefined, lastEventAt: eventAt, stalled: false };
           }
         }
 
-        return { ...s, messages: msgs };
+        return { ...s, messages: msgs, lastEventAt: eventAt, stalled: false };
       }),
     }));
   },
@@ -608,9 +654,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const session = state.sessions.find((s) => s.id === sessionId);
       if (!session || session.status === status) return state;
       return {
-        sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, status })),
+        sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, status, stalled: status === 'streaming' ? s.stalled : false })),
       };
     }),
+
+  setSessionStalled: (sessionId, stalled) =>
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, stalled })),
+    })),
+
+  appendSessionDebug: (sessionId, entry) =>
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, (s) => ({
+        ...s,
+        debugEntries: appendDebugEntry(s.debugEntries, entry),
+      })),
+    })),
 
   setSessionKind: (sessionId, kind) =>
     set((state) => {
@@ -662,6 +721,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let acpSessionId: string | undefined;
 
       if (historyEntry?.workDir && historyEntry.agentId) {
+        const browserState = activeBrowserStateForWorkDir(get(), historyEntry.workDir);
         set((state) => ({
           sessions: [...state.sessions.filter((s) => s.id !== sessionId && s.recordId !== sessionId), {
             id: sessionId,
@@ -675,10 +735,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
             workDir: historyEntry.workDir,
             acpSessionId: historyEntry.acpSessionId,
             terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
+            useActiveBrowser: browserState.enabled,
+            browserSelection: browserState.selection,
+            browserSelectionMode: browserState.selectionMode,
+            browserSelectionCapture: browserState.selectionCapture,
           }],
         }));
         try {
-          const resumed = await resumeChatSession(sessionId, historyEntry.agentId, historyEntry.workDir, historyEntry.acpSessionId, shouldEnableTerminalForAgent(get()));
+          const resumed = await resumeChatSession(
+            sessionId,
+            historyEntry.agentId,
+            historyEntry.workDir,
+            historyEntry.acpSessionId,
+            shouldEnableTerminalForAgent(get()),
+            shouldEnableTerminalForAgent(get()) ? get().activeTerminalId : undefined,
+            browserState.enabled,
+            browserState.tabId,
+          );
           if ('id' in resumed) {
             liveSessionId = resumed.id;
             kind = 'resumable';
@@ -708,6 +781,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         acpSessionId,
         useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
         terminalId: kind === 'resumable' && shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
+        useActiveBrowser: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).enabled,
+        browserSelection: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).selection,
+        browserSelectionMode: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).selectionMode,
+        browserSelectionCapture: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).selectionCapture,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
@@ -781,6 +858,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const agentId = session.agentId;
     const workDir = session.workDir;
     const currentAcpSessionId = session.acpSessionId;
+    const browserState = activeBrowserStateForWorkDir(get(), workDir);
 
     const request = (async () => {
       set((state) => ({
@@ -792,7 +870,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const terminalEnabled = shouldEnableTerminalForAgent(get());
       const terminalId = terminalEnabled ? get().activeTerminalId ?? undefined : undefined;
-      const resumed = await resumeChatSession(recordId, agentId, workDir, currentAcpSessionId, terminalEnabled);
+      const resumed = await resumeChatSession(recordId, agentId, workDir, currentAcpSessionId, terminalEnabled, terminalId, browserState.enabled, browserState.tabId);
       if (!('id' in resumed)) {
         set((state) => ({
           sessions: updateSession(state.sessions, session.id, (s) => ({ ...s, status: 'error' })),
@@ -819,6 +897,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           acpSessionId,
           useActiveTerminal: terminalEnabled,
           terminalId,
+          useActiveBrowser: browserState.enabled,
+          browserSelection: browserState.selection,
+          browserSelectionMode: browserState.selectionMode,
+          browserSelectionCapture: browserState.selectionCapture,
         };
         const nextSessions = [...state.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
         const nextState = { ...state, sessions: nextSessions };
@@ -911,6 +993,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         liveSessionId = restore.liveSessionId ?? targetSessionId;
         kind = 'live';
       } else if (restoreAgentId && (restore.workDir ?? projectPath)) {
+        const browserState = activeBrowserStateForWorkDir(get(), restore.workDir ?? projectPath);
         set((state) => ({
           sessions: [...state.sessions.filter((s) => s.id !== targetSessionId && s.recordId !== targetSessionId), {
             id: targetSessionId,
@@ -919,15 +1002,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
             title: fallbackTitle(restoreAgentId, restore.title),
             messages: [],
             status: 'connecting',
-          createdAt: Date.now(),
-          kind: 'archived',
-          workDir: restore.workDir ?? projectPath,
-          acpSessionId: restore.acpSessionId,
-          terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
-        }],
-      }));
+            createdAt: Date.now(),
+            kind: 'archived',
+            workDir: restore.workDir ?? projectPath,
+            acpSessionId: restore.acpSessionId,
+            terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
+            useActiveBrowser: browserState.enabled,
+            browserSelection: browserState.selection,
+            browserSelectionMode: browserState.selectionMode,
+            browserSelectionCapture: browserState.selectionCapture,
+          }],
+        }));
         try {
-          const resumed = await resumeChatSession(targetSessionId, restoreAgentId, restore.workDir ?? projectPath, restore.acpSessionId, shouldEnableTerminalForAgent(get()));
+          const resumed = await resumeChatSession(
+            targetSessionId,
+            restoreAgentId,
+            restore.workDir ?? projectPath,
+            restore.acpSessionId,
+            shouldEnableTerminalForAgent(get()),
+            shouldEnableTerminalForAgent(get()) ? get().activeTerminalId : undefined,
+            browserState.enabled,
+            browserState.tabId,
+          );
           if ('id' in resumed) {
             liveSessionId = resumed.id;
             kind = 'resumable';
@@ -960,6 +1056,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         acpSessionId,
         useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
         terminalId: kind === 'resumable' && shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
+        useActiveBrowser: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).enabled,
+        browserSelection: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).selection,
+        browserSelectionMode: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).selectionMode,
+        browserSelectionCapture: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).selectionCapture,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
@@ -1100,6 +1200,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const previousEnabled = state.useActiveTerminal;
     const terminalId = enabled ? state.activeTerminalId ?? undefined : undefined;
+    const browserState = activeBrowserStateForWorkDir(state, session.workDir);
     set({ useActiveTerminal: enabled });
 
     if (session.useActiveTerminal === enabled) return true;
@@ -1114,7 +1215,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'connecting', kind: 'archived' })),
       }));
 
-      const resumed = await resumeChatSession(recordId, session.agentId, session.workDir!, session.acpSessionId, enabled);
+      const resumed = await resumeChatSession(recordId, session.agentId, session.workDir!, session.acpSessionId, enabled, enabled ? get().activeTerminalId : undefined, browserState.enabled, browserState.tabId);
       if (!('id' in resumed)) {
         throw new Error(resumed.resumeError ?? 'Restart failed');
       }
@@ -1134,6 +1235,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           acpSessionId,
           useActiveTerminal: enabled,
           terminalId,
+          useActiveBrowser: browserState.enabled,
+          browserSelection: browserState.selection,
+          browserSelectionMode: browserState.selectionMode,
+          browserSelectionCapture: browserState.selectionCapture,
         };
         const nextSessions = [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
         const nextState = { ...current, sessions: nextSessions };
@@ -1147,6 +1252,95 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })().catch((err) => {
       set((current) => ({
         useActiveTerminal: previousEnabled,
+        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'error' })),
+        lastRestoreError: {
+          sessionId: recordId,
+          reason: err instanceof Error ? err.message : 'Restart request failed',
+        },
+      }));
+      return false;
+    }).finally(() => {
+      resumeRequests.delete(requestKey);
+    });
+
+    resumeRequests.set(requestKey, request);
+    return request;
+  },
+
+  restartActiveSessionForBrowser: async (enabled, force = false) => {
+    const state = get();
+    const sessionId = state.activeSessionId;
+    const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
+    if (!session || session.status !== 'idle' || session.pendingPermission) return false;
+    if (!session.agentId || !session.workDir) return false;
+
+    const previousEnabled = state.useActiveBrowser;
+    const browserState = activeBrowserStateForWorkDir(state, session.workDir);
+    const browserEnabledForSession = enabled && !!browserState.tabId;
+    const terminalEnabled = session.useActiveTerminal ?? shouldEnableTerminalForAgent(state);
+    const terminalId = terminalEnabled ? (session.terminalId ?? state.activeTerminalId ?? undefined) : undefined;
+    set({ useActiveBrowser: enabled });
+
+    if (!force && !!session.useActiveBrowser === browserEnabledForSession) return true;
+
+    const recordId = session.recordId ?? session.id;
+    const requestKey = `${recordId}\x00browser:${browserEnabledForSession ? 'on' : 'off'}:${browserState.tabId ?? 'none'}`;
+    const existingRequest = resumeRequests.get(requestKey);
+    if (existingRequest) return existingRequest;
+
+    const request = (async () => {
+      set((current) => ({
+        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'connecting', kind: 'archived' })),
+      }));
+
+      const resumed = await resumeChatSession(
+        recordId,
+        session.agentId,
+        session.workDir!,
+        session.acpSessionId,
+        terminalEnabled,
+        terminalId,
+        browserEnabledForSession,
+        browserEnabledForSession ? browserState.tabId : undefined,
+      );
+      if (!('id' in resumed)) {
+        throw new Error(resumed.resumeError ?? 'Restart failed');
+      }
+
+      const liveSessionId = resumed.id;
+      const acpSessionId = resumed.acpSessionId ?? session.acpSessionId;
+      const nextWorkDir = resumed.workDir ?? session.workDir;
+      const nextSelection = browserEnabledForSession ? browserState.selection : null;
+      const nextSelectionCapture = browserEnabledForSession ? browserState.selectionCapture : null;
+      set((current) => {
+        const idsToRemove = new Set([session.id, liveSessionId]);
+        const nextSession: ChatSessionInfo = {
+          ...session,
+          id: liveSessionId,
+          recordId,
+          status: 'connecting',
+          kind: 'resumable',
+          workDir: nextWorkDir,
+          acpSessionId,
+          useActiveTerminal: terminalEnabled,
+          terminalId,
+          useActiveBrowser: browserEnabledForSession,
+          browserSelection: nextSelection,
+          browserSelectionMode: browserState.selectionMode,
+          browserSelectionCapture: nextSelectionCapture,
+        };
+        const nextSessions = [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
+        const nextState = { ...current, sessions: nextSessions };
+        return {
+          sessions: nextSessions,
+          ...(current.activeSessionId === session.id ? activateSessionState(nextState, liveSessionId) : {}),
+          lastRestoreError: null,
+        };
+      });
+      return true;
+    })().catch((err) => {
+      set((current) => ({
+        useActiveBrowser: previousEnabled,
         sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'error' })),
         lastRestoreError: {
           sessionId: recordId,

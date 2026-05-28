@@ -2,6 +2,8 @@ package tunnel
 
 import (
 	"errors"
+	"net"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -39,6 +41,18 @@ type fakeRuntime struct {
 func (r *fakeRuntime) URL() string { return r.url }
 func (r *fakeRuntime) Stop() error { r.stopped = true; return nil }
 
+func startLocalListener(t *testing.T) (string, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start local listener: %v", err)
+	}
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	return port, func() {
+		_ = ln.Close()
+	}
+}
+
 func TestManagerRejectsBuiltInTunnelPortConflict(t *testing.T) {
 	manager := NewManagerWithStarter(&fakeStore{}, "8080", true, "cloudflare", func(engine, port string) (RuntimeTunnel, error) {
 		return &fakeRuntime{url: "https://example.trycloudflare.com"}, nil
@@ -56,6 +70,8 @@ func TestManagerRejectsBuiltInTunnelPortConflict(t *testing.T) {
 func TestManagerStartAndStopPersistEnabledState(t *testing.T) {
 	store := &fakeStore{}
 	startCalls := 0
+	port, cleanup := startLocalListener(t)
+	defer cleanup()
 	manager := NewManagerWithStarter(store, "8080", false, "cloudflare", func(engine, port string) (RuntimeTunnel, error) {
 		startCalls++
 		return &fakeRuntime{url: "https://running.trycloudflare.com"}, nil
@@ -63,7 +79,7 @@ func TestManagerStartAndStopPersistEnabledState(t *testing.T) {
 
 	record, err := manager.Save(ConfigRecord{
 		Name:      "Preview",
-		LocalPort: "3000",
+		LocalPort: port,
 	})
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
@@ -108,12 +124,14 @@ func TestManagerStartAndStopPersistEnabledState(t *testing.T) {
 }
 
 func TestManagerLoadsEnabledTunnels(t *testing.T) {
+	port, cleanup := startLocalListener(t)
+	defer cleanup()
 	store := &fakeStore{
 		configs: map[string]ConfigRecord{
 			"tunnel-1": {
 				ID:        "tunnel-1",
 				Name:      "Auto Start",
-				LocalPort: "4321",
+				LocalPort: port,
 				Engine:    "cloudflare",
 				Enabled:   true,
 				CreatedAt: time.Now().UnixMilli(),
@@ -122,7 +140,7 @@ func TestManagerLoadsEnabledTunnels(t *testing.T) {
 		},
 	}
 	manager := NewManagerWithStarter(store, "8080", false, "cloudflare", func(engine, port string) (RuntimeTunnel, error) {
-		if port != "4321" {
+		if port != store.configs["tunnel-1"].LocalPort {
 			return nil, errors.New("unexpected port")
 		}
 		return &fakeRuntime{url: "https://auto.trycloudflare.com"}, nil
@@ -147,6 +165,8 @@ func TestManagerLoadsEnabledTunnels(t *testing.T) {
 func TestManagerRetriesEnabledTunnelUntilStartSucceeds(t *testing.T) {
 	store := &fakeStore{}
 	startCalls := 0
+	port, cleanup := startLocalListener(t)
+	defer cleanup()
 	manager := NewManagerWithStarter(store, "8080", false, "cloudflare", func(engine, port string) (RuntimeTunnel, error) {
 		startCalls++
 		if startCalls < 3 {
@@ -158,7 +178,7 @@ func TestManagerRetriesEnabledTunnelUntilStartSucceeds(t *testing.T) {
 
 	record, err := manager.Save(ConfigRecord{
 		Name:      "Retrying Preview",
-		LocalPort: "5173",
+		LocalPort: port,
 	})
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
@@ -186,6 +206,8 @@ func TestManagerStopCancelsPendingRetry(t *testing.T) {
 	store := &fakeStore{}
 	started := make(chan struct{}, 1)
 	startCalls := 0
+	port, cleanup := startLocalListener(t)
+	defer cleanup()
 	manager := NewManagerWithStarter(store, "8080", false, "cloudflare", func(engine, port string) (RuntimeTunnel, error) {
 		startCalls++
 		started <- struct{}{}
@@ -195,7 +217,7 @@ func TestManagerStopCancelsPendingRetry(t *testing.T) {
 
 	record, err := manager.Save(ConfigRecord{
 		Name:      "Stop Retry",
-		LocalPort: "3333",
+		LocalPort: port,
 	})
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
@@ -224,5 +246,89 @@ func TestManagerStopCancelsPendingRetry(t *testing.T) {
 	}
 	if current.Status != StatusStopped {
 		t.Fatalf("expected stopped status, got %q", current.Status)
+	}
+}
+
+func TestManagerHandlesTypedNilRuntimeFromStarter(t *testing.T) {
+	store := &fakeStore{}
+	startCalls := 0
+	port, cleanup := startLocalListener(t)
+	defer cleanup()
+	manager := NewManagerWithStarter(store, "8080", false, "cloudflare", func(engine, port string) (RuntimeTunnel, error) {
+		startCalls++
+		var runtime *fakeRuntime
+		return runtime, nil
+	})
+	manager.retryBackoff = []time.Duration{5 * time.Millisecond}
+
+	record, err := manager.Save(ConfigRecord{
+		Name:      "Typed Nil",
+		LocalPort: port,
+	})
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if _, err := manager.Start(record.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	current, ok := manager.Get(record.ID)
+	if !ok {
+		t.Fatal("expected tunnel record")
+	}
+	if current.Status != StatusStarting {
+		t.Fatalf("expected status starting during retries, got %q", current.Status)
+	}
+	if current.LastError == "" {
+		t.Fatal("expected lastError to be populated for typed nil runtime")
+	}
+	if startCalls == 0 {
+		t.Fatal("expected starter to be invoked")
+	}
+}
+
+func TestManagerStopsImmediatelyWhenLocalPortHasNoListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve test port: %v", err)
+	}
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+
+	store := &fakeStore{}
+	startCalls := 0
+	manager := NewManagerWithStarter(store, "8080", false, "cloudflare", func(engine, localPort string) (RuntimeTunnel, error) {
+		startCalls++
+		return &fakeRuntime{url: "https://should-not-start.example"}, nil
+	})
+	manager.retryBackoff = []time.Duration{5 * time.Millisecond}
+
+	record, err := manager.Save(ConfigRecord{
+		Name:      "Missing Local Service",
+		LocalPort: port,
+	})
+	if err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if _, err := manager.Start(record.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	time.Sleep(40 * time.Millisecond)
+
+	current, ok := manager.Get(record.ID)
+	if !ok {
+		t.Fatal("expected tunnel record")
+	}
+	if current.Status != StatusStopped {
+		t.Fatalf("expected stopped status, got %q", current.Status)
+	}
+	if current.LastError == "" || current.LastError != "no process is listening on local port "+port {
+		t.Fatalf("unexpected lastError: %q", current.LastError)
+	}
+	if startCalls != 0 {
+		t.Fatalf("expected starter not to be called, got %d calls", startCalls)
 	}
 }

@@ -20,13 +20,14 @@ func startBoreProc(port string) (*tunnelProc, error) {
 	if err != nil {
 		return nil, err
 	}
+	prefix := tunnelLogPrefix("bore", port)
 
 	basePort := deriveBorePort(port)
 	const maxRetries = 10
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		remotePort := basePort + attempt
-		proc, err := tryBoreProc(bin, port, remotePort)
+		proc, err := tryBoreProc(bin, port, remotePort, prefix)
 		if err == nil {
 			return proc, nil
 		}
@@ -44,7 +45,7 @@ func startBoreProc(port string) (*tunnelProc, error) {
 	return nil, fmt.Errorf("bore: could not find available port after %d attempts starting from %d", maxRetries, basePort)
 }
 
-func tryBoreProc(bin, localPort string, remotePort int) (*tunnelProc, error) {
+func tryBoreProc(bin, localPort string, remotePort int, prefix string) (*tunnelProc, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	args := []string{
@@ -80,18 +81,18 @@ func tryBoreProc(bin, localPort string, remotePort int) (*tunnelProc, error) {
 	go func() {
 		defer close(urlCh)
 		rawCh := make(chan string, 1)
-		go scanLines(stdout, "bore", boreURLPattern, rawCh)
+		go scanLines(stdout, prefix, boreURLPattern, rawCh)
 		if url := <-rawCh; url != "" {
 			urlCh <- "http://" + url
 		}
 	}()
 	stderrCh := make(chan string, 1)
-	go scanLinesWithRecorder(stderr, "bore", nil, output, stderrCh)
+	go scanLinesWithRecorder(stderr, prefix, nil, output, stderrCh)
 
 	url, err := recvProcURL(proc, urlCh, 30*time.Second, output)
 	if err != nil {
 		proc.stop(5 * time.Second)
-		return proc, fmt.Errorf("bore: %w", err)
+		return proc, fmt.Errorf("bore local %s remote %d: %w", localPort, remotePort, err)
 	}
 
 	proc.url = url

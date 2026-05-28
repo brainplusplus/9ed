@@ -49,6 +49,7 @@ type Dependencies struct {
 	SettingsTunnels    *tunnel.Manager
 	TunnelURL          func() string // returns current tunnel URL (may change on restart)
 	TerminalMCPToken   string
+	BrowserMCPToken    string
 }
 
 type API struct {
@@ -65,6 +66,7 @@ type API struct {
 	settingsTunnels    *tunnel.Manager
 	tunnelURL          func() string
 	terminalMCPToken   string
+	browserMCPToken    string
 	terminalRunMu      sync.Mutex
 	terminalRuns       map[string]time.Time
 }
@@ -84,6 +86,7 @@ func New(deps Dependencies) *API {
 		settingsTunnels:    deps.SettingsTunnels,
 		tunnelURL:          deps.TunnelURL,
 		terminalMCPToken:   deps.TerminalMCPToken,
+		browserMCPToken:    deps.BrowserMCPToken,
 		terminalRuns:       make(map[string]time.Time),
 	}
 }
@@ -123,6 +126,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/state/", a.handleChatStateByID)
 	mux.HandleFunc("/api/chat/install-acp", a.handleChatInstallACP)
 	mux.HandleFunc("/api/chat/terminal/run", a.handleChatTerminalRun)
+	mux.HandleFunc("/api/chat/browser/run", a.handleChatBrowserRun)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
 
 	mux.HandleFunc("/api/browser/state", a.handleBrowserState)
@@ -130,6 +134,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/browser/tabs/", a.handleBrowserTabByID)
 	mux.HandleFunc("/api/browser/proxy/", a.handleBrowserProxy)
 	mux.HandleFunc("/browser/", a.handleBrowserProxy)
+	mux.HandleFunc("/api/browser/debug/mcp", a.handleBrowserMCPDebugLog)
 	mux.HandleFunc("/api/browser/automation/status", a.handleBrowserAutomationStatus)
 	mux.HandleFunc("/api/browser/automation/start", a.handleBrowserAutomationStart)
 	mux.HandleFunc("/api/browser/automation/navigate", a.handleBrowserAutomationNavigate)

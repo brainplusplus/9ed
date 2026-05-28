@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -23,6 +25,19 @@ var settingsTunnelRetryBackoff = []time.Duration{
 	5 * time.Second,
 	10 * time.Second,
 	30 * time.Second,
+}
+
+type nonRetryableStartError struct {
+	message string
+}
+
+func (e nonRetryableStartError) Error() string {
+	return e.message
+}
+
+func isNonRetryableStartError(err error) bool {
+	var target nonRetryableStartError
+	return errors.As(err, &target)
 }
 
 type ConfigRecord struct {
@@ -61,6 +76,38 @@ type managedTunnel struct {
 	status    string
 	lastError string
 	launchSeq uint64
+}
+
+func isNilRuntime(rt RuntimeTunnel) bool {
+	if rt == nil {
+		return true
+	}
+	value := reflect.ValueOf(rt)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func stopRuntime(rt RuntimeTunnel) error {
+	if isNilRuntime(rt) {
+		return nil
+	}
+	return rt.Stop()
+}
+
+func localPortReachable(port string) bool {
+	timeout := 500 * time.Millisecond
+	for _, host := range []string{"127.0.0.1", "localhost"} {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+	}
+	return false
 }
 
 type Manager struct {
@@ -145,7 +192,7 @@ func (m *Manager) Shutdown() {
 	for _, tunnel := range m.tunnels {
 		tunnel.launchSeq++
 		tunnel.status = StatusStopped
-		if tunnel.runtime != nil {
+		if !isNilRuntime(tunnel.runtime) {
 			runtimes = append(runtimes, tunnel.runtime)
 			tunnel.runtime = nil
 		}
@@ -153,7 +200,7 @@ func (m *Manager) Shutdown() {
 	m.mu.Unlock()
 
 	for _, runtime := range runtimes {
-		_ = runtime.Stop()
+		_ = stopRuntime(runtime)
 	}
 }
 
@@ -168,7 +215,7 @@ func (m *Manager) List() []RuntimeRecord {
 			Status:       tunnel.status,
 			LastError:    tunnel.lastError,
 		}
-		if tunnel.runtime != nil {
+		if !isNilRuntime(tunnel.runtime) {
 			item.URL = tunnel.runtime.URL()
 		}
 		items = append(items, item)
@@ -198,7 +245,7 @@ func (m *Manager) Get(id string) (RuntimeRecord, bool) {
 		Status:       tunnel.status,
 		LastError:    tunnel.lastError,
 	}
-	if tunnel.runtime != nil {
+	if !isNilRuntime(tunnel.runtime) {
 		item.URL = tunnel.runtime.URL()
 	}
 	return item, true
@@ -242,7 +289,7 @@ func (m *Manager) Save(cfg ConfigRecord) (RuntimeRecord, error) {
 	}
 
 	var runtimeToStop RuntimeTunnel
-	if exists && existing.runtime != nil && (existing.config.LocalPort != normalized.LocalPort || existing.config.Engine != normalized.Engine) {
+	if exists && !isNilRuntime(existing.runtime) && (existing.config.LocalPort != normalized.LocalPort || existing.config.Engine != normalized.Engine) {
 		runtimeToStop = existing.runtime
 		existing.runtime = nil
 	}
@@ -268,8 +315,8 @@ func (m *Manager) Save(cfg ConfigRecord) (RuntimeRecord, error) {
 		}
 	}
 
-	if runtimeToStop != nil {
-		_ = runtimeToStop.Stop()
+	if !isNilRuntime(runtimeToStop) {
+		_ = stopRuntime(runtimeToStop)
 	}
 	if normalized.Enabled {
 		m.startAsync(normalized.ID)
@@ -294,8 +341,8 @@ func (m *Manager) Delete(id string) error {
 			return err
 		}
 	}
-	if runtime != nil {
-		_ = runtime.Stop()
+	if !isNilRuntime(runtime) {
+		_ = stopRuntime(runtime)
 	}
 	return nil
 }
@@ -344,8 +391,8 @@ func (m *Manager) Stop(id string) (RuntimeRecord, error) {
 			return RuntimeRecord{}, err
 		}
 	}
-	if runtime != nil {
-		_ = runtime.Stop()
+	if !isNilRuntime(runtime) {
+		_ = stopRuntime(runtime)
 	}
 	return m.recordByID(id)
 }
@@ -370,8 +417,8 @@ func (m *Manager) Restart(id string) (RuntimeRecord, error) {
 			return RuntimeRecord{}, err
 		}
 	}
-	if runtime != nil {
-		_ = runtime.Stop()
+	if !isNilRuntime(runtime) {
+		_ = stopRuntime(runtime)
 	}
 	m.startAsync(id)
 	return m.recordByID(id)
@@ -399,8 +446,8 @@ func (m *Manager) startAsync(id string) {
 	tunnel.lastError = ""
 	m.mu.Unlock()
 
-	if runtimeToStop != nil {
-		_ = runtimeToStop.Stop()
+	if !isNilRuntime(runtimeToStop) {
+		_ = stopRuntime(runtimeToStop)
 	}
 
 	go m.startLoop(id, seq, cfg)
@@ -409,8 +456,22 @@ func (m *Manager) startAsync(id string) {
 func (m *Manager) startLoop(id string, seq uint64, cfg ConfigRecord) {
 	attempt := 0
 	for {
+		if !localPortReachable(cfg.LocalPort) {
+			err := nonRetryableStartError{message: fmt.Sprintf("no process is listening on local port %s", cfg.LocalPort)}
+			m.mu.Lock()
+			current, ok := m.tunnels[id]
+			if ok && current.launchSeq == seq && current.config.Enabled {
+				current.runtime = nil
+				current.status = StatusStopped
+				current.lastError = err.Error()
+			}
+			m.mu.Unlock()
+			log.Printf("tunnel: skipped start for %s on port %s: %v", cfg.Name, cfg.LocalPort, err)
+			return
+		}
+
 		runtime, err := m.startTunnel(cfg.Engine, cfg.LocalPort)
-		if err == nil && runtime == nil {
+		if err == nil && isNilRuntime(runtime) {
 			err = errors.New("tunnel starter returned nil runtime")
 		}
 
@@ -418,8 +479,8 @@ func (m *Manager) startLoop(id string, seq uint64, cfg ConfigRecord) {
 		current, ok := m.tunnels[id]
 		if !ok || current.launchSeq != seq || !current.config.Enabled {
 			m.mu.Unlock()
-			if runtime != nil {
-				_ = runtime.Stop()
+			if !isNilRuntime(runtime) {
+				_ = stopRuntime(runtime)
 			}
 			return
 		}
@@ -432,7 +493,11 @@ func (m *Manager) startLoop(id string, seq uint64, cfg ConfigRecord) {
 		}
 
 		current.runtime = nil
-		current.status = StatusStarting
+		if isNonRetryableStartError(err) {
+			current.status = StatusStopped
+		} else {
+			current.status = StatusStarting
+		}
 		current.lastError = err.Error()
 		name := current.config.Name
 		port := current.config.LocalPort
@@ -440,8 +505,12 @@ func (m *Manager) startLoop(id string, seq uint64, cfg ConfigRecord) {
 		attempt++
 		m.mu.Unlock()
 
-		if runtime != nil {
-			_ = runtime.Stop()
+		if !isNilRuntime(runtime) {
+			_ = stopRuntime(runtime)
+		}
+		if isNonRetryableStartError(err) {
+			log.Printf("tunnel: stopped %s on port %s: %v", name, port, err)
+			return
 		}
 		log.Printf("tunnel: failed to start %s on port %s: %v; retrying in %s", name, port, err, delay)
 		if !m.waitForRetry(id, seq, delay) {

@@ -48,12 +48,15 @@ type WorkspaceState = {
   addBrowserTab: (projectId: string, tabId: string) => void;
   removeBrowserTab: (projectId: string, tabId: string) => void;
   setActiveBrowserTab: (projectId: string, tabId: string | null) => void;
+  reconcileBrowserTabs: (liveTabIds: string[]) => void;
 };
 
 type StoredActiveProject = {
   id: string;
   path: string;
   name: string;
+  browserTabIds?: string[];
+  activeBrowserTabId?: string | null;
 };
 
 type StoredProject = StoredActiveProject;
@@ -80,6 +83,7 @@ function generateId(): string {
 }
 
 function emptyProject(project: StoredProject): Project {
+  const browserTabs = normalizeBrowserTabs(project.browserTabIds, project.activeBrowserTabId);
   return {
     id: project.id,
     path: project.path,
@@ -89,6 +93,17 @@ function emptyProject(project: StoredProject): Project {
     terminalTabs: [],
     activeTerminalTabId: null,
     terminalSessions: [],
+    browserTabIds: browserTabs.browserTabIds,
+    activeBrowserTabId: browserTabs.activeBrowserTabId,
+  };
+}
+
+function normalizeBrowserTabs(browserTabIds?: string[], activeBrowserTabId?: string | null): { browserTabIds: string[]; activeBrowserTabId: string | null } {
+  const browserTabs = Array.from(new Set((browserTabIds ?? []).map((id) => id.trim()).filter(Boolean)));
+  const active = activeBrowserTabId && browserTabs.includes(activeBrowserTabId) ? activeBrowserTabId : (browserTabs[0] ?? null);
+  return {
+    browserTabIds: browserTabs,
+    activeBrowserTabId: active,
   };
 }
 
@@ -104,6 +119,8 @@ function readStoredActiveProject(): StoredActiveProject | null {
       id: parsed.id || generateId(),
       path: parsed.path,
       name: parsed.name,
+      browserTabIds: normalizeBrowserTabs(parsed.browserTabIds, parsed.activeBrowserTabId).browserTabIds,
+      activeBrowserTabId: normalizeBrowserTabs(parsed.browserTabIds, parsed.activeBrowserTabId).activeBrowserTabId,
     };
   } catch {
     return null;
@@ -112,10 +129,13 @@ function readStoredActiveProject(): StoredActiveProject | null {
 
 function normalizeStoredProject(project: Partial<StoredProject>): StoredProject | null {
   if (!project.path || !project.name) return null;
+  const browserTabs = normalizeBrowserTabs(project.browserTabIds, project.activeBrowserTabId);
   return {
     id: project.id || generateId(),
     path: project.path,
     name: project.name,
+    browserTabIds: browserTabs.browserTabIds,
+    activeBrowserTabId: browserTabs.activeBrowserTabId,
   };
 }
 
@@ -150,7 +170,7 @@ function readStoredWorkspace(): StoredWorkspace {
   };
 }
 
-function writeStoredActiveProject(project: Pick<Project, 'id' | 'path' | 'name'> | null): void {
+function writeStoredActiveProject(project: Pick<Project, 'id' | 'path' | 'name' | 'browserTabIds' | 'activeBrowserTabId'> | null): void {
   const store = storage();
   if (!store) return;
   try {
@@ -162,12 +182,14 @@ function writeStoredActiveProject(project: Pick<Project, 'id' | 'path' | 'name'>
       id: project.id,
       path: project.path,
       name: project.name,
+      browserTabIds: normalizeBrowserTabs(project.browserTabIds, project.activeBrowserTabId).browserTabIds,
+      activeBrowserTabId: normalizeBrowserTabs(project.browserTabIds, project.activeBrowserTabId).activeBrowserTabId,
     }));
   } catch {
   }
 }
 
-function writeStoredWorkspace(projects: Pick<Project, 'id' | 'path' | 'name'>[], activeProjectId: string | null): void {
+function writeStoredWorkspace(projects: Pick<Project, 'id' | 'path' | 'name' | 'browserTabIds' | 'activeBrowserTabId'>[], activeProjectId: string | null): void {
   const store = storage();
   if (!store) return;
   try {
@@ -183,6 +205,8 @@ function writeStoredWorkspace(projects: Pick<Project, 'id' | 'path' | 'name'>[],
         id: project.id,
         path: project.path,
         name: project.name,
+        browserTabIds: normalizeBrowserTabs(project.browserTabIds, project.activeBrowserTabId).browserTabIds,
+        activeBrowserTabId: normalizeBrowserTabs(project.browserTabIds, project.activeBrowserTabId).activeBrowserTabId,
       })),
       activeProjectId: activeProject?.id ?? null,
     }));
@@ -485,28 +509,59 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     })),
 
   addBrowserTab: (projectId, tabId) =>
-    set((state) => ({
-      projects: updateProject(state.projects, projectId, (p) => {
-        const browserTabIds = p.browserTabIds ?? [];
+    set((state) => {
+      const projects = updateProject(state.projects, projectId, (p) => {
+        const browserTabs = normalizeBrowserTabs(p.browserTabIds, p.activeBrowserTabId);
         return {
           ...p,
-          browserTabIds: browserTabIds.includes(tabId) ? browserTabIds : [...browserTabIds, tabId],
+          browserTabIds: browserTabs.browserTabIds.includes(tabId) ? browserTabs.browserTabIds : [...browserTabs.browserTabIds, tabId],
           activeBrowserTabId: tabId,
         };
-      }),
-    })),
+      });
+      writeStoredWorkspace(projects, state.activeProjectId);
+      return { projects };
+    }),
 
   removeBrowserTab: (projectId, tabId) =>
-    set((state) => ({
-      projects: updateProject(state.projects, projectId, (p) => {
-        const browserTabIds = (p.browserTabIds ?? []).filter((id) => id !== tabId);
-        const activeBrowserTabId = p.activeBrowserTabId === tabId ? (browserTabIds[0] ?? null) : (p.activeBrowserTabId ?? null);
+    set((state) => {
+      const projects = updateProject(state.projects, projectId, (p) => {
+        const browserTabs = normalizeBrowserTabs(p.browserTabIds, p.activeBrowserTabId);
+        const browserTabIds = browserTabs.browserTabIds.filter((id) => id !== tabId);
+        const activeBrowserTabId = browserTabs.activeBrowserTabId === tabId ? (browserTabIds[0] ?? null) : browserTabs.activeBrowserTabId;
         return { ...p, browserTabIds, activeBrowserTabId };
-      }),
-    })),
+      });
+      writeStoredWorkspace(projects, state.activeProjectId);
+      return { projects };
+    }),
 
   setActiveBrowserTab: (projectId, tabId) =>
-    set((state) => ({
-      projects: updateProject(state.projects, projectId, (p) => ({ ...p, activeBrowserTabId: tabId })),
-    })),
+    set((state) => {
+      const projects = updateProject(state.projects, projectId, (p) => {
+        const browserTabs = normalizeBrowserTabs(p.browserTabIds, p.activeBrowserTabId);
+        if (tabId && !browserTabs.browserTabIds.includes(tabId)) {
+          return { ...p, activeBrowserTabId: browserTabs.activeBrowserTabId };
+        }
+        return { ...p, activeBrowserTabId: tabId };
+      });
+      writeStoredWorkspace(projects, state.activeProjectId);
+      return { projects };
+    }),
+
+  reconcileBrowserTabs: (liveTabIds) =>
+    set((state) => {
+      const live = new Set(liveTabIds.map((id) => id.trim()).filter(Boolean));
+      const projects = state.projects.map((project) => {
+        const browserTabIds = (project.browserTabIds ?? []).filter((id) => live.has(id));
+        const activeBrowserTabId = project.activeBrowserTabId && live.has(project.activeBrowserTabId)
+          ? project.activeBrowserTabId
+          : (browserTabIds[0] ?? null);
+        return {
+          ...project,
+          browserTabIds,
+          activeBrowserTabId,
+        };
+      });
+      writeStoredWorkspace(projects, state.activeProjectId);
+      return { projects };
+    }),
 }));

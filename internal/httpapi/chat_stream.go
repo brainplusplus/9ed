@@ -1,7 +1,11 @@
 package httpapi
 
 import (
+	"encoding/json"
+	"regexp"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/brainplusplus/9ed/internal/chat"
 	"github.com/brainplusplus/9ed/internal/debug"
@@ -73,14 +77,25 @@ type chatSubscriber struct {
 }
 
 type chatStream struct {
-	sessionID   string
-	session     chat.ChatSession
-	persist     chatEventPersister
-	onDone      func()
-	subscribers map[*chatSubscriber]struct{}
-	mu          sync.Mutex
-	done        chan struct{}
+	sessionID        string
+	session          chat.ChatSession
+	persist          chatEventPersister
+	onDone           func()
+	subscribers      map[*chatSubscriber]struct{}
+	turnDoneEmitted  bool
+	turnObservations []chat.ChatEvent
+	toolFallbackSeq  int
+	toolFallback     *time.Timer
+	toolFallbackText string
+	turnRecoverySeq  int
+	turnRecovery     *time.Timer
+	turnRecoveryTool string
+	mu               sync.Mutex
+	done             chan struct{}
 }
+
+var interactiveToolDoneTimeout = 3500 * time.Millisecond
+var interactiveToolUnsureTimeout = 9 * time.Second
 
 func newChatStream(sessionID string, session chat.ChatSession, persist chatEventPersister, onDone func()) *chatStream {
 	return &chatStream{
@@ -95,6 +110,15 @@ func newChatStream(sessionID string, session chat.ChatSession, persist chatEvent
 
 func (s *chatStream) Start() {
 	go s.run()
+}
+
+func (s *chatStream) StartTurn() {
+	s.mu.Lock()
+	s.turnDoneEmitted = false
+	s.turnObservations = nil
+	s.cancelToolFallbackLocked()
+	s.cancelTurnRecoveryLocked()
+	s.mu.Unlock()
 }
 
 func (s *chatStream) Subscribe() *chatSubscriber {
@@ -141,7 +165,12 @@ func (s *chatStream) run() {
 		select {
 		case <-s.session.Done():
 			debug.Printf("[chat/stream] session done session=%s", s.sessionID)
-			s.publish(chat.ChatEvent{Type: "done", StopReason: "session_closed"})
+			s.mu.Lock()
+			doneEmitted := s.turnDoneEmitted
+			s.mu.Unlock()
+			if !doneEmitted {
+				s.publish(chat.ChatEvent{Type: "done", StopReason: "session_closed"})
+			}
 			return
 		case evt, ok := <-s.session.Events():
 			if !ok {
@@ -154,14 +183,26 @@ func (s *chatStream) run() {
 }
 
 func (s *chatStream) publish(evt chat.ChatEvent) {
+	if s.shouldIgnoreLateTurnEvent(evt) {
+		debug.Printf("[chat/stream] drop late turn event session=%s type=%s tool=%s", s.sessionID, evt.Type, evt.ToolTitle)
+		return
+	}
 	if evt.Type == "text" || evt.Type == "done" || evt.Type == "error" || evt.Type == "usage_update" {
 		debug.Printf("[chat/stream] publish session=%s type=%s textChars=%d stop=%q err=%q", s.sessionID, evt.Type, len(evt.Text), evt.StopReason, evt.Error)
 	}
+	s.handleToolFallbackTrigger(evt)
+	s.handleTurnRecoveryTrigger(evt)
 	if s.persist != nil {
 		s.persist(evt)
 	}
 
 	s.mu.Lock()
+	if evt.Type == "done" || evt.Type == "error" {
+		s.turnObservations = nil
+		s.cancelToolFallbackLocked()
+		s.cancelTurnRecoveryLocked()
+		s.turnDoneEmitted = true
+	}
 	defer s.mu.Unlock()
 	for sub := range s.subscribers {
 		select {
@@ -171,4 +212,608 @@ func (s *chatStream) publish(evt chat.ChatEvent) {
 			close(sub.C)
 		}
 	}
+}
+
+func (s *chatStream) handleToolFallbackTrigger(evt chat.ChatEvent) {
+	if shouldScheduleToolFallback(evt) {
+		s.scheduleToolFallback(toolFallbackText(evt))
+		return
+	}
+	if shouldCancelToolFallback(evt) {
+		s.mu.Lock()
+		s.cancelToolFallbackLocked()
+		s.mu.Unlock()
+	}
+}
+
+func shouldScheduleToolFallback(evt chat.ChatEvent) bool {
+	// Keep tool results inside the agent loop instead of synthesizing assistant
+	// replies from MCP observations. The UI can render the tool steps directly,
+	// which feels closer to Codex/Claude-style agents and avoids "too fast" fake
+	// conclusions when local tools finish instantly.
+	return false
+}
+
+func shouldScheduleLegacyToolFallback(evt chat.ChatEvent) bool {
+	return evt.Type == "tool_call_update" &&
+		strings.EqualFold(evt.ToolStatus, "completed") &&
+		isInteractiveMCPTool(evt.ToolTitle) &&
+		(strings.TrimSpace(evt.ToolContent) != "" || strings.TrimSpace(evt.ToolRawInput) != "") &&
+		!terminalObservationStillRunning(evt)
+}
+
+func terminalObservationStillRunning(evt chat.ChatEvent) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(evt.ToolTitle)), "active_terminal_") &&
+		strings.Contains(strings.ToLower(evt.ToolContent), "terminal status: still running")
+}
+
+func shouldCancelToolFallback(evt chat.ChatEvent) bool {
+	switch evt.Type {
+	case "text", "tool_call", "plan", "done", "error", "terminal_execute":
+		return true
+	case "tool_call_update":
+		return !strings.EqualFold(evt.ToolStatus, "completed")
+	default:
+		return false
+	}
+}
+
+func isInteractiveMCPTool(title string) bool {
+	value := strings.TrimSpace(strings.ToLower(title))
+	return value == "active_terminal_run" ||
+		value == "active_terminal_start" ||
+		value == "active_terminal_read" ||
+		strings.HasPrefix(value, "9ed_browser_") ||
+		strings.HasPrefix(value, "active_browser_") ||
+		strings.HasPrefix(value, "browser_")
+}
+
+func (s *chatStream) handleTurnRecoveryTrigger(evt chat.ChatEvent) {
+	if shouldScheduleTurnRecovery(evt) {
+		s.recordTurnObservationLocked(evt)
+		s.scheduleTurnRecoveryLocked(evt.ToolTitle, turnRecoveryDelay(evt))
+		return
+	}
+	if shouldCancelTurnRecovery(evt) {
+		s.mu.Lock()
+		s.cancelTurnRecoveryLocked()
+		s.mu.Unlock()
+	}
+}
+
+func shouldScheduleTurnRecovery(evt chat.ChatEvent) bool {
+	return evt.Type == "tool_call_update" &&
+		(strings.EqualFold(evt.ToolStatus, "completed") || strings.EqualFold(evt.ToolStatus, "failed")) &&
+		isInteractiveMCPTool(evt.ToolTitle) &&
+		!terminalObservationStillRunning(evt)
+}
+
+func shouldCancelTurnRecovery(evt chat.ChatEvent) bool {
+	switch evt.Type {
+	case "text", "thinking", "tool_call", "plan", "done", "error", "terminal_execute", "permission_request":
+		return true
+	case "tool_call_update":
+		if !isInteractiveMCPTool(evt.ToolTitle) {
+			return true
+		}
+		return !strings.EqualFold(evt.ToolStatus, "completed") && !strings.EqualFold(evt.ToolStatus, "failed")
+	default:
+		return false
+	}
+}
+
+func (s *chatStream) scheduleTurnRecoveryLocked(title string, timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelTurnRecoveryLocked()
+	s.turnRecoveryTool = title
+	s.turnRecoverySeq++
+	seq := s.turnRecoverySeq
+	s.turnRecovery = time.AfterFunc(timeout, func() {
+		s.mu.Lock()
+		if seq != s.turnRecoverySeq || s.turnDoneEmitted {
+			s.mu.Unlock()
+			return
+		}
+		tool := s.turnRecoveryTool
+		observations := append([]chat.ChatEvent(nil), s.turnObservations...)
+		s.turnRecovery = nil
+		s.turnRecoveryTool = ""
+		s.mu.Unlock()
+
+		debug.Printf("[chat/stream] recovering stalled turn after completed tool session=%s tool=%s", s.sessionID, tool)
+		_ = s.session.Cancel()
+		text := synthesizeTurnRecoveryText(observations)
+		if text != "" {
+			s.publish(chat.ChatEvent{Type: "text", Text: text})
+		}
+		s.publish(chat.ChatEvent{Type: "done", StopReason: "tool_completion_timeout_stream"})
+	})
+}
+
+func (s *chatStream) cancelTurnRecoveryLocked() {
+	s.turnRecoverySeq++
+	s.turnRecoveryTool = ""
+	if s.turnRecovery != nil {
+		s.turnRecovery.Stop()
+		s.turnRecovery = nil
+	}
+}
+
+func turnRecoveryDelay(evt chat.ChatEvent) time.Duration {
+	title := strings.TrimSpace(strings.ToLower(evt.ToolTitle))
+	if strings.HasPrefix(title, "active_terminal_") {
+		if terminalObservationSufficient(evt) {
+			return interactiveToolDoneTimeout
+		}
+		return interactiveToolUnsureTimeout
+	}
+	return interactiveToolDoneTimeout
+}
+
+func terminalObservationSufficient(evt chat.ChatEvent) bool {
+	if !strings.HasPrefix(strings.TrimSpace(strings.ToLower(evt.ToolTitle)), "active_terminal_") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(evt.ToolContent), "decision: sufficient_to_answer=true")
+}
+
+func (s *chatStream) shouldIgnoreLateTurnEvent(evt chat.ChatEvent) bool {
+	s.mu.Lock()
+	done := s.turnDoneEmitted
+	s.mu.Unlock()
+	if !done {
+		return false
+	}
+	switch evt.Type {
+	case "tool_call", "tool_call_update", "text", "thinking", "diff", "plan", "permission_request", "terminal_execute":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *chatStream) recordTurnObservationLocked(evt chat.ChatEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.turnObservations {
+		if s.turnObservations[i].ToolCallID != "" && s.turnObservations[i].ToolCallID == evt.ToolCallID {
+			s.turnObservations[i] = evt
+			return
+		}
+	}
+	s.turnObservations = append(s.turnObservations, evt)
+	const maxTurnObservations = 8
+	if len(s.turnObservations) > maxTurnObservations {
+		s.turnObservations = append([]chat.ChatEvent(nil), s.turnObservations[len(s.turnObservations)-maxTurnObservations:]...)
+	}
+}
+
+func (s *chatStream) scheduleToolFallback(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelToolFallbackLocked()
+	s.toolFallbackText = text
+	s.toolFallbackSeq++
+	seq := s.toolFallbackSeq
+	s.toolFallback = time.AfterFunc(8*time.Second, func() {
+		s.mu.Lock()
+		if seq != s.toolFallbackSeq || s.turnDoneEmitted || s.toolFallbackText == "" {
+			s.mu.Unlock()
+			return
+		}
+		fallback := s.toolFallbackText
+		s.toolFallbackText = ""
+		s.toolFallback = nil
+		s.mu.Unlock()
+		debug.Printf("[chat/stream] tool fallback session=%s", s.sessionID)
+		s.publish(chat.ChatEvent{Type: "text", Text: fallback})
+		s.publish(chat.ChatEvent{Type: "done", StopReason: "tool_observation_fallback"})
+	})
+}
+
+func (s *chatStream) cancelToolFallbackLocked() {
+	s.toolFallbackSeq++
+	s.toolFallbackText = ""
+	if s.toolFallback != nil {
+		s.toolFallback.Stop()
+		s.toolFallback = nil
+	}
+}
+
+func (s *chatStream) consumeToolFallback() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fallback := s.toolFallbackText
+	s.cancelToolFallbackLocked()
+	return fallback
+}
+
+var fallbackWhitespace = regexp.MustCompile(`[ \t]+`)
+var fallbackNumeric = regexp.MustCompile(`^\d+$`)
+
+func toolFallbackText(evt chat.ChatEvent) string {
+	title := strings.TrimSpace(evt.ToolTitle)
+	content := strings.TrimSpace(evt.ToolContent)
+	if strings.HasPrefix(strings.ToLower(title), "active_terminal_") {
+		return terminalFallbackText(content, evt.ToolRawInput)
+	}
+	return browserFallbackText(title, content)
+}
+
+func terminalFallbackText(content, rawInput string) string {
+	command := extractAfterLinePrefix(content, "Terminal command:")
+	if command == "" {
+		command = commandFromToolRawInput(rawInput)
+	}
+	status := extractAfterLinePrefix(content, "Terminal status:")
+	output := extractAfterMarker(content, "Output:")
+	if output == "" {
+		output = content
+	}
+	if summary := summarizeProcessNameCommand(command, output); summary != "" {
+		return summary
+	}
+	if summary := summarizePortProcess(output); summary != "" {
+		return summary
+	}
+	if status == "" {
+		status = "completed"
+	}
+	return "Output terminal terakhir berstatus `" + status + "`.\n\n```text\n" + trimFallbackOutput(output) + "\n```"
+}
+
+func commandFromToolRawInput(rawInput string) string {
+	var payload map[string]any
+	if json.Unmarshal([]byte(rawInput), &payload) != nil {
+		return ""
+	}
+	if command, ok := payload["command"].(string); ok {
+		return strings.TrimSpace(command)
+	}
+	return ""
+}
+
+func browserFallbackText(title, content string) string {
+	line := firstUsefulLine(content)
+	if line == "" {
+		line = "aksi browser selesai"
+	}
+	return "Saya sudah menjalankan " + title + ". Hasil terakhir: " + line
+}
+
+func summarizePortProcess(output string) string {
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		if fields[2] != "0" && strings.ToLower(fields[3]) != "idle" && fallbackNumeric.MatchString(fields[0]) {
+			return "Setelah saya cek, port " + fields[0] + " sedang dipakai oleh proses `" + fields[3] + "` dengan PID `" + fields[2] + "`."
+		}
+	}
+	return ""
+}
+
+type processRow struct {
+	Name string
+	ID   string
+}
+
+func synthesizeTurnRecoveryText(observations []chat.ChatEvent) string {
+	if summary := summarizeTerminalObservationChain(observations); summary != "" {
+		return summary
+	}
+	for i := len(observations) - 1; i >= 0; i-- {
+		if shouldScheduleLegacyToolFallback(observations[i]) {
+			return toolFallbackText(observations[i])
+		}
+	}
+	return ""
+}
+
+func summarizeTerminalObservationChain(observations []chat.ChatEvent) string {
+	var latestCompleted *chat.ChatEvent
+	port := ""
+	for i := len(observations) - 1; i >= 0; i-- {
+		evt := observations[i]
+		if !isInteractiveMCPTool(evt.ToolTitle) {
+			continue
+		}
+		if !strings.EqualFold(evt.ToolStatus, "completed") && !strings.EqualFold(evt.ToolStatus, "failed") {
+			continue
+		}
+		if latestCompleted == nil {
+			copyEvt := evt
+			latestCompleted = &copyEvt
+		}
+		if port == "" {
+			port = detectPortFromObservation(evt)
+		}
+	}
+	if latestCompleted == nil {
+		return ""
+	}
+
+	command := extractAfterLinePrefix(latestCompleted.ToolContent, "Terminal command:")
+	if command == "" {
+		command = commandFromToolRawInput(latestCompleted.ToolRawInput)
+	}
+	output := extractAfterMarker(latestCompleted.ToolContent, "Output:")
+	if output == "" {
+		output = latestCompleted.ToolContent
+	}
+	if summary := summarizeProcessTableCommand(command, output, port); summary != "" {
+		return summary
+	}
+	if summary := summarizeNetstatObservation(command, output, port); summary != "" {
+		return summary
+	}
+	return ""
+}
+
+func detectPortFromObservation(evt chat.ChatEvent) string {
+	command := extractAfterLinePrefix(evt.ToolContent, "Terminal command:")
+	if command == "" {
+		command = commandFromToolRawInput(evt.ToolRawInput)
+	}
+	if port := detectPort(command); port != "" {
+		return port
+	}
+	output := extractAfterMarker(evt.ToolContent, "Output:")
+	if output == "" {
+		output = evt.ToolContent
+	}
+	return detectPort(output)
+}
+
+var portPattern = regexp.MustCompile(`(?i)(?::|localport\s+)(\d{2,5})`)
+
+func detectPort(value string) string {
+	match := portPattern.FindStringSubmatch(value)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func summarizeNetstatObservation(command, output, port string) string {
+	if port == "" {
+		port = detectPort(command)
+	}
+	var ownerPIDs []string
+	seen := map[string]struct{}{}
+	if pid := extractColonValue(output, "OwningProcess"); fallbackNumeric.MatchString(pid) {
+		seen[pid] = struct{}{}
+		ownerPIDs = append(ownerPIDs, pid)
+	}
+	for _, line := range strings.Split(trimFallbackOutput(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		pid := strings.TrimSpace(fields[len(fields)-1])
+		if !fallbackNumeric.MatchString(pid) {
+			continue
+		}
+		if _, ok := seen[pid]; ok {
+			continue
+		}
+		seen[pid] = struct{}{}
+		ownerPIDs = append(ownerPIDs, pid)
+	}
+	if len(ownerPIDs) == 0 {
+		return ""
+	}
+	if port != "" && len(ownerPIDs) == 1 {
+		return "Untuk port `" + port + "`, output terminal menunjukkan PID terkait `" + ownerPIDs[0] + "`."
+	}
+	if port != "" {
+		return "Untuk port `" + port + "`, output terminal menunjukkan PID terkait " + joinQuotedValues(ownerPIDs) + "."
+	}
+	return ""
+}
+
+func extractColonValue(content, key string) string {
+	for _, line := range strings.Split(content, "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(parts[0]), key) {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+	return ""
+}
+
+var getProcessIDPattern = regexp.MustCompile(`(?i)get-process\s+-id\s+([0-9,\s]+)`)
+
+func summarizeProcessNameCommand(command, output string) string {
+	if command == "" || output == "" {
+		return ""
+	}
+	match := getProcessIDPattern.FindStringSubmatch(command)
+	if len(match) < 2 {
+		return ""
+	}
+	ids := splitProcessIDs(match[1])
+	name := lastPlainProcessName(output)
+	if name == "" {
+		return ""
+	}
+	if len(ids) == 1 {
+		return "Setelah saya cek, PID `" + ids[0] + "` adalah proses `" + name + "`."
+	}
+	return "Setelah saya cek, salah satu proses yang terdeteksi adalah `" + name + "`. Output terakhir menunjukkan:\n```text\n" + trimFallbackOutput(output) + "\n```"
+}
+
+func summarizeProcessTableCommand(command, output, port string) string {
+	if !strings.Contains(strings.ToLower(command), "get-process") {
+		return ""
+	}
+	rows := parseProcessRows(output)
+	if len(rows) == 0 {
+		return ""
+	}
+	subject := "Proses yang dicek"
+	if port != "" {
+		subject = "Untuk port `" + port + "`, proses yang dicek"
+	}
+	if len(rows) == 1 {
+		return subject + " adalah `" + rows[0].Name + "` (PID `" + rows[0].ID + "`)."
+	}
+	return subject + " adalah " + formatProcessRows(rows) + "."
+}
+
+func parseProcessRows(output string) []processRow {
+	lines := strings.Split(trimFallbackOutput(output), "\n")
+	rows := make([]processRow, 0, len(lines))
+	seen := map[string]struct{}{}
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" ||
+			strings.Contains(line, "Terminal observation complete") ||
+			strings.Contains(line, "Next step:") ||
+			strings.HasPrefix(line, "Terminal command:") ||
+			strings.HasPrefix(line, "Terminal status:") ||
+			strings.HasPrefix(line, "Output:") ||
+			strings.EqualFold(line, "name id sessionid") ||
+			strings.HasPrefix(line, "----") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		var row processRow
+		switch {
+		case fallbackNumeric.MatchString(fields[1]):
+			row = processRow{Name: fields[0], ID: fields[1]}
+		case fallbackNumeric.MatchString(fields[0]):
+			row = processRow{Name: fields[1], ID: fields[0]}
+		default:
+			continue
+		}
+		if row.Name == "" || row.ID == "" {
+			continue
+		}
+		if _, ok := seen[row.ID]; ok {
+			continue
+		}
+		seen[row.ID] = struct{}{}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func formatProcessRows(rows []processRow) string {
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		parts = append(parts, "`"+row.Name+"` (PID `"+row.ID+"`)")
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	if len(parts) == 2 {
+		return parts[0] + " dan " + parts[1]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + ", dan " + parts[len(parts)-1]
+}
+
+func joinQuotedValues(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, "`"+value+"`")
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	if len(parts) == 2 {
+		return parts[0] + " dan " + parts[1]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + ", dan " + parts[len(parts)-1]
+}
+
+func splitProcessIDs(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" && fallbackNumeric.MatchString(part) {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func lastPlainProcessName(output string) string {
+	lines := strings.Split(trimFallbackOutput(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" ||
+			strings.Contains(line, "Terminal observation complete") ||
+			strings.Contains(line, "Next step:") ||
+			strings.Contains(line, "ProcessName") ||
+			strings.HasPrefix(line, "Terminal command:") ||
+			strings.HasPrefix(line, "Terminal status:") ||
+			strings.HasPrefix(line, "Output:") ||
+			strings.HasPrefix(line, "--") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 1 && !fallbackNumeric.MatchString(fields[0]) {
+			return fields[0]
+		}
+		if len(fields) >= 2 && fallbackNumeric.MatchString(fields[1]) {
+			return fields[0]
+		}
+		if len(fields) >= 2 && fallbackNumeric.MatchString(fields[0]) {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
+func extractAfterLinePrefix(content, prefix string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func extractAfterMarker(content, marker string) string {
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(content[idx+len(marker):])
+}
+
+func firstUsefulLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "observation complete") || strings.HasPrefix(line, "Next step:") {
+			continue
+		}
+		return fallbackWhitespace.ReplaceAllString(line, " ")
+	}
+	return ""
+}
+
+func trimFallbackOutput(output string) string {
+	output = strings.TrimSpace(output)
+	const maxLen = 4000
+	if len(output) > maxLen {
+		return "...(truncated)\n" + output[len(output)-maxLen:]
+	}
+	return output
 }

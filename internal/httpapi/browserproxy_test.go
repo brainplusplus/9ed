@@ -12,7 +12,7 @@ import (
 func TestRewriteProxyHTMLRewritesRootRelativeAssetsAndInjectsRuntime(t *testing.T) {
 	input := []byte(`<!doctype html><html><head><script src="/assets/app.js"></script></head><body><img src="/hero.png"><a href="/docs">Docs</a></body></html>`)
 
-	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/", "browser-1")
+	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/", "browser-1", "http://localhost:3000")
 	if err != nil {
 		t.Fatalf("rewriteProxyHTML() error = %v", err)
 	}
@@ -47,7 +47,7 @@ func TestRewriteProxyHTMLRewritesRootRelativeAssetsAndInjectsRuntime(t *testing.
 func TestRewriteProxyHTMLUsesRemoteDocumentDirectoryForRelativeAssets(t *testing.T) {
 	input := []byte(`<!doctype html><html><head><script src="chunk.js"></script></head><body></body></html>`)
 
-	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/docs/page?x=1", "browser-1")
+	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/docs/page?x=1", "browser-1", "https://example.com")
 	if err != nil {
 		t.Fatalf("rewriteProxyHTML() error = %v", err)
 	}
@@ -196,7 +196,7 @@ func TestRewriteProxyCSSRewritesRootRelativeURLs(t *testing.T) {
 func TestRewriteProxyHTMLRewritesInlineStyleContent(t *testing.T) {
 	input := []byte(`<!doctype html><html><head></head><body><style>@font-face{src:url('/cf-fonts/v/inter/normal.woff2')} .bg{background:url(/images/hero.png)}</style></body></html>`)
 
-	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/", "browser-1")
+	output, err := rewriteProxyHTML(input, "/browser/browser-1/", "/", "browser-1", "http://localhost:3000")
 	if err != nil {
 		t.Fatalf("rewriteProxyHTML() error = %v", err)
 	}

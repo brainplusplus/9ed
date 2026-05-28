@@ -24,6 +24,7 @@ import (
 )
 
 var cloudflaredURLPattern = regexp.MustCompile(`https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com`)
+var binaryResolveMu sync.Mutex
 
 // Tunnel manages a tunnel subprocess with automatic restart on failure.
 type Tunnel struct {
@@ -382,6 +383,9 @@ func killOrphanByPIDFile(path string) {
 }
 
 func findBinary(name string) (string, error) {
+	binaryResolveMu.Lock()
+	defer binaryResolveMu.Unlock()
+
 	if runtime.GOOS == "windows" {
 		name = name + ".exe"
 	}
@@ -415,6 +419,18 @@ func findBinary(name string) (string, error) {
 	}
 	log.Printf("%s installed to %s", name, localBin)
 	return localBin, nil
+}
+
+func tunnelLogPrefix(engine, port string) string {
+	engine = strings.TrimSpace(engine)
+	port = strings.TrimSpace(port)
+	if engine == "" {
+		engine = "tunnel"
+	}
+	if port == "" {
+		return engine
+	}
+	return fmt.Sprintf("%s:%s", engine, port)
 }
 
 func installBinary(dest, toolName string) error {

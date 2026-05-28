@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brainplusplus/9ed/internal/chat/acp"
@@ -99,8 +100,12 @@ type ChatSession interface {
 	Mode() SessionMode
 	RespondPermission(resp PermissionResponse)
 	SetAutoApprove(enabled bool)
-	SetUseActiveTerminal(enabled bool)
+	SetUseActiveTerminal(enabled bool, terminalID string)
 	UseActiveTerminalEnabled() bool
+	ActiveTerminalID() string
+	SetUseActiveBrowser(enabled bool, tabID string)
+	UseActiveBrowserEnabled() bool
+	ActiveBrowserTabID() string
 	ACPSessionID() string
 	IsResumed() bool
 }
@@ -127,20 +132,32 @@ type AgentDescriptor struct {
 }
 
 var activeTerminalMCPServers []acp.MCPServer
+var activeBrowserMCPServers []acp.MCPServer
 
 func SetActiveTerminalMCPServers(servers []acp.MCPServer) {
 	activeTerminalMCPServers = servers
 }
 
-type SessionOptions struct {
-	UseActiveTerminal bool
+func SetActiveBrowserMCPServers(servers []acp.MCPServer) {
+	activeBrowserMCPServers = servers
 }
 
-func activeTerminalServersForOptions(opts SessionOptions) []acp.MCPServer {
-	if !opts.UseActiveTerminal {
-		return nil
+type SessionOptions struct {
+	UseActiveTerminal  bool
+	ActiveTerminalID   string
+	UseActiveBrowser   bool
+	ActiveBrowserTabID string
+}
+
+func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
+	servers := make([]acp.MCPServer, 0, len(activeTerminalMCPServers)+len(activeBrowserMCPServers))
+	if opts.UseActiveTerminal {
+		servers = append(servers, activeTerminalMCPServers...)
 	}
-	return activeTerminalMCPServers
+	// Keep browser MCP tools always registered so runtime browser toggle does not
+	// produce "invalid tool" errors on already-connected ACP sessions.
+	servers = append(servers, activeBrowserMCPServers...)
+	return servers
 }
 
 // NewChatSession creates a ChatSession using ACP if supported, falling back to PTY.
@@ -182,24 +199,38 @@ type acpTerminal struct {
 	command string
 }
 
+type promptCompletion struct {
+	turnID uint64
+	result *acp.SessionPromptResult
+}
+
 type acpSession struct {
-	id                string
-	agentID           string
-	workDir           string
-	adapter           *acp.Adapter
-	sessionID         string
-	ctx               context.Context
-	events            chan ChatEvent
-	done              chan struct{}
-	cancelFn          context.CancelFunc
-	promptDone        chan *acp.SessionPromptResult
-	textBuf           strings.Builder
-	permissionCh      chan PermissionResponse
-	autoApprove       bool
-	useActiveTerminal bool
-	resumed           bool
-	terminals         map[string]*acpTerminal
-	routedToolCalls   map[string]bool
+	id                 string
+	agentID            string
+	workDir            string
+	adapter            *acp.Adapter
+	sessionID          string
+	ctx                context.Context
+	events             chan ChatEvent
+	done               chan struct{}
+	cancelFn           context.CancelFunc
+	promptDone         chan promptCompletion
+	turnMu             sync.Mutex
+	nextTurnID         uint64
+	activeTurnID       uint64
+	completedTurns     map[uint64]bool
+	recoveredTurns     map[uint64]bool
+	toolRecoveryTimer  *time.Timer
+	textBuf            strings.Builder
+	permissionCh       chan PermissionResponse
+	autoApprove        bool
+	useActiveTerminal  bool
+	activeTerminalID   string
+	useActiveBrowser   bool
+	activeBrowserTabID string
+	resumed            bool
+	terminals          map[string]*acpTerminal
+	routedToolCalls    map[string]bool
 }
 
 func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (*acpSession, error) {
@@ -218,7 +249,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, o
 		Command:    acpCommand,
 		Args:       agent.ACPArgs,
 		WorkDir:    workDir,
-		MCPServers: activeTerminalServersForOptions(opts),
+		MCPServers: activeMCPServersForOptions(opts),
 	}
 
 	adapter, err := acp.NewAdapter(acpCtx, cfg)
@@ -235,20 +266,25 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, o
 	}
 
 	s := &acpSession{
-		id:                result.SessionID,
-		agentID:           agent.ID,
-		workDir:           workDir,
-		adapter:           adapter,
-		sessionID:         result.SessionID,
-		ctx:               acpCtx,
-		events:            make(chan ChatEvent, 128),
-		done:              make(chan struct{}),
-		cancelFn:          cancel,
-		promptDone:        make(chan *acp.SessionPromptResult, 1),
-		permissionCh:      make(chan PermissionResponse, 1),
-		useActiveTerminal: opts.UseActiveTerminal,
-		terminals:         make(map[string]*acpTerminal),
-		routedToolCalls:   make(map[string]bool),
+		id:                 result.SessionID,
+		agentID:            agent.ID,
+		workDir:            workDir,
+		adapter:            adapter,
+		sessionID:          result.SessionID,
+		ctx:                acpCtx,
+		events:             make(chan ChatEvent, 128),
+		done:               make(chan struct{}),
+		cancelFn:           cancel,
+		promptDone:         make(chan promptCompletion, 1),
+		completedTurns:     make(map[uint64]bool),
+		recoveredTurns:     make(map[uint64]bool),
+		permissionCh:       make(chan PermissionResponse, 1),
+		useActiveTerminal:  opts.UseActiveTerminal,
+		activeTerminalID:   opts.ActiveTerminalID,
+		useActiveBrowser:   opts.UseActiveBrowser,
+		activeBrowserTabID: opts.ActiveBrowserTabID,
+		terminals:          make(map[string]*acpTerminal),
+		routedToolCalls:    make(map[string]bool),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -275,7 +311,7 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		Command:    acpCommand,
 		Args:       agent.ACPArgs,
 		WorkDir:    workDir,
-		MCPServers: activeTerminalServersForOptions(opts),
+		MCPServers: activeMCPServersForOptions(opts),
 	}
 
 	adapter, err := acp.NewAdapter(acpCtx, cfg)
@@ -292,21 +328,26 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 	}
 
 	s := &acpSession{
-		id:                result.SessionID,
-		agentID:           agent.ID,
-		workDir:           workDir,
-		adapter:           adapter,
-		sessionID:         result.SessionID,
-		ctx:               acpCtx,
-		events:            make(chan ChatEvent, 128),
-		done:              make(chan struct{}),
-		cancelFn:          cancel,
-		promptDone:        make(chan *acp.SessionPromptResult, 1),
-		permissionCh:      make(chan PermissionResponse, 1),
-		useActiveTerminal: opts.UseActiveTerminal,
-		resumed:           true,
-		terminals:         make(map[string]*acpTerminal),
-		routedToolCalls:   make(map[string]bool),
+		id:                 result.SessionID,
+		agentID:            agent.ID,
+		workDir:            workDir,
+		adapter:            adapter,
+		sessionID:          result.SessionID,
+		ctx:                acpCtx,
+		events:             make(chan ChatEvent, 128),
+		done:               make(chan struct{}),
+		cancelFn:           cancel,
+		promptDone:         make(chan promptCompletion, 1),
+		completedTurns:     make(map[uint64]bool),
+		recoveredTurns:     make(map[uint64]bool),
+		permissionCh:       make(chan PermissionResponse, 1),
+		useActiveTerminal:  opts.UseActiveTerminal,
+		activeTerminalID:   opts.ActiveTerminalID,
+		useActiveBrowser:   opts.UseActiveBrowser,
+		activeBrowserTabID: opts.ActiveBrowserTabID,
+		resumed:            true,
+		terminals:          make(map[string]*acpTerminal),
+		routedToolCalls:    make(map[string]bool),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -344,12 +385,30 @@ func (s *acpSession) SetAutoApprove(enabled bool) {
 	s.autoApprove = enabled
 }
 
-func (s *acpSession) SetUseActiveTerminal(enabled bool) {
+func (s *acpSession) SetUseActiveTerminal(enabled bool, terminalID string) {
 	s.useActiveTerminal = enabled
+	s.activeTerminalID = strings.TrimSpace(terminalID)
 }
 
 func (s *acpSession) UseActiveTerminalEnabled() bool {
 	return s.useActiveTerminal
+}
+
+func (s *acpSession) ActiveTerminalID() string {
+	return s.activeTerminalID
+}
+
+func (s *acpSession) SetUseActiveBrowser(enabled bool, tabID string) {
+	s.useActiveBrowser = enabled
+	s.activeBrowserTabID = strings.TrimSpace(tabID)
+}
+
+func (s *acpSession) UseActiveBrowserEnabled() bool {
+	return s.useActiveBrowser
+}
+
+func (s *acpSession) ActiveBrowserTabID() string {
+	return s.activeBrowserTabID
 }
 
 func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string) error {
@@ -362,23 +421,116 @@ func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string
 }
 
 func (s *acpSession) Send(_ context.Context, message string, attachments []Attachment) error {
+	turnID := s.beginPromptTurn()
 	imageCapable := s.adapter.AgentCapabilities().PromptCapabilities != nil && s.adapter.AgentCapabilities().PromptCapabilities.Image
 	content := buildACPContentBlocks(message, attachments, imageCapable)
+	if s.useActiveBrowser {
+		debug.BrowserMCPLog("agent", "info", "prompt start session=%s tab=%s turn=%d chars=%d attachments=%d", s.sessionID, s.activeBrowserTabID, turnID, len(message), len(attachments))
+	}
 
 	go func() {
 		result, err := s.adapter.Prompt(s.ctx, s.sessionID, content)
+		if s.isTurnCompleted(turnID) {
+			return
+		}
+		completion := promptCompletion{turnID: turnID, result: result}
 		if err != nil {
-			s.promptDone <- nil
+			if s.useActiveBrowser {
+				debug.BrowserMCPLog("agent", "error", "prompt error session=%s tab=%s turn=%d err=%v", s.sessionID, s.activeBrowserTabID, turnID, err)
+			}
+			s.enqueuePromptDone(completion)
 			s.events <- ChatEvent{Type: "error", Error: err.Error()}
 			return
 		}
-		s.promptDone <- result
+		if s.useActiveBrowser {
+			debug.BrowserMCPLog("agent", "info", "prompt result session=%s tab=%s turn=%d stop=%s", s.sessionID, s.activeBrowserTabID, turnID, result.StopReason)
+			debug.BrowserMCPLog("agent", "info", "prompt enqueue session=%s tab=%s turn=%d buffered=%d", s.sessionID, s.activeBrowserTabID, turnID, len(s.promptDone))
+		}
+		s.enqueuePromptDone(completion)
 	}()
 
 	return nil
 }
 
+func (s *acpSession) beginPromptTurn() uint64 {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	s.cancelToolRecoveryLocked()
+	s.nextTurnID++
+	turnID := s.nextTurnID
+	s.activeTurnID = turnID
+	delete(s.completedTurns, turnID)
+	delete(s.recoveredTurns, turnID)
+	return turnID
+}
+
+func (s *acpSession) isTurnCompleted(turnID uint64) bool {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.completedTurns[turnID]
+}
+
+func (s *acpSession) cancelToolRecoveryLocked() {
+	if s.toolRecoveryTimer != nil {
+		s.toolRecoveryTimer.Stop()
+		s.toolRecoveryTimer = nil
+	}
+}
+
+func (s *acpSession) clearToolRecovery() {
+	s.turnMu.Lock()
+	s.cancelToolRecoveryLocked()
+	s.turnMu.Unlock()
+}
+
+func (s *acpSession) scheduleToolRecovery(title string) {
+	if !isInteractiveMCPToolTitle(title) {
+		return
+	}
+	s.turnMu.Lock()
+	turnID := s.activeTurnID
+	if turnID == 0 || s.completedTurns[turnID] {
+		s.turnMu.Unlock()
+		return
+	}
+	s.cancelToolRecoveryLocked()
+	s.toolRecoveryTimer = time.AfterFunc(2500*time.Millisecond, func() {
+		s.turnMu.Lock()
+		if s.activeTurnID != turnID || s.completedTurns[turnID] {
+			s.turnMu.Unlock()
+			return
+		}
+		s.completedTurns[turnID] = true
+		s.recoveredTurns[turnID] = true
+		s.activeTurnID = 0
+		s.cancelToolRecoveryLocked()
+		s.turnMu.Unlock()
+
+		debug.Printf("[ACP] recovering stalled turn after completed MCP tool: session=%s turn=%d title=%q", s.sessionID, turnID, title)
+		_ = s.adapter.Cancel(s.sessionID)
+		s.events <- ChatEvent{Type: "done", StopReason: "tool_completion_timeout"}
+	})
+	s.turnMu.Unlock()
+}
+
+func (s *acpSession) enqueuePromptDone(completion promptCompletion) {
+	select {
+	case s.promptDone <- completion:
+		if s.useActiveBrowser {
+			debug.BrowserMCPLog("agent", "info", "prompt enqueued session=%s tab=%s turn=%d", s.sessionID, s.activeBrowserTabID, completion.turnID)
+		}
+	case <-time.After(2 * time.Second):
+		if s.useActiveBrowser {
+			debug.BrowserMCPLog("agent", "error", "prompt done fallback session=%s tab=%s turn=%d", s.sessionID, s.activeBrowserTabID, completion.turnID)
+		}
+		s.emitPromptDone(completion)
+	}
+}
+
 func (s *acpSession) Cancel() error {
+	if s.useActiveBrowser {
+		debug.BrowserMCPLog("agent", "info", "cancel requested session=%s tab=%s", s.sessionID, s.activeBrowserTabID)
+	}
 	return s.adapter.Cancel(s.sessionID)
 }
 
@@ -409,26 +561,78 @@ func (s *acpSession) processNotifications() {
 			s.handleRequest(req)
 		case <-flushTicker.C:
 			s.flushText()
-		case result := <-s.promptDone:
+		case completion := <-s.promptDone:
+			if s.useActiveBrowser {
+				debug.BrowserMCPLog("agent", "info", "prompt received session=%s tab=%s turn=%d stop=%s", s.sessionID, s.activeBrowserTabID, completion.turnID, func() string {
+					if completion.result == nil {
+						return "<nil>"
+					}
+					return string(completion.result.StopReason)
+				}())
+			}
 			for drained := false; !drained; {
 				select {
-				case notif := <-s.adapter.Notifications():
-					s.handleNotification(notif)
-				case req := <-s.adapter.Requests():
-					s.handleRequest(req)
+				case notif, ok := <-s.adapter.Notifications():
+					if ok && notif != nil {
+						s.handleNotification(notif)
+					}
+				case req, ok := <-s.adapter.Requests():
+					if ok && req != nil {
+						s.handleRequest(req)
+					}
 				default:
 					drained = true
 				}
 			}
 			s.flushText()
-			if result != nil {
-				s.events <- ChatEvent{Type: "done", StopReason: string(result.StopReason)}
-			}
+			s.emitPromptDone(completion)
 		case <-s.adapter.Done():
 			s.flushText()
+			completion := <-s.promptDone
+			if s.useActiveBrowser {
+				debug.BrowserMCPLog("agent", "info", "adapter done path received pending prompt session=%s tab=%s turn=%d stop=%s", s.sessionID, s.activeBrowserTabID, completion.turnID, func() string {
+					if completion.result == nil {
+						return "<nil>"
+					}
+					return string(completion.result.StopReason)
+				}())
+			}
+			s.emitPromptDone(completion)
+			if s.useActiveBrowser {
+				debug.BrowserMCPLog("agent", "error", "adapter done session=%s tab=%s err=%v", s.sessionID, s.activeBrowserTabID, s.adapter.Err())
+			}
 			return
 		}
 	}
+}
+
+func (s *acpSession) emitPromptDone(completion promptCompletion) {
+	if completion.result == nil {
+		if s.useActiveBrowser {
+			debug.BrowserMCPLog("agent", "error", "prompt completed without result session=%s tab=%s turn=%d", s.sessionID, s.activeBrowserTabID, completion.turnID)
+		}
+		return
+	}
+
+	s.turnMu.Lock()
+	if s.completedTurns[completion.turnID] {
+		s.turnMu.Unlock()
+		if s.useActiveBrowser {
+			debug.BrowserMCPLog("agent", "info", "done duplicate ignored session=%s tab=%s turn=%d stop=%s", s.sessionID, s.activeBrowserTabID, completion.turnID, completion.result.StopReason)
+		}
+		return
+	}
+	s.completedTurns[completion.turnID] = true
+	if s.activeTurnID == completion.turnID {
+		s.activeTurnID = 0
+	}
+	s.cancelToolRecoveryLocked()
+	s.turnMu.Unlock()
+
+	if s.useActiveBrowser {
+		debug.BrowserMCPLog("agent", "info", "done emitted session=%s tab=%s turn=%d stop=%s", s.sessionID, s.activeBrowserTabID, completion.turnID, completion.result.StopReason)
+	}
+	s.events <- ChatEvent{Type: "done", StopReason: string(completion.result.StopReason)}
 }
 
 func (s *acpSession) handleNotification(notif *acp.Notification) {
@@ -454,6 +658,7 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 
 	switch base.SessionUpdate {
 	case acp.UpdateAgentMessageChunk:
+		s.clearToolRecovery()
 		var update acp.AgentMessageChunkUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
 			s.textBuf.WriteString(update.Content.Text)
@@ -461,14 +666,19 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 		return
 
 	case acp.UpdateThoughtChunk:
+		s.clearToolRecovery()
 		var update acp.AgentMessageChunkUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
 			s.events <- ChatEvent{Type: "thinking", Thinking: update.Content.Text}
 		}
 
 	case acp.UpdateToolCall:
+		s.clearToolRecovery()
 		var update acp.ToolCallUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
+			if s.useActiveBrowser && isBrowserToolCallTitle(update.Title) {
+				debug.BrowserMCPLog("agent", "info", "tool call session=%s tab=%s id=%s title=%s status=%s input=%s", s.sessionID, s.activeBrowserTabID, update.ToolCallID, update.Title, update.Status, summarizeToolRawJSON(update.RawInput))
+			}
 			if s.redirectToolCallToActiveTerminal(update) {
 				return
 			}
@@ -493,6 +703,9 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 	case acp.UpdateToolCallUpdate:
 		var update acp.ToolCallStatusUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
+			if s.useActiveBrowser && isBrowserToolCallTitle(update.Title) {
+				debug.BrowserMCPLog("agent", "info", "tool update session=%s tab=%s id=%s title=%s status=%s input=%s", s.sessionID, s.activeBrowserTabID, update.ToolCallID, update.Title, update.Status, summarizeToolRawJSON(update.RawInput))
+			}
 			if update.Status != acp.ToolStatusCompleted && update.Status != acp.ToolStatusFailed {
 				tool := acp.ToolCallUpdate{
 					ToolCallID: update.ToolCallID,
@@ -536,9 +749,15 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 				evt.ToolContent = strings.Join(contentParts, "\n")
 			}
 			s.events <- evt
+			if update.Status == acp.ToolStatusCompleted || update.Status == acp.ToolStatusFailed {
+				s.scheduleToolRecovery(update.Title)
+			} else {
+				s.clearToolRecovery()
+			}
 		}
 
 	case acp.UpdatePlan:
+		s.clearToolRecovery()
 		var update acp.PlanUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
 			entries := make([]PlanEntry, len(update.Entries))
@@ -706,20 +925,7 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 			ToolKind:          string(params.ToolCall.Kind),
 		}
 
-		resp := <-s.permissionCh
-
-		if resp.Cancelled {
-			_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
-				Outcome: acp.PermissionOutcome{Outcome: "cancelled"},
-			}, nil)
-		} else {
-			_ = s.adapter.Respond(req.ID, acp.RequestPermissionResult{
-				Outcome: acp.PermissionOutcome{
-					Outcome:  "selected",
-					OptionID: resp.OptionID,
-				},
-			}, nil)
-		}
+		go s.waitForPermissionResponse(req.ID)
 
 	case acp.MethodFSReadTextFile:
 		var params acp.FSReadTextFileParams
@@ -825,12 +1031,55 @@ func (s *acpSession) handleRequest(req *acp.Request) {
 	}
 }
 
+func (s *acpSession) waitForPermissionResponse(requestID int64) {
+	resp := <-s.permissionCh
+
+	if resp.Cancelled {
+		_ = s.adapter.Respond(requestID, acp.RequestPermissionResult{
+			Outcome: acp.PermissionOutcome{Outcome: "cancelled"},
+		}, nil)
+		return
+	}
+
+	_ = s.adapter.Respond(requestID, acp.RequestPermissionResult{
+		Outcome: acp.PermissionOutcome{
+			Outcome:  "selected",
+			OptionID: resp.OptionID,
+		},
+	}, nil)
+}
+
 func commandFromToolCall(tool acp.ToolCallUpdate) string {
 	kind := strings.ToLower(string(tool.Kind))
 	if kind != string(acp.ToolKindExecute) && kind != "shell" && kind != "bash" && kind != "powershell" && kind != "pwsh" && kind != "cmd" {
 		return ""
 	}
 	return commandFromRawInput(tool.RawInput)
+}
+
+func isBrowserToolCallTitle(title string) bool {
+	value := strings.TrimSpace(strings.ToLower(title))
+	return strings.HasPrefix(value, "9ed_browser_") || strings.HasPrefix(value, "active_browser_") || strings.HasPrefix(value, "browser_")
+}
+
+func isInteractiveMCPToolTitle(title string) bool {
+	value := strings.TrimSpace(strings.ToLower(title))
+	return value == "active_terminal_run" ||
+		value == "active_terminal_start" ||
+		value == "active_terminal_read" ||
+		isBrowserToolCallTitle(title)
+}
+
+func summarizeToolRawJSON(raw json.RawMessage) string {
+	value := strings.Join(strings.Fields(strings.TrimSpace(string(raw))), " ")
+	if value == "" {
+		return "-"
+	}
+	const maxLen = 180
+	if len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + "..."
 }
 
 func (s *acpSession) redirectToolCallToActiveTerminal(tool acp.ToolCallUpdate) bool {

@@ -166,6 +166,7 @@ describe('useChatSession', () => {
     expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
       type: 'set_use_active_terminal',
       useActiveTerminal: true,
+      activeTerminalId: 'term-1',
     }));
     const sentMessages = socket.send.mock.calls
       .map(([payload]) => JSON.parse(String(payload)) as { type: string; content?: string });
@@ -178,7 +179,8 @@ describe('useChatSession', () => {
     expect(payload.content).toContain('Shell: PowerShell');
     expect(payload.content).toContain('Command dialect: PowerShell syntax');
     expect(payload.content).toContain('Use MCP tool active_terminal_run for terminal work');
-    expect(payload.content).toContain('do not repeat the same command');
+    expect(payload.content).toContain('return observed output');
+    expect(payload.content).toContain('active_terminal_read');
     expect(payload.content).toContain('```text');
     expect(payload.content).not.toContain('INSTRUCTION: You are connected');
     expect(payload.content).not.toContain('Do NOT refuse');

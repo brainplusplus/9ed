@@ -75,4 +75,26 @@ describe('useWorkspaceStore active project restore', () => {
 
     expect(useWorkspaceStore.getState().projects).toHaveLength(1);
   });
+
+  it('persists browser tabs with the active project across a reload reset', () => {
+    useWorkspaceStore.getState().addProject('/repo', 'repo');
+    const projectId = useWorkspaceStore.getState().activeProjectId;
+    expect(projectId).toBeTruthy();
+
+    useWorkspaceStore.getState().addBrowserTab(projectId!, 'browser-a');
+    useWorkspaceStore.getState().addBrowserTab(projectId!, 'browser-b');
+    useWorkspaceStore.getState().setActiveBrowserTab(projectId!, 'browser-b');
+
+    useWorkspaceStore.setState({
+      projects: [],
+      activeProjectId: null,
+      showPicker: false,
+    });
+
+    useWorkspaceStore.getState().restoreLastActiveProject();
+
+    const restored = useWorkspaceStore.getState().projects[0];
+    expect(restored.browserTabIds).toEqual(['browser-a', 'browser-b']);
+    expect(restored.activeBrowserTabId).toBe('browser-b');
+  });
 });

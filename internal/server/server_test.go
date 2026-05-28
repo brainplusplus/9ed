@@ -157,6 +157,29 @@ func TestServerHandlerExemptsActiveTerminalMCPFromBasicAuth(t *testing.T) {
 	}
 }
 
+func TestServerHandlerExemptsActiveBrowserMCPFromBasicAuth(t *testing.T) {
+	root := setupTestDist(t)
+	withWorkingDirectory(t, root)
+
+	srv := New(config.Config{
+		Port:              "8080",
+		BasicAuthUsername: "alice",
+		BasicAuthPassword: "secret",
+	})
+	defer srv.Shutdown()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/browser/run", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 from MCP token check, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != "" {
+		t.Fatalf("expected MCP endpoint to bypass Basic Auth challenge, got %q", got)
+	}
+}
+
 func setupTestDist(t *testing.T) string {
 	t.Helper()
 
