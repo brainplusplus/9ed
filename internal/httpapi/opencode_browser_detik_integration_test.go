@@ -3,20 +3,12 @@
 package httpapi
 
 import (
-	"context"
 	"fmt"
-	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/brainplusplus/9ed/internal/browser"
-	"github.com/brainplusplus/9ed/internal/chat"
-	"github.com/brainplusplus/9ed/internal/chat/acp"
 )
 
 func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
@@ -24,70 +16,7 @@ func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
 		t.Skip("set NINE_ED_RUN_LIVE_DETIK_TEST=1 to run live detik.com integration test")
 	}
 
-	repoRoot := integrationRepoRoot(t)
-	goCmd, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatalf("go not found: %v", err)
-	}
-	opencodeCmd, err := exec.LookPath("opencode")
-	if err != nil {
-		t.Fatalf("opencode not found: %v", err)
-	}
-
-	browserMgr := browser.NewManager()
-	defer browserMgr.Close()
-
-	tab, err := browserMgr.CreateTabWithTransport("https://www.detik.com", browser.TransportWebRTC)
-	if err != nil {
-		t.Fatalf("create detik browser tab: %v", err)
-	}
-	defer func() { _ = browserMgr.DeleteTab(tab.ID) }()
-
-	chatMgr := chat.NewSessionManager()
-	api := New(Dependencies{
-		ChatSessionManager: chatMgr,
-		Browser:            browserMgr,
-		BrowserMCPToken:    randomIntegrationToken(),
-	})
-	server := httptest.NewServer(api.Handler())
-	defer server.Close()
-
-	chat.SetActiveBrowserMCPServers([]acp.MCPServer{{
-		Name:    "9ed-active-browser",
-		Command: goCmd,
-		Args:    []string{"run", filepath.Join(repoRoot, "cmd", "active-browser-mcp")},
-		Env: []acp.EnvVariable{
-			{Name: "NINE_ED_BROWSER_MCP_ENDPOINT", Value: server.URL + "/api/chat/browser/run"},
-			{Name: "NINE_ED_BROWSER_MCP_TOKEN", Value: api.browserMCPToken},
-		},
-	}})
-	defer chat.SetActiveBrowserMCPServers(nil)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	agent := chat.AgentDescriptor{
-		ID:          "opencode",
-		Label:       "OpenCode",
-		Command:     opencodeCmd,
-		Available:   true,
-		SupportsACP: true,
-		ACPArgs:     []string{"acp"},
-	}
-	session, err := chatMgr.Create(ctx, agent, repoRoot, chat.SessionOptions{
-		UseActiveBrowser:   true,
-		ActiveBrowserTabID: tab.ID,
-	})
-	if err != nil {
-		t.Fatalf("create chat session: %v", err)
-	}
-	defer chatMgr.Remove(session.ID())
-
-	stream := api.chatStreams.GetOrCreate(session.ID(), session, nil)
-	api.chatStreams.Touch(session.ID())
-	stream.StartTurn()
-	sub := stream.Subscribe()
-	defer stream.Unsubscribe(sub)
+	h := newOpenCodeBrowserIntegrationHarness(t, "https://www.detik.com", 3*time.Minute)
 
 	prompt := strings.Join([]string{
 		"Gunakan browser MCP pada tab aktif.",
@@ -100,9 +29,7 @@ func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
 		"<FINAL_URL> harus domain *.detik.com dan path mengandung \"/d-\" atau \"/berita/\".",
 		"Jangan gunakan tool terminal.",
 	}, "\n")
-	if err := session.Send(ctx, prompt, nil); err != nil {
-		t.Fatalf("send prompt: %v", err)
-	}
+	h.sendPrompt(t, prompt)
 
 	var (
 		transcript            []string
@@ -112,6 +39,7 @@ func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
 		clickCompleted        bool
 		inspectCompleted      bool
 		pageSourceCompleted   bool
+		screenshotBeforeClick bool
 		clickFailedCount      int
 		duplicateBridgeEvents int
 		successByTools        bool
@@ -122,7 +50,7 @@ func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
 	deadline := time.After(210 * time.Second)
 	for {
 		select {
-		case evt := <-sub.C:
+		case evt := <-h.sub.C:
 			transcript = append(transcript, fmt.Sprintf("%s|%s|%s", evt.Type, evt.ToolTitle, evt.ToolStatus))
 			if evt.Type == "tool_call" || evt.Type == "tool_call_update" {
 				title := strings.ToLower(strings.TrimSpace(evt.ToolTitle))
@@ -148,6 +76,10 @@ func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
 					if evt.ToolStatus == "completed" {
 						inspectCompleted = true
 					}
+				case strings.Contains(title, "screenshot"):
+					if !clickCompleted {
+						screenshotBeforeClick = true
+					}
 				case strings.Contains(title, "page_source") || strings.Contains(title, "source"):
 					if evt.ToolStatus == "completed" {
 						pageSourceCompleted = true
@@ -159,13 +91,13 @@ func TestOpenCodeActiveBrowserIntegrationDetikArticle(t *testing.T) {
 							articleURL = matched
 						}
 					}
-					if tabState, ok := browserMgr.Tab(tab.ID); ok && isLikelyDetikArticleURL(tabState.URL) {
+					if tabState, ok := h.browserMgr.Tab(h.tab.ID); ok && isLikelyDetikArticleURL(tabState.URL) {
 						articleURL = tabState.URL
 					}
 				}
 				if gotoCompleted && clickCompleted && articleURL != "" {
 					successByTools = true
-					_ = session.Cancel()
+					_ = h.session.Cancel()
 					doneStopReason = "integration_success_by_tools"
 					goto VERIFY
 				}
@@ -189,6 +121,9 @@ VERIFY:
 	}
 	if !clickCompleted {
 		t.Fatalf("expected at least one completed click; clickFailures=%d transcript=%v text=%q stop=%q", clickFailedCount, transcript, gotText, doneStopReason)
+	}
+	if screenshotBeforeClick {
+		t.Fatalf("expected click before any screenshot; transcript=%v text=%q stop=%q", transcript, gotText, doneStopReason)
 	}
 	if !successByTools && !inspectCompleted && !pageSourceCompleted {
 		t.Fatalf("expected at least one completed inspect or page_source; transcript=%v text=%q stop=%q", transcript, gotText, doneStopReason)
@@ -226,7 +161,7 @@ VERIFY:
 	}
 
 	select {
-	case evt := <-sub.C:
+	case evt := <-h.sub.C:
 		t.Fatalf("expected no late event after done, got %#v; transcript=%v", evt, transcript)
 	case <-time.After(1500 * time.Millisecond):
 	}
@@ -237,5 +172,5 @@ func isLikelyDetikArticleURL(rawURL string) bool {
 	if lowerURL == "" || !strings.Contains(lowerURL, "detik.com/") {
 		return false
 	}
-	return strings.Contains(lowerURL, "/d-")
+	return strings.Contains(lowerURL, "/d-") || strings.Contains(lowerURL, "/berita/")
 }

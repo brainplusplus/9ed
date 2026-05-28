@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/brainplusplus/9ed/internal/chat/acp"
@@ -53,5 +54,22 @@ func TestApplyRememberedToolMetaFillsCompletedUpdate(t *testing.T) {
 	}
 	if string(update.RawInput) != string(raw) {
 		t.Fatalf("expected remembered raw input, got %s", string(update.RawInput))
+	}
+}
+
+func TestDecorateActiveToolMessageAddsWorkflowGuidance(t *testing.T) {
+	got := decorateActiveToolMessage("debug why page A errors", true, true)
+
+	if !strings.Contains(got, "debug why page A errors") {
+		t.Fatalf("expected original prompt to be preserved, got %q", got)
+	}
+	if !strings.Contains(got, "whether the need comes from the user's words or from your own analysis") {
+		t.Fatalf("expected workflow-based browser guidance, got %q", got)
+	}
+	if !strings.Contains(got, "Do not use 9ed_browser_screenshot just to decide what to click") {
+		t.Fatalf("expected screenshot guardrail, got %q", got)
+	}
+	if !strings.Contains(got, "Chain terminal commands when the last result reveals the next necessary diagnostic or fix step") {
+		t.Fatalf("expected terminal chaining guidance, got %q", got)
 	}
 }

@@ -432,6 +432,9 @@ func (s *acpSession) SetConfigOption(ctx context.Context, configID, value string
 func (s *acpSession) Send(_ context.Context, message string, attachments []Attachment) error {
 	turnID := s.beginPromptTurn()
 	imageCapable := s.adapter.AgentCapabilities().PromptCapabilities != nil && s.adapter.AgentCapabilities().PromptCapabilities.Image
+	if s.useActiveBrowser || s.useActiveTerminal {
+		message = decorateActiveToolMessage(message, s.useActiveBrowser, s.useActiveTerminal)
+	}
 	content := buildACPContentBlocks(message, attachments, imageCapable)
 	if s.useActiveBrowser {
 		debug.BrowserMCPLog("agent", "info", "prompt start session=%s tab=%s turn=%d chars=%d attachments=%d", s.sessionID, s.activeBrowserTabID, turnID, len(message), len(attachments))
@@ -459,6 +462,36 @@ func (s *acpSession) Send(_ context.Context, message string, attachments []Attac
 	}()
 
 	return nil
+}
+
+func decorateActiveToolMessage(message string, includeBrowser bool, includeTerminal bool) string {
+	message = strings.TrimSpace(message)
+	guide := activeToolPromptGuide(includeBrowser, includeTerminal)
+	if message == "" {
+		return guide
+	}
+	return message + "\n\n" + guide
+}
+
+func activeToolPromptGuide(includeBrowser bool, includeTerminal bool) string {
+	lines := []string{"Active tool workflow guidance:"}
+	if includeBrowser {
+		lines = append(lines,
+			"- Treat browser MCP as a hands-on workflow tool for debugging, pairing, and completing tasks in the active page.",
+			"- When the workflow requires page interaction, use 9ed_browser_click/type/press for the needed button, CTA, link, form, or control. This applies whether the need comes from the user's words or from your own analysis of the page state.",
+			"- Use 9ed_browser_inspect, 9ed_browser_page_source, console logs, and network requests to gather evidence and choose targeted browser actions.",
+			"- Do not use 9ed_browser_screenshot just to decide what to click; reserve screenshots for visual proof, layout/UI verification, or image analysis.",
+		)
+	}
+	if includeTerminal {
+		lines = append(lines,
+			"- Treat terminal MCP as a workflow tool for build, test, logs, diagnostics, and local commands needed to complete the current task.",
+			"- Chain terminal commands when the last result reveals the next necessary diagnostic or fix step; avoid redundant confirmation commands when the result already proves the point.",
+			"- Use active_terminal_start for long-running servers/watchers, active_terminal_read to observe them, and active_terminal_run for commands expected to finish.",
+		)
+	}
+	lines = append(lines, "- Answer when the current task is satisfied; otherwise continue with the next smallest useful browser or terminal action.")
+	return strings.Join(lines, "\n")
 }
 
 func (s *acpSession) beginPromptTurn() uint64 {

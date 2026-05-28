@@ -52,61 +52,63 @@ func handle(req rpcRequest) any {
 			},
 		}
 	case "tools/list":
-		return map[string]any{
-			"tools": []map[string]any{{
-				"name":        "active_terminal_run",
-				"description": "Run exactly one command in the user's active visible 9ed terminal and return observed output. Prefer one information-dense command that can answer the user's request. Treat the result as completed only when the shell clearly returns to idle; long-running commands like npm run start may return partial output with a still-running status and should not be treated as finished. After a completed result contains the requested fact, answer naturally instead of running extra confirmation commands. Use active_terminal_read only to observe a command that is still running or to check whether the shell is waiting for input again.",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"command": map[string]any{
-							"type":        "string",
-							"description": "Command formatted for the active terminal shell.",
-						},
-						"timeoutMs": map[string]any{
-							"type":        "number",
-							"description": "Maximum time to wait for the command to finish before returning partial output. Default 10000, max 60000.",
-						},
-					},
-					"required": []string{"command"},
-				},
-			}, {
-				"name":        "active_terminal_start",
-				"description": "Start exactly one long-running command in the user's active visible 9ed terminal and return startup output without waiting for the process to exit. Use this for commands like npm run start, go run, dev servers, log tails, watchers, and anything expected to keep running. After calling this tool, do not send another terminal command until active_terminal_read reports waiting for input again.",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"command": map[string]any{
-							"type":        "string",
-							"description": "Command formatted for the active terminal shell.",
-						},
-						"timeoutMs": map[string]any{
-							"type":        "number",
-							"description": "Maximum time to collect startup output before returning. Default 10000, max 60000.",
-						},
-					},
-					"required": []string{"command"},
-				},
-			}, {
-				"name":        "active_terminal_read",
-				"description": "Read recent output from the active visible 9ed terminal without sending a new command. This reports whether the shell appears to be waiting for input again or whether the command still looks active. Use it after active_terminal_run reports a still-running command or when the user asks for current terminal output; do not use it after a completed command just to re-check the same fact.",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"maxBytes": map[string]any{
-							"type":        "number",
-							"description": "Maximum recent output bytes to read. Default 20000, max 100000.",
-						},
-					},
-					"required": []string{},
-				},
-			}},
-		}
+		return map[string]any{"tools": terminalTools()}
 	case "tools/call":
 		return callTool(req.Params)
 	default:
 		return map[string]any{}
 	}
+}
+
+func terminalTools() []map[string]any {
+	return []map[string]any{{
+		"name":        "active_terminal_run",
+		"description": "Run exactly one command in the user's active visible 9ed terminal and return observed output. Use this for build/test/git/search/diagnostic commands expected to finish and return the shell to idle. Prefer one information-dense command that advances the current debugging or implementation workflow. Chain another targeted terminal or browser action when the output reveals the next necessary step; answer when the current task is satisfied. Avoid redundant confirmation commands when the result already proves the point.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Command formatted for the active terminal shell.",
+				},
+				"timeoutMs": map[string]any{
+					"type":        "number",
+					"description": "Maximum time to wait for the command to finish before returning partial output. Default 10000, max 60000.",
+				},
+			},
+			"required": []string{"command"},
+		},
+	}, {
+		"name":        "active_terminal_start",
+		"description": "Start exactly one long-running command in the user's active visible 9ed terminal and return startup output without waiting for the process to exit. Use this for commands like npm run start, go run, dev servers, log tails, watchers, and anything expected to keep running while you debug with browser MCP or inspect logs. After calling this tool, do not send another terminal command to the same terminal until active_terminal_read reports waiting for input again.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Command formatted for the active terminal shell.",
+				},
+				"timeoutMs": map[string]any{
+					"type":        "number",
+					"description": "Maximum time to collect startup output before returning. Default 10000, max 60000.",
+				},
+			},
+			"required": []string{"command"},
+		},
+	}, {
+		"name":        "active_terminal_read",
+		"description": "Read recent output from the active visible 9ed terminal without sending a new command. This reports whether the shell appears to be waiting for input again or whether the command still looks active. Use it to observe long-running commands, gather logs after browser reproduction, or check whether the shell is ready for the next terminal command. Do not use it after a completed command just to re-check the same fact.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"maxBytes": map[string]any{
+					"type":        "number",
+					"description": "Maximum recent output bytes to read. Default 20000, max 100000.",
+				},
+			},
+			"required": []string{},
+		},
+	}}
 }
 
 func callTool(raw json.RawMessage) any {

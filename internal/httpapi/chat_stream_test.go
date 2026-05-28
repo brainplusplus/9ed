@@ -350,7 +350,7 @@ func TestTurnRecoveryDelayUsesBrowserDecisionHint(t *testing.T) {
 	}
 }
 
-func TestChatStreamUnsureBrowserObservationWaitsLongerBeforeRecovery(t *testing.T) {
+func TestChatStreamUnsureBrowserNavigationDoesNotSynthesizeFinalAnswer(t *testing.T) {
 	originalTimeout := interactiveToolDoneTimeout
 	originalUnsureTimeout := interactiveToolUnsureTimeout
 	interactiveToolDoneTimeout = 30 * time.Millisecond
@@ -386,13 +386,27 @@ func TestChatStreamUnsureBrowserObservationWaitsLongerBeforeRecovery(t *testing.
 		t.Fatalf("expected browser tool update first, got %#v", got)
 	}
 	assertNoChatEvent(t, sub.C, 80*time.Millisecond)
-	text := readChatEventTimeout(t, sub.C, 240*time.Millisecond)
-	if text.Type != "text" || !strings.Contains(text.Text, "Integration Fixture") || !strings.Contains(text.Text, "BROWSER_CHAIN_TARGET") {
-		t.Fatalf("expected delayed browser recovery summary, got %#v", text)
+	assertNoChatEvent(t, sub.C, 240*time.Millisecond)
+	if session.cancelCalls != 0 {
+		t.Fatalf("expected incomplete browser navigation not to cancel agent, got %d", session.cancelCalls)
 	}
-	done := readChatEventTimeout(t, sub.C, 200*time.Millisecond)
-	if done.Type != "done" || done.StopReason != "tool_completion_timeout_stream" {
-		t.Fatalf("expected stream recovery done, got %#v", done)
+}
+
+func TestBrowserObservationChainSummarizesSufficientNavigation(t *testing.T) {
+	summary := summarizeBrowserObservationChain([]chat.ChatEvent{{
+		Type:       "tool_call_update",
+		ToolCallID: "browser-goto",
+		ToolTitle:  "9ed_browser_goto",
+		ToolStatus: "completed",
+		ToolContent: strings.Join([]string{
+			"Browser tool result.",
+			"Decision: sufficient_to_answer=true.",
+			"",
+			`{"url":"https://example.com/docs","title":"Integration Fixture","text":"BROWSER_CHAIN_TARGET appears on this page."}`,
+		}, "\n"),
+	}})
+	if !strings.Contains(summary, "Integration Fixture") || !strings.Contains(summary, "BROWSER_CHAIN_TARGET") {
+		t.Fatalf("expected sufficient navigation summary, got %q", summary)
 	}
 }
 
@@ -512,7 +526,8 @@ func TestTerminalDecisionHintMarksProcessResultSufficient(t *testing.T) {
 		"server",
 		"completed",
 	)
-	if !strings.Contains(text, "sufficient_to_answer=true") || !strings.Contains(text, "do not run tasklist/Get-Process again") {
+	lowerText := strings.ToLower(text)
+	if !strings.Contains(text, "sufficient_to_answer=true") || !strings.Contains(lowerText, "do not run tasklist/get-process again") {
 		t.Fatalf("expected sufficient decision hint, got %q", text)
 	}
 }

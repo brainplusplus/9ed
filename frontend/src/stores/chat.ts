@@ -475,7 +475,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (sessionId, message) => {
     set((state) => ({
       sessions: updateSession(state.sessions, sessionId, (s) => {
-        const updated = { ...s, messages: [...s.messages, message] };
+        const updated = {
+          ...s,
+          messages: [...s.messages, message],
+          lastEventAt: Math.max(s.lastEventAt ?? 0, message.timestamp ?? Date.now()),
+        };
         if (message.role === 'user' && s.messages.filter((m) => m.role === 'user').length === 0) {
           updated.title = message.content.slice(0, 60).replace(/\n/g, ' ');
         }

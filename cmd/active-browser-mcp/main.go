@@ -93,12 +93,12 @@ func browserTools() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "9ed_browser_goto",
-			"description": "Navigate the active 9ed WebRTC browser tab to a URL. After navigation, use the returned page state to decide the next minimal action or answer.",
+			"description": "Navigate the active 9ed WebRTC browser tab to a URL. After navigation, use the returned page state to decide the next minimal action or answer. If the workflow requires opening a link, pressing a CTA, selecting an item, or operating a page control, follow with 9ed_browser_click using a selector from inspect/page_source when needed; do not use screenshot just to choose a link.",
 			"inputSchema": schema(map[string]any{"url": stringProp("URL to open"), "timeoutMs": timeout}, []string{"url"}),
 		},
 		{
 			"name":        "9ed_browser_click",
-			"description": "Click an element in the active 9ed WebRTC browser tab by selector, or by x/y viewport coordinates. After a successful click that reaches the requested target, answer naturally instead of re-clicking or over-inspecting.",
+			"description": "Click an element in the active 9ed WebRTC browser tab by selector, or by x/y viewport coordinates. Use this whenever the task requires clicking, opening, choosing, or selecting something on the current page, including buttons, CTAs, links, tabs, menus, and controls discovered during your analysis. For article/news links, prefer simple link selectors such as a[href*=\"/d-\"] or a[href*=\"/berita/\"]. After a successful click that reaches the requested target, answer naturally or continue with the next necessary observation/action.",
 			"inputSchema": schema(map[string]any{"selector": stringProp("CSS selector"), "x": numberProp("Viewport x coordinate"), "y": numberProp("Viewport y coordinate"), "timeoutMs": timeout}, []string{}),
 		},
 		{
@@ -123,7 +123,7 @@ func browserTools() []map[string]any {
 		},
 		{
 			"name":        "9ed_browser_screenshot",
-			"description": "Capture a screenshot of the active 9ed WebRTC browser tab and return the local image path. Use this only when visual evidence is required (UI verification, debug artifact, or image analysis). Prefer inspect/page source for normal navigation and text extraction tasks.",
+			"description": "Capture a screenshot of the active 9ed WebRTC browser tab and return the local image path. Use this only when visual evidence is required (UI verification, debug artifact, or image analysis). Do not use screenshots just to decide what to click; prefer inspect/page_source for selectors and 9ed_browser_click for click/open/select tasks.",
 			"inputSchema": schema(map[string]any{"timeoutMs": timeout}, []string{}),
 		},
 		{
@@ -177,11 +177,14 @@ func browserDecisionHint(action string) string {
 	switch strings.TrimSpace(strings.ToLower(action)) {
 	case "inspect", "console_logs", "network_requests", "screenshot", "page_source", "source":
 		if action == "screenshot" {
-			return "Decision: sufficient_to_answer=true. Only use screenshot when visual proof/debug is required. If text/DOM evidence is enough, avoid more screenshots and answer now."
+			return "Decision: sufficient_to_answer=true only if visual evidence resolves the current task. Screenshots are not page interactions; if the workflow still requires opening a link, pressing a button/CTA, selecting an item, or operating a control, call 9ed_browser_click/type/press next."
 		}
 		return "Decision: sufficient_to_answer=true. If this observation already satisfies the user's request, answer now and avoid extra browser tool calls."
 	case "goto", "navigate", "click", "type", "press", "scroll":
-		return "Decision: sufficient_to_answer=false. Continue with one minimal follow-up browser observation/action only if needed to answer the user."
+		if action == "goto" || action == "navigate" {
+			return "Decision: if the workflow requires interacting with a link, button, CTA, form, menu, or control on this page, call 9ed_browser_click/type/press next; use inspect/page_source first only when you need a selector. Do not use screenshot just to decide what to click."
+		}
+		return "Decision: continue with the next minimal browser observation/action if the workflow still needs evidence or interaction; answer once the current task is satisfied."
 	default:
 		return "Decision: if this page state satisfies the user's request, answer now. Call another 9ed_browser_* tool only when a necessary page action or missing observation remains."
 	}

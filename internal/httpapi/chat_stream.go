@@ -372,11 +372,13 @@ func (s *chatStream) scheduleTurnRecoveryLocked(title string, timeout time.Durat
 		s.mu.Unlock()
 
 		debug.Printf("[chat/stream] recovering stalled turn after completed tool session=%s tool=%s", s.sessionID, tool)
-		_ = s.session.Cancel()
 		text := synthesizeTurnRecoveryText(observations)
-		if text != "" {
-			s.publish(chat.ChatEvent{Type: "text", Text: text})
+		if text == "" {
+			debug.Printf("[chat/stream] recovery skipped because latest tool still needs agent continuation session=%s tool=%s", s.sessionID, tool)
+			return
 		}
+		_ = s.session.Cancel()
+		s.publish(chat.ChatEvent{Type: "text", Text: text})
 		s.publish(chat.ChatEvent{Type: "done", StopReason: "tool_completion_timeout_stream"})
 	})
 }
@@ -611,6 +613,9 @@ func synthesizeTurnRecoveryText(observations []chat.ChatEvent) string {
 		return summary
 	}
 	for i := len(observations) - 1; i >= 0; i-- {
+		if browserEventNeedsAgentContinuation(observations[i]) {
+			return ""
+		}
 		if shouldScheduleLegacyToolFallback(observations[i]) {
 			return toolFallbackText(observations[i])
 		}
@@ -633,6 +638,7 @@ type browserObservation struct {
 func summarizeBrowserObservationChain(observations []chat.ChatEvent) string {
 	found := false
 	var latest browserObservation
+	var latestEvent chat.ChatEvent
 	for i := len(observations) - 1; i >= 0; i-- {
 		evt := observations[i]
 		if !isBrowserMCPTool(evt.ToolTitle) {
@@ -644,20 +650,47 @@ func summarizeBrowserObservationChain(observations []chat.ChatEvent) string {
 		obs := parseBrowserObservation(evt)
 		if !found {
 			latest = obs
+			latestEvent = evt
 			found = true
 		}
 		if obs.Action == "inspect" && (obs.URL != "" || obs.Title != "" || obs.Text != "") {
 			latest = obs
+			latestEvent = evt
 			break
 		}
 	}
 	if !found {
 		return ""
 	}
+	if browserObservationNeedsAgentContinuation(latestEvent, latest) {
+		return ""
+	}
 	if summary := renderBrowserObservationSummary(latest); summary != "" {
 		return summary
 	}
 	return ""
+}
+
+func browserObservationNeedsAgentContinuation(evt chat.ChatEvent, obs browserObservation) bool {
+	if browserObservationSufficient(evt) {
+		return false
+	}
+	switch strings.TrimSpace(strings.ToLower(obs.Action)) {
+	case "goto", "navigate", "scroll":
+		return true
+	default:
+		return false
+	}
+}
+
+func browserEventNeedsAgentContinuation(evt chat.ChatEvent) bool {
+	if !isBrowserMCPTool(evt.ToolTitle) {
+		return false
+	}
+	if !strings.EqualFold(evt.ToolStatus, "completed") && !strings.EqualFold(evt.ToolStatus, "failed") {
+		return false
+	}
+	return browserObservationNeedsAgentContinuation(evt, parseBrowserObservation(evt))
 }
 
 func parseBrowserObservation(evt chat.ChatEvent) browserObservation {

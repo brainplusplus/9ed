@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMapToolActionSupportsCanonicalAndAliases(t *testing.T) {
 	tests := []struct {
@@ -53,5 +56,25 @@ func TestBrowserToolsIncludeTelemetryTools(t *testing.T) {
 		if !names[name] {
 			t.Fatalf("expected tool %q to be registered", name)
 		}
+	}
+}
+
+func TestBrowserToolDescriptionsDiscourageScreenshotForClickTasks(t *testing.T) {
+	tools := browserTools()
+	descriptions := make(map[string]string, len(tools))
+	for _, tool := range tools {
+		name, _ := tool["name"].(string)
+		description, _ := tool["description"].(string)
+		descriptions[name] = description
+	}
+
+	if got := descriptions["9ed_browser_click"]; !strings.Contains(got, "discovered during your analysis") {
+		t.Fatalf("expected workflow-based click guidance, got %q", got)
+	}
+	if got := descriptions["9ed_browser_screenshot"]; !strings.Contains(got, "Do not use screenshots just to decide what to click") {
+		t.Fatalf("expected screenshot guardrail, got %q", got)
+	}
+	if got := browserDecisionHint("screenshot"); !strings.Contains(got, "Screenshots are not page interactions") {
+		t.Fatalf("expected screenshot decision hint to point back to click, got %q", got)
 	}
 }

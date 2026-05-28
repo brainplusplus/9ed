@@ -472,28 +472,28 @@ func terminalRunResult(command, rawOutput, status string) string {
 func terminalDecisionHint(command, output, status string) string {
 	lowerStatus := strings.ToLower(status)
 	if strings.Contains(lowerStatus, "still running") || strings.Contains(lowerStatus, "streaming output") {
-		return "Decision: command is still running. Do not send another terminal command yet. Use active_terminal_read to observe more output or wait until it reports waiting for input."
+		return "Decision: command is still running. Do not send another terminal command in this terminal yet. Use active_terminal_read to observe more output, use browser MCP if the running service should be tested, or wait until the terminal reports waiting for input."
 	}
 	if strings.Contains(lowerStatus, "cancelled") || strings.Contains(lowerStatus, "closed") {
 		return "Decision: the command did not complete normally. Explain the partial output or run one targeted recovery command if needed."
 	}
 	if summary := summarizeProcessNameCommand(command, output); summary != "" {
-		return "Decision: sufficient_to_answer=true. Answer the user now using this result; do not run tasklist/Get-Process again just to confirm the same PID.\nSuggested final answer: " + summary
+		return "Decision: sufficient_to_answer=true if this resolves the current task; otherwise continue with one targeted terminal or browser step. Do not run tasklist/Get-Process again just to confirm the same PID.\nSuggested final answer: " + summary
 	}
 	if summary := summarizePortProcess(output); summary != "" {
-		return "Decision: sufficient_to_answer=true. Answer the user now using this result; do not run another terminal command for the same port unless the user asks for more detail.\nSuggested final answer: " + summary
+		return "Decision: sufficient_to_answer=true if this resolves the current task; otherwise continue with one targeted terminal or browser step. Do not run another terminal command for the same port unless the workflow needs more detail.\nSuggested final answer: " + summary
 	}
-	return "Decision: if this output contains the requested fact, answer now. Run another command only for missing information, not for redundant confirmation."
+	return "Decision: if this output satisfies the current task, answer now. If it reveals the next necessary diagnostic, fix, test, or browser reproduction step, continue with one targeted action. Avoid redundant confirmation."
 }
 
 func terminalLiveObservationStatus(snapshot string, lastOutputAt, now time.Time) (string, string) {
 	if terminalShellWaitingForInput(snapshot) {
-		return "waiting for input", "Decision: the shell is idle and ready for another command. If this output already answers the user, respond now instead of reading again."
+		return "waiting for input", "Decision: the shell is idle and ready for another command. If this output satisfies the current task, respond now; otherwise run the next targeted terminal or browser action instead of reading again."
 	}
 	if !lastOutputAt.IsZero() && now.Sub(lastOutputAt) <= terminalRecentOutputWindow {
-		return "streaming output (process still running)", "Decision: terminal output is actively moving and the shell is not idle yet. Do not send another terminal command; use this as live observation or call active_terminal_read again if you need a fresher tail."
+		return "streaming output (process still running)", "Decision: terminal output is actively moving and the shell is not idle yet. Do not send another terminal command in this terminal; use this as live observation, test the running service with browser MCP, or call active_terminal_read again if you need a fresher tail."
 	}
-	return "still running (quiet)", "Decision: the shell has not clearly returned to an idle prompt yet. The process still appears active even if it is currently quiet. Do not send another terminal command until active_terminal_read reports waiting for input."
+	return "still running (quiet)", "Decision: the shell has not clearly returned to an idle prompt yet. The process still appears active even if it is currently quiet. Do not send another terminal command in this terminal until active_terminal_read reports waiting for input; use browser MCP if the running process should be exercised."
 }
 
 func trimTerminalOutput(raw string) string {
@@ -979,6 +979,10 @@ func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		payload := map[string]string{"path": path, "mimeType": "image/png"}
+		if result, inspectErr := a.browser.TabInspect(actionCtx, tabID); inspectErr == nil {
+			payload["url"] = result.URL
+			payload["title"] = result.Title
+		}
 		outcome := "path=" + truncateBrowserLogValue(path, 120)
 		logOutcome(nil, outcome, browserToolEventContent(action, outcome, payload))
 		writeJSON(w, http.StatusOK, payload)

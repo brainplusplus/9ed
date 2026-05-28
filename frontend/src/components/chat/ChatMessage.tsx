@@ -65,10 +65,15 @@ export function displayToolTitle(title: string): string {
 }
 
 export function describeToolInput(tc: import('../../types').ToolCallInfo): string | null {
-  if (!tc.rawInput) return null;
+  const outputURL = browserOutputURL(tc.content);
   try {
-    const parsed = JSON.parse(tc.rawInput) as Record<string, unknown>;
-    if (typeof parsed.url === 'string' && parsed.url.trim()) return parsed.url.trim();
+    const parsed = tc.rawInput ? JSON.parse(tc.rawInput) as Record<string, unknown> : {};
+    if (typeof parsed.url === 'string' && parsed.url.trim()) {
+      const inputURL = parsed.url.trim();
+      if (outputURL && outputURL !== inputURL) return `${inputURL} -> ${outputURL}`;
+      return inputURL;
+    }
+    if (outputURL) return outputURL;
     if (typeof parsed.selector === 'string' && parsed.selector.trim()) return parsed.selector.trim();
     if (typeof parsed.key === 'string' && parsed.key.trim()) return `key ${parsed.key.trim()}`;
     if (typeof parsed.text === 'string' && parsed.text.trim()) {
@@ -80,9 +85,25 @@ export function describeToolInput(tc: import('../../types').ToolCallInfo): strin
     }
     if (typeof parsed.command === 'string' && parsed.command.trim()) return parsed.command.trim();
   } catch {
+    if (outputURL) return outputURL;
+    if (!tc.rawInput) return null;
     return tc.rawInput.length > 72 ? `${tc.rawInput.slice(0, 72)}...` : tc.rawInput;
   }
+  if (outputURL) return outputURL;
   return null;
+}
+
+function browserOutputURL(content?: string): string | null {
+  if (!content) return null;
+  const start = content.indexOf('{');
+  const end = content.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(content.slice(start, end + 1)) as Record<string, unknown>;
+    return typeof parsed.url === 'string' && parsed.url.trim() ? parsed.url.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export function describeToolStep(tc?: import('../../types').ToolCallInfo | null): string {

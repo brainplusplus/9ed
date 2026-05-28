@@ -178,12 +178,13 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
   }
 
   if (activeTab.transport === 'webrtc') {
-    lines.push('Browser control: Use MCP tools 9ed_browser_goto, 9ed_browser_click, 9ed_browser_type, 9ed_browser_press, 9ed_browser_scroll, 9ed_browser_inspect, 9ed_browser_page_source, 9ed_browser_screenshot, 9ed_browser_console_logs, and 9ed_browser_network_requests for browser actions in this active tab. Browser actions accept timeoutMs when the page or action may be slow; default is 15000ms and max is 60000ms. Use the shortest useful chain: navigate, inspect/page_source when needed, click/type once, then answer when the requested page state is reached.');
-    lines.push('Screenshot guardrail: only call 9ed_browser_screenshot when visual proof/debug or image analysis is explicitly needed. For normal DOM/text/navigation tasks, prefer inspect or page_source instead of screenshot.');
+    lines.push('Browser control: Use MCP tools 9ed_browser_goto, 9ed_browser_click, 9ed_browser_type, 9ed_browser_press, 9ed_browser_scroll, 9ed_browser_inspect, 9ed_browser_page_source, 9ed_browser_screenshot, 9ed_browser_console_logs, and 9ed_browser_network_requests for browser actions in this active tab. Browser actions accept timeoutMs when the page or action may be slow; default is 15000ms and max is 60000ms. Use the shortest useful workflow chain: navigate, inspect/page_source/console/network when needed, interact with the necessary button/CTA/link/form/control, then answer when the task is satisfied.');
+    lines.push('Browser interaction: use click/type/press when the workflow requires page interaction, whether that need comes from the user request or from your own debugging analysis of the current page state.');
+    lines.push('Screenshot guardrail: only call 9ed_browser_screenshot when visual proof/debug, layout verification, or image analysis is needed. For normal DOM/text/navigation/selector tasks, prefer inspect or page_source instead of screenshot.');
   } else {
     lines.push('Browser control: unavailable for this linked tab because it uses Proxy transport. Switch this project to an active WebRTC browser tab if you want the agent to control the browser directly.');
   }
-  lines.push('Browser workflow: after every browser tool result, inspect the returned observation and immediately decide whether to call another browser tool or answer the user naturally. Do not wait silently after a completed browser tool, and do not repeat inspection once URL/title/visible text already confirms success.');
+  lines.push('Browser workflow: after every browser tool result, inspect the returned observation and immediately decide whether to call another browser/terminal tool or answer naturally. Do not wait silently after a completed browser tool, and do not repeat inspection once URL/title/visible text already confirms success.');
 
   return lines.join('\n');
 }
@@ -197,7 +198,7 @@ function buildActiveTerminalContext(context: TerminalContext): string {
     `Shell: ${terminalShellLabel(context.shellType)}`,
     `Command dialect: ${terminalCommandDialect(context.shellType)}`,
     `CWD: ${context.cwd || '(unknown)'}`,
-    'Use MCP tool active_terminal_run for terminal work when the command is expected to finish and return the shell to idle. Use active_terminal_start for long-running commands like npm run start, dev servers, log tails, watchers, or anything expected to keep running. Prefer one information-dense command over several confirmation commands. Treat the terminal as completed only when the shell has clearly returned to idle. After a completed result contains the requested fact, answer naturally and do not call tasklist/Get-Process/read again for the same fact. Do not wait silently after a completed terminal tool. Use active_terminal_read only to inspect a command that is still running and pay attention to whether it reports streaming output, still running quietly, or waiting for input again before sending another terminal command.',
+    'Use MCP tool active_terminal_run for terminal work when the command is expected to finish and return the shell to idle. Use active_terminal_start for long-running commands like npm run start, dev servers, log tails, watchers, or anything expected to keep running while you debug with browser MCP or inspect logs. Prefer one information-dense command over several confirmation commands. Treat the terminal as completed only when the shell has clearly returned to idle. Chain another targeted terminal or browser action when completed output reveals the next necessary diagnostic, fix, test, or reproduction step; answer when the current task is satisfied. Do not call tasklist/Get-Process/read again for the same fact. Do not wait silently after a completed terminal tool. Use active_terminal_read to inspect a command that is still running, gather logs after browser reproduction, or check whether the shell is waiting for input again before sending another terminal command.',
   ];
 
   if (context.scrollback.trim()) {
