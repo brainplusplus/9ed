@@ -704,7 +704,7 @@ export async function getBrowserTabs(): Promise<BrowserTab[]> {
   return parseResponse<BrowserTab[]>(response);
 }
 
-export async function createBrowserTab(url: string, transport: BrowserTransport = 'proxy'): Promise<BrowserTab> {
+export async function createBrowserTab(url: string, transport: BrowserTransport = 'webrtc'): Promise<BrowserTab> {
   const response = await fetch('/api/browser/tabs', {
     method: 'POST',
     credentials: 'include',

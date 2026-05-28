@@ -164,7 +164,18 @@ func callTool(raw json.RawMessage) any {
 		body = "Browser action completed."
 	}
 	debugf("tool call name=%s ok response=%s", strings.TrimSpace(params.Name), summarizeText(body))
-	return toolText("Browser tool result.\nDecision: if this page state satisfies the user's request, answer now. Call another 9ed_browser_* tool only when a necessary page action or missing observation remains.\n\n" + body)
+	return toolText("Browser tool result.\n" + browserDecisionHint(action) + "\n\n" + body)
+}
+
+func browserDecisionHint(action string) string {
+	switch strings.TrimSpace(strings.ToLower(action)) {
+	case "inspect", "console_logs", "network_requests", "screenshot":
+		return "Decision: sufficient_to_answer=true. If this observation already satisfies the user's request, answer now and avoid extra browser tool calls."
+	case "goto", "navigate", "click", "type", "press", "scroll":
+		return "Decision: sufficient_to_answer=false. Continue with one minimal follow-up browser observation/action only if needed to answer the user."
+	default:
+		return "Decision: if this page state satisfies the user's request, answer now. Call another 9ed_browser_* tool only when a necessary page action or missing observation remains."
+	}
 }
 
 func mapToolAction(name string) string {

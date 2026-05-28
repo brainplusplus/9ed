@@ -304,8 +304,27 @@ export function useChatSession(): UseChatSessionResult {
   const scheduleStallTimer = useCallback((sessionId: string) => {
     clearStallTimer(sessionId);
     stallTimersRef.current.set(sessionId, window.setTimeout(() => {
-      const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
-      if (session?.status === 'streaming') {
+      void (async () => {
+        const beforeRefresh = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+        if (beforeRefresh?.status !== 'streaming') return;
+
+        appendSessionDebugRef.current(sessionId, {
+          source: 'session',
+          level: 'info',
+          message: 'stall probe: refreshing persisted session state before marking stalled',
+        });
+        await refreshSessionStateRef.current(sessionId);
+
+        const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+        if (session?.status !== 'streaming') {
+          appendSessionDebugRef.current(sessionId, {
+            source: 'session',
+            level: 'info',
+            message: 'stall probe cleared after session state refresh',
+          });
+          return;
+        }
+
         useChatStore.getState().setSessionStalled(sessionId, true);
         const lastTool = [...session.messages].reverse().find((msg) => msg.role === 'tool_call' && msg.toolCall);
         const lastToolStatus = lastTool?.toolCall?.status;
@@ -317,7 +336,7 @@ export function useChatSession(): UseChatSessionResult {
             ? `stall detected: last tool completed (${lastToolTitle}) but no done event arrived`
             : `stall detected: no new updates after ${Math.round(STREAM_STALL_MS / 1000)}s; last step ${lastToolTitle}`,
         });
-      }
+      })();
     }, STREAM_STALL_MS));
   }, [clearStallTimer]);
 

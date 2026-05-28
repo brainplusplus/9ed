@@ -10,6 +10,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const getLiveChatSessions = vi.fn();
 const createChatWebSocket = vi.fn();
 const getConfig = vi.fn();
+const getChatSessionState = vi.fn();
 const getTerminalHandle = vi.fn();
 
 vi.mock('../api', async () => {
@@ -19,6 +20,7 @@ vi.mock('../api', async () => {
     getLiveChatSessions: () => getLiveChatSessions(),
     createChatWebSocket: (sessionId: string) => createChatWebSocket(sessionId),
     getConfig: () => getConfig(),
+    getChatSessionState: (sessionId: string) => getChatSessionState(sessionId),
   };
 });
 
@@ -88,6 +90,7 @@ describe('useChatSession', () => {
     latestHook = null;
     resetChatStore();
     getConfig.mockResolvedValue({ terminalAiMaxLines: 25 });
+    getChatSessionState.mockResolvedValue({ session: { status: 'active', updatedAt: 1 }, messages: [], events: [], snapshot: null });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -179,10 +182,112 @@ describe('useChatSession', () => {
     expect(payload.content).toContain('Shell: PowerShell');
     expect(payload.content).toContain('Command dialect: PowerShell syntax');
     expect(payload.content).toContain('Use MCP tool active_terminal_run for terminal work');
-    expect(payload.content).toContain('return observed output');
+    expect(payload.content).toContain('Treat the terminal as completed only when the shell has clearly returned to idle');
     expect(payload.content).toContain('active_terminal_read');
     expect(payload.content).toContain('```text');
     expect(payload.content).not.toContain('INSTRUCTION: You are connected');
     expect(payload.content).not.toContain('Do NOT refuse');
+  });
+
+  it('recovers a missed done event from persisted session state before declaring stall', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+    getChatSessionState.mockResolvedValue({
+      session: { id: 'record-1', agentId: 'opencode', title: 'Loop guard', status: 'closed', createdAt: 1, updatedAt: 20 },
+      messages: [
+        { id: 'user-1', sessionId: 'record-1', role: 'user', content: 'cek cepat', timestamp: 10 },
+        { id: 'assistant-1', sessionId: 'record-1', role: 'assistant', content: 'beres', timestamp: 20 },
+      ],
+      events: [
+        { id: 'evt-text', sessionId: 'record-1', kind: 'text', payloadJson: JSON.stringify({ type: 'text', text: 'beres' }), seq: 1, timestamp: 20 },
+        { id: 'evt-done', sessionId: 'record-1', kind: 'done', payloadJson: JSON.stringify({ type: 'done', stopReason: 'end_turn' }), seq: 2, timestamp: 21 },
+      ],
+      snapshot: null,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await latestHook?.sendMessage('cek cepat');
+    });
+
+    expect(useChatStore.getState().sessions[0].status).toBe('streaming');
+
+    await act(async () => {
+      vi.advanceTimersByTime(15000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const session = useChatStore.getState().sessions[0];
+    expect(getChatSessionState).toHaveBeenCalledWith('record-1');
+    expect(session.status).toBe('idle');
+    expect(session.stalled).toBe(false);
+    expect(session.messages.some((message) => message.role === 'assistant' && message.content.includes('beres'))).toBe(true);
+    expect(session.debugEntries?.some((entry) => entry.message.includes('stall probe cleared after session state refresh'))).toBe(true);
+  });
+
+  it('marks the session stalled when refresh still shows no terminal done state', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+    getChatSessionState.mockResolvedValue({
+      session: { id: 'record-1', agentId: 'opencode', title: 'Loop guard', status: 'active', createdAt: 1, updatedAt: 20 },
+      messages: [
+        { id: 'user-1', sessionId: 'record-1', role: 'user', content: 'masih jalan?', timestamp: 10 },
+      ],
+      events: [],
+      snapshot: null,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await latestHook?.sendMessage('masih jalan?');
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(15000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const session = useChatStore.getState().sessions[0];
+    expect(session.status).toBe('streaming');
+    expect(session.stalled).toBe(true);
+    expect(session.debugEntries?.some((entry) => entry.message.includes('stall detected: no new updates after'))).toBe(true);
   });
 });

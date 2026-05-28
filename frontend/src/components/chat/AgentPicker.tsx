@@ -145,21 +145,6 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
     : terminalReady
       ? 'Restart this ready agent session with or without the active terminal MCP bridge'
       : 'Terminal can be toggled when the agent is Ready';
-  const browserStatus = !activeSession
-    ? (useActiveBrowser ? 'Browser MCP pending' : 'Browser MCP off')
-    : activeSession.status === 'connecting' && browserCurrentEnabled
-      ? 'Browser MCP reconnecting'
-      : browserCurrentEnabled
-        ? 'Browser MCP on'
-        : 'Browser MCP off';
-  const terminalStatus = !activeSession
-    ? (useActiveTerminal ? 'Terminal MCP pending' : 'Terminal MCP off')
-    : activeSession.status === 'connecting' && terminalCurrentEnabled
-      ? 'Terminal MCP reconnecting'
-      : terminalCurrentEnabled
-        ? 'Terminal MCP on'
-        : 'Terminal MCP off';
-
   const handleChange = (configId: string, value: string) => {
     setOpenDropdown(null);
     setConfigOption?.(configId, value);
@@ -196,14 +181,6 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
           <span className="chat-config-status-label">{busyLabel}</span>
         </div>
       )}
-      <div className="chat-config-mcp-statuses" aria-live="polite">
-        <span className={`chat-config-mcp-status${browserCurrentEnabled ? ' active' : ''}`}>
-          {browserStatus}
-        </span>
-        <span className={`chat-config-mcp-status${terminalCurrentEnabled ? ' active' : ''}`}>
-          {terminalStatus}
-        </span>
-      </div>
       {configOptions.map((opt) => (
         <ConfigDropdown
           key={opt.id}
@@ -234,7 +211,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
         <span className="chat-config-toggle-label">@ ignored</span>
       </label>
       <label
-        className={`chat-config-toggle${activeSession && !browserToggleEnabled ? ' disabled' : ''}`}
+        className={`chat-config-toggle chat-config-toggle-mcp${browserCurrentEnabled ? ' active' : ''}${activeSession && !browserToggleEnabled ? ' disabled' : ''}`}
         title={browserToggleTitle}
       >
         <input
@@ -246,7 +223,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
         <span className="chat-config-toggle-label">Browser</span>
       </label>
       <label
-        className={`chat-config-toggle${!terminalReady ? ' disabled' : ''}`}
+        className={`chat-config-toggle chat-config-toggle-mcp${terminalCurrentEnabled ? ' active' : ''}${!terminalReady ? ' disabled' : ''}`}
         title={terminalToggleTitle}
       >
         <input

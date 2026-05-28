@@ -245,6 +245,8 @@ type ReplayResult = {
   contextUsed?: number;
   costAmount?: number;
   costCurrency?: string;
+  terminalState?: 'idle' | 'error' | 'streaming';
+  lastEventAt?: number;
 };
 
 export function replayTranscriptToMessages(events: TranscriptEventRecord[]): ReplayResult {
@@ -256,10 +258,13 @@ export function replayTranscriptToMessages(events: TranscriptEventRecord[]): Rep
   let contextUsed: number | undefined;
   let costAmount: number | undefined;
   let costCurrency: string | undefined;
+  let terminalState: ReplayResult['terminalState'];
+  let lastEventAt: number | undefined;
   let assistantSegmentClosed = false;
   const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   for (const evt of events) {
+    lastEventAt = Math.max(lastEventAt ?? 0, evt.timestamp);
     let payload: ChatEvent;
     try {
       payload = JSON.parse(evt.payloadJson) as ChatEvent;
@@ -356,14 +361,16 @@ export function replayTranscriptToMessages(events: TranscriptEventRecord[]): Rep
 
       case 'done':
         assistantSegmentClosed = true;
+        terminalState = 'idle';
         break;
       case 'error':
         assistantSegmentClosed = true;
+        terminalState = 'error';
         break;
     }
   }
 
-  return { messages: msgs, commands, configOptions, title, contextWindow, contextUsed, costAmount, costCurrency };
+  return { messages: msgs, commands, configOptions, title, contextWindow, contextUsed, costAmount, costCurrency, terminalState, lastEventAt };
 }
 
 function historyMessageToChatMessage(message: HistoryMessageRecord): ChatMessage {
@@ -823,6 +830,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const replayed = replaySessionState(sessionState.messages ?? [], sessionState.events ?? []);
       const snapshotCommands = parseSnapshotJson<SlashCommandInfo>(sessionState.snapshot?.commandsJson);
       const snapshotConfig = parseSnapshotJson<ConfigOptionInfo>(sessionState.snapshot?.configOptsJson);
+      const latestMessageAt = sessionState.messages.reduce((max, message) => Math.max(max, message.timestamp ?? 0), 0);
+      const refreshedLastEventAt = Math.max(
+        replayed.lastEventAt ?? 0,
+        latestMessageAt,
+        sessionState.snapshot?.updatedAt ?? 0,
+        sessionState.session?.updatedAt ?? 0,
+        session.lastEventAt ?? 0,
+      );
+      const refreshedStatus = replayed.terminalState === 'idle' || replayed.terminalState === 'error' || sessionState.session?.status === 'closed'
+        ? 'idle'
+        : session.status;
       set((state) => ({
         sessions: updateSession(state.sessions, session.id, (s) => ({
           ...s,
@@ -834,6 +852,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           contextUsed: replayed.contextUsed ?? s.contextUsed,
           costAmount: replayed.costAmount ?? s.costAmount,
           costCurrency: replayed.costCurrency ?? s.costCurrency,
+          status: refreshedStatus,
+          stalled: false,
+          lastEventAt: refreshedLastEventAt || s.lastEventAt,
         })),
       }));
     } catch {

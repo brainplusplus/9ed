@@ -305,6 +305,143 @@ func TestChatStreamUnsureTerminalObservationWaitsLongerBeforeRecovery(t *testing
 	}
 }
 
+func TestTurnRecoveryDelayUsesBrowserDecisionHint(t *testing.T) {
+	doneDelay := turnRecoveryDelay(chat.ChatEvent{
+		ToolTitle:   "9ed_browser_inspect",
+		ToolContent: "Browser tool result.\nDecision: sufficient_to_answer=true.",
+	})
+	if doneDelay != interactiveToolDoneTimeout {
+		t.Fatalf("expected done timeout for sufficient browser observation, got %s", doneDelay)
+	}
+
+	unsureDelay := turnRecoveryDelay(chat.ChatEvent{
+		ToolTitle:   "9ed_browser_goto",
+		ToolContent: "Browser tool result.\nDecision: sufficient_to_answer=false.",
+	})
+	if unsureDelay != interactiveToolUnsureTimeout {
+		t.Fatalf("expected unsure timeout for incomplete browser observation, got %s", unsureDelay)
+	}
+}
+
+func TestChatStreamUnsureBrowserObservationWaitsLongerBeforeRecovery(t *testing.T) {
+	originalTimeout := interactiveToolDoneTimeout
+	originalUnsureTimeout := interactiveToolUnsureTimeout
+	interactiveToolDoneTimeout = 30 * time.Millisecond
+	interactiveToolUnsureTimeout = 140 * time.Millisecond
+	defer func() {
+		interactiveToolDoneTimeout = originalTimeout
+		interactiveToolUnsureTimeout = originalUnsureTimeout
+	}()
+
+	session := &fakeChatSession{
+		events: make(chan chat.ChatEvent, 4),
+		done:   make(chan struct{}),
+	}
+	stream := newChatStream("session-1", session, nil, nil)
+	stream.Start()
+
+	sub := stream.Subscribe()
+	defer stream.Unsubscribe(sub)
+
+	stream.publish(chat.ChatEvent{
+		Type:       "tool_call_update",
+		ToolCallID: "browser-goto",
+		ToolTitle:  "9ed_browser_goto",
+		ToolStatus: "completed",
+		ToolContent: strings.Join([]string{
+			"Browser tool result.",
+			"Decision: sufficient_to_answer=false. Continue with one minimal follow-up browser observation/action only if needed to answer the user.",
+			"",
+			`{"url":"https://example.com/docs","title":"Integration Fixture","text":"BROWSER_CHAIN_TARGET appears on this page."}`,
+		}, "\n"),
+	})
+	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+		t.Fatalf("expected browser tool update first, got %#v", got)
+	}
+	assertNoChatEvent(t, sub.C, 80*time.Millisecond)
+	text := readChatEventTimeout(t, sub.C, 240*time.Millisecond)
+	if text.Type != "text" || !strings.Contains(text.Text, "Integration Fixture") || !strings.Contains(text.Text, "BROWSER_CHAIN_TARGET") {
+		t.Fatalf("expected delayed browser recovery summary, got %#v", text)
+	}
+	done := readChatEventTimeout(t, sub.C, 200*time.Millisecond)
+	if done.Type != "done" || done.StopReason != "tool_completion_timeout_stream" {
+		t.Fatalf("expected stream recovery done, got %#v", done)
+	}
+}
+
+func TestChatStreamRecoversDoneAfterCompletedBrowserToolChainStall(t *testing.T) {
+	originalTimeout := interactiveToolDoneTimeout
+	originalUnsureTimeout := interactiveToolUnsureTimeout
+	interactiveToolDoneTimeout = 40 * time.Millisecond
+	interactiveToolUnsureTimeout = 40 * time.Millisecond
+	defer func() {
+		interactiveToolDoneTimeout = originalTimeout
+		interactiveToolUnsureTimeout = originalUnsureTimeout
+	}()
+
+	session := &fakeChatSession{
+		events: make(chan chat.ChatEvent, 6),
+		done:   make(chan struct{}),
+	}
+	stream := newChatStream("session-1", session, nil, nil)
+	stream.Start()
+
+	sub := stream.Subscribe()
+	defer stream.Unsubscribe(sub)
+
+	stream.publish(chat.ChatEvent{
+		Type:       "tool_call_update",
+		ToolCallID: "browser-goto",
+		ToolTitle:  "9ed_browser_goto",
+		ToolStatus: "completed",
+		ToolContent: strings.Join([]string{
+			"Browser tool result.",
+			"Decision: sufficient_to_answer=false. Continue with one minimal follow-up browser observation/action only if needed to answer the user.",
+			"",
+			`{"url":"https://example.com/docs","title":"Setup Page","text":"Setup page for integration test."}`,
+		}, "\n"),
+	})
+	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+		t.Fatalf("expected first browser tool update, got %#v", got)
+	}
+	stream.publish(chat.ChatEvent{
+		Type:       "tool_call",
+		ToolCallID: "browser-inspect",
+		ToolTitle:  "9ed_browser_inspect",
+		ToolKind:   "browser",
+		ToolStatus: "pending",
+	})
+	if got := readChatEvent(t, sub.C); got.Type != "tool_call" {
+		t.Fatalf("expected inspect tool call, got %#v", got)
+	}
+	stream.publish(chat.ChatEvent{
+		Type:       "tool_call_update",
+		ToolCallID: "browser-inspect",
+		ToolTitle:  "9ed_browser_inspect",
+		ToolStatus: "completed",
+		ToolContent: strings.Join([]string{
+			"Browser tool result.",
+			"Decision: sufficient_to_answer=true. If this observation already satisfies the user's request, answer now and avoid extra browser tool calls.",
+			"",
+			`{"url":"https://example.com/docs","title":"Integration Fixture","text":"BROWSER_CHAIN_TARGET is visible in the hero section."}`,
+		}, "\n"),
+	})
+	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+		t.Fatalf("expected inspect tool update, got %#v", got)
+	}
+	text := readChatEventTimeout(t, sub.C, 300*time.Millisecond)
+	if text.Type != "text" || !strings.Contains(text.Text, "Integration Fixture") || !strings.Contains(text.Text, "BROWSER_CHAIN_TARGET") {
+		t.Fatalf("expected synthesized browser recovery text, got %#v", text)
+	}
+	done := readChatEventTimeout(t, sub.C, 300*time.Millisecond)
+	if done.Type != "done" || done.StopReason != "tool_completion_timeout_stream" {
+		t.Fatalf("expected stream recovery done, got %#v", done)
+	}
+	if session.cancelCalls != 1 {
+		t.Fatalf("expected cancel to be invoked once, got %d", session.cancelCalls)
+	}
+}
+
 func TestChatStreamDropsLateToolEventsAfterDone(t *testing.T) {
 	session := &fakeChatSession{
 		events: make(chan chat.ChatEvent, 4),

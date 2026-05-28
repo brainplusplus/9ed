@@ -118,6 +118,9 @@ const (
 	automationDefaultTimeoutMs           = 15000.0
 	automationDefaultNavigationTimeoutMs = 20000.0
 	automationScreenshotTimeoutMs        = 8000.0
+	selectorClickPrimaryTimeoutMs        = 9000.0
+	selectorClickFallbackWaitMs          = 2200.0
+	selectorClickFallbackTimeoutMs       = 5000.0
 )
 
 const telemetryInitScript = `(function () {
@@ -758,7 +761,7 @@ func (m *Manager) TabClick(ctx context.Context, id string, selector string, x, y
 	}
 	defer release()
 	if strings.TrimSpace(selector) != "" {
-		if err := page.Click(selector); err != nil {
+		if err := clickSelectorWithFallback(page, selector); err != nil {
 			m.recoverBrowserRuntimeLocked(id, err)
 			return err
 		}
@@ -774,6 +777,102 @@ func (m *Manager) TabClick(ctx context.Context, id string, selector string, x, y
 	}
 	_, err = m.syncTabFromPageResultLocked(id, page, false)
 	return err
+}
+
+func clickSelectorWithFallback(page playwright.Page, selector string) error {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return fmt.Errorf("selector is required")
+	}
+	primaryTimeout := selectorClickPrimaryTimeoutMs
+	if err := page.Click(selector, playwright.PageClickOptions{Timeout: &primaryTimeout}); err == nil {
+		return nil
+	} else {
+		candidates := selectorFallbackCandidates(selector, page.URL())
+		failures := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate == "" || candidate == selector {
+				continue
+			}
+			if candidateErr := clickFirstVisibleLocator(page, candidate); candidateErr == nil {
+				return nil
+			} else if len(failures) < 4 {
+				failures = append(failures, candidate+" -> "+candidateErr.Error())
+			}
+		}
+		if len(failures) == 0 {
+			return err
+		}
+		return fmt.Errorf("%w (fallback tried: %s)", err, strings.Join(failures, " | "))
+	}
+}
+
+func clickFirstVisibleLocator(page playwright.Page, selector string) error {
+	waitTimeout := selectorClickFallbackWaitMs
+	clickTimeout := selectorClickFallbackTimeoutMs
+	locator := page.Locator(selector).First()
+	if err := locator.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: &waitTimeout,
+	}); err != nil {
+		return err
+	}
+	return locator.Click(playwright.LocatorClickOptions{Timeout: &clickTimeout})
+}
+
+func selectorFallbackCandidates(rawSelector string, pageURL string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 16)
+	add := func(candidate string) {
+		candidate = normalizeSelectorCandidate(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+
+	add(rawSelector)
+	for _, part := range strings.FieldsFunc(rawSelector, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == ';' || r == '|'
+	}) {
+		part = normalizeSelectorCandidate(part)
+		if part == "" {
+			continue
+		}
+		add(part)
+		if strings.Contains(part, `href^="/`) {
+			add(strings.ReplaceAll(part, `href^="/`, `href*="/`))
+		}
+	}
+
+	if strings.Contains(strings.ToLower(pageURL), "detik.com") {
+		add(`a[href*="news.detik.com/berita/"]`)
+		add(`a[href*="/berita/d-"]`)
+		add(`article h2 a[href]`)
+		add(`article h3 a[href]`)
+		add(`.media__link[href]`)
+		add(`.media_text a[href]`)
+		add(`.list-content__item a[href]`)
+	}
+
+	return out
+}
+
+func normalizeSelectorCandidate(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.Trim(value, "`")
+	value = strings.Trim(value, `"'`)
+	for strings.HasPrefix(value, "_a[") {
+		value = strings.TrimPrefix(value, "_")
+	}
+	return strings.TrimSpace(value)
 }
 
 func (m *Manager) TabMouseDown(ctx context.Context, id string, x, y float64) error {
@@ -1067,7 +1166,7 @@ func (m *Manager) AutomationClick(ctx context.Context, selector string) error {
 		return err
 	}
 	defer release()
-	if err := page.Click(selector); err != nil {
+	if err := clickSelectorWithFallback(page, selector); err != nil {
 		m.recoverBrowserRuntimeLocked("", err)
 		return err
 	}

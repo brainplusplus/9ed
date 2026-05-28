@@ -98,6 +98,8 @@
 .browser-tab-chip {
   display: flex;
   align-items: center;
+  flex: 0 0 228px;
+  max-width: 228px;
   height: 30px;
   border: 1px solid transparent;
   border-bottom: none;
@@ -265,6 +267,11 @@
 }
 
 @media (max-width: 767px) {
+  .browser-tab-chip {
+    flex-basis: 180px;
+    max-width: 180px;
+  }
+
   .browser-tab-strip {
     gap: 6px;
   }

@@ -334,7 +334,7 @@ export function BrowserPanel() {
   const [automation, setAutomation] = useState<BrowserAutomationStatus | null>(null);
   const [browserMCPDebugEnabled, setBrowserMCPDebugEnabled] = useState(false);
   const [browserMCPEntries, setBrowserMCPEntries] = useState<BrowserMCPDebugEntry[]>([]);
-  const [showBrowserMCPDebugPanel, setShowBrowserMCPDebugPanel] = useState(true);
+  const [showBrowserMCPDebugPanel, setShowBrowserMCPDebugPanel] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const tabsRef = useRef<BrowserTab[]>([]);
   const creatingDefaultProjectTabRef = useRef<Set<string>>(new Set());
@@ -904,7 +904,7 @@ export function BrowserPanel() {
     }
     if (creatingDefaultProjectTabRef.current.has(activeProjectId)) return;
     creatingDefaultProjectTabRef.current.add(activeProjectId);
-    createBrowserTab(DEFAULT_URL, 'proxy')
+    createBrowserTab(DEFAULT_URL, 'webrtc')
       .then((tab) => {
         setTabs((current) => [...current, tab]);
         addBrowserTab(activeProjectId, tab.id);
@@ -1015,7 +1015,7 @@ export function BrowserPanel() {
     try {
       const tab = activeTab
         ? await navigateBrowserTab(activeTab.id, address, navigateController.signal)
-        : await createBrowserTab(address, 'proxy');
+        : await createBrowserTab(address, 'webrtc');
       if (browserNavigateAbortRef.current === navigateController) {
         browserNavigateAbortRef.current = null;
       }
@@ -1046,7 +1046,7 @@ export function BrowserPanel() {
     }
   }
 
-  async function handleNewTab(transport: BrowserTransport = 'proxy') {
+  async function handleNewTab(transport: BrowserTransport = 'webrtc') {
     setLoading(true);
     setError(null);
     setCreateMenuOpen(false);
@@ -1650,11 +1650,11 @@ export function BrowserPanel() {
             </button>
             {createMenuOpen && (
               <div className="browser-newtab-menu">
-                <button type="button" onClick={() => void handleNewTab('proxy')}>
-                  Proxy Tab
-                </button>
                 <button type="button" onClick={() => void handleNewTab('webrtc')}>
                   WebRTC Tab
+                </button>
+                <button type="button" onClick={() => void handleNewTab('proxy')}>
+                  Proxy Tab
                 </button>
               </div>
             )}
@@ -1939,7 +1939,7 @@ export function BrowserPanel() {
         ) : (
           <div className="browser-empty">
             <IconGlobe />
-            <button className="browser-go-btn" type="button" onClick={() => void handleNewTab('proxy')}>
+            <button className="browser-go-btn" type="button" onClick={() => void handleNewTab('webrtc')}>
               Open Browser
             </button>
           </div>

@@ -132,7 +132,7 @@ describe('ChatPanel new chat', () => {
       agentButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo', false);
+    expect(createChatSession).toHaveBeenCalledWith('opencode', '/repo', false, undefined, false, null);
   });
 
   it('shows loading state instead of no-agents while agent fetch is pending', async () => {

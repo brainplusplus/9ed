@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -268,6 +269,13 @@ func isInteractiveMCPTool(title string) bool {
 		strings.HasPrefix(value, "browser_")
 }
 
+func isBrowserMCPTool(title string) bool {
+	value := strings.TrimSpace(strings.ToLower(title))
+	return strings.HasPrefix(value, "9ed_browser_") ||
+		strings.HasPrefix(value, "active_browser_") ||
+		strings.HasPrefix(value, "browser_")
+}
+
 func (s *chatStream) handleTurnRecoveryTrigger(evt chat.ChatEvent) {
 	if shouldScheduleTurnRecovery(evt) {
 		s.recordTurnObservationLocked(evt)
@@ -348,11 +356,24 @@ func turnRecoveryDelay(evt chat.ChatEvent) time.Duration {
 		}
 		return interactiveToolUnsureTimeout
 	}
+	if isBrowserMCPTool(title) {
+		if browserObservationSufficient(evt) {
+			return interactiveToolDoneTimeout
+		}
+		return interactiveToolUnsureTimeout
+	}
 	return interactiveToolDoneTimeout
 }
 
 func terminalObservationSufficient(evt chat.ChatEvent) bool {
 	if !strings.HasPrefix(strings.TrimSpace(strings.ToLower(evt.ToolTitle)), "active_terminal_") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(evt.ToolContent), "decision: sufficient_to_answer=true")
+}
+
+func browserObservationSufficient(evt chat.ChatEvent) bool {
+	if !isBrowserMCPTool(evt.ToolTitle) {
 		return false
 	}
 	return strings.Contains(strings.ToLower(evt.ToolContent), "decision: sufficient_to_answer=true")
@@ -502,6 +523,9 @@ type processRow struct {
 }
 
 func synthesizeTurnRecoveryText(observations []chat.ChatEvent) string {
+	if summary := summarizeBrowserObservationChain(observations); summary != "" {
+		return summary
+	}
 	if summary := summarizeTerminalObservationChain(observations); summary != "" {
 		return summary
 	}
@@ -511,6 +535,212 @@ func synthesizeTurnRecoveryText(observations []chat.ChatEvent) string {
 		}
 	}
 	return ""
+}
+
+type browserObservation struct {
+	Action string
+	URL    string
+	Title  string
+	Text   string
+	Path   string
+	Count  int
+}
+
+func summarizeBrowserObservationChain(observations []chat.ChatEvent) string {
+	found := false
+	var latest browserObservation
+	for i := len(observations) - 1; i >= 0; i-- {
+		evt := observations[i]
+		if !isBrowserMCPTool(evt.ToolTitle) {
+			continue
+		}
+		if !strings.EqualFold(evt.ToolStatus, "completed") && !strings.EqualFold(evt.ToolStatus, "failed") {
+			continue
+		}
+		obs := parseBrowserObservation(evt)
+		if !found {
+			latest = obs
+			found = true
+		}
+		if obs.Action == "inspect" && (obs.URL != "" || obs.Title != "" || obs.Text != "") {
+			latest = obs
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+	if summary := renderBrowserObservationSummary(latest); summary != "" {
+		return summary
+	}
+	return ""
+}
+
+func parseBrowserObservation(evt chat.ChatEvent) browserObservation {
+	obs := browserObservation{
+		Action: browserActionFromObservation(evt),
+	}
+	payload := parseBrowserPayload(evt.ToolContent)
+	if len(payload) == 0 {
+		return obs
+	}
+	if url, ok := payload["url"].(string); ok {
+		obs.URL = strings.TrimSpace(url)
+	}
+	if title, ok := payload["title"].(string); ok {
+		obs.Title = strings.TrimSpace(title)
+	}
+	if text, ok := payload["text"].(string); ok {
+		obs.Text = strings.TrimSpace(text)
+	}
+	if path, ok := payload["path"].(string); ok {
+		obs.Path = strings.TrimSpace(path)
+	}
+	if count, ok := toIntFromAny(payload["count"]); ok {
+		obs.Count = count
+	}
+	return obs
+}
+
+func browserActionFromObservation(evt chat.ChatEvent) string {
+	if action := browserActionFromRawInput(evt.ToolRawInput); action != "" {
+		return action
+	}
+	value := strings.TrimSpace(strings.ToLower(evt.ToolTitle))
+	value = strings.TrimPrefix(value, "9ed_browser_")
+	value = strings.TrimPrefix(value, "active_browser_")
+	value = strings.TrimPrefix(value, "browser_")
+	return value
+}
+
+func browserActionFromRawInput(rawInput string) string {
+	var payload map[string]any
+	if json.Unmarshal([]byte(rawInput), &payload) != nil {
+		return ""
+	}
+	action, ok := payload["action"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(strings.ToLower(action))
+}
+
+func parseBrowserPayload(content string) map[string]any {
+	candidate := extractAfterMarker(content, "Output:")
+	if candidate == "" {
+		candidate = content
+	}
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return nil
+	}
+	if parsed := parseJSONObject(candidate); len(parsed) > 0 {
+		return parsed
+	}
+	if start := strings.Index(candidate, "{"); start >= 0 {
+		if end := strings.LastIndex(candidate, "}"); end > start {
+			if parsed := parseJSONObject(candidate[start : end+1]); len(parsed) > 0 {
+				return parsed
+			}
+		}
+	}
+	return nil
+}
+
+func parseJSONObject(candidate string) map[string]any {
+	var parsed map[string]any
+	if json.Unmarshal([]byte(candidate), &parsed) != nil {
+		return nil
+	}
+	return parsed
+}
+
+func renderBrowserObservationSummary(obs browserObservation) string {
+	switch obs.Action {
+	case "inspect", "goto", "navigate", "click", "type", "press", "scroll":
+		if summary := renderBrowserPageState(obs); summary != "" {
+			return summary
+		}
+	case "screenshot":
+		if obs.Path != "" {
+			return "Screenshot browser tersimpan di `" + obs.Path + "`."
+		}
+	case "console_logs", "console":
+		if obs.Count > 0 {
+			return "Browser memiliki `" + intToString(obs.Count) + "` entri console terbaru yang siap dirangkum."
+		}
+	case "network_requests", "network":
+		if obs.Count > 0 {
+			return "Browser memiliki `" + intToString(obs.Count) + "` entri network terbaru yang siap dirangkum."
+		}
+	}
+	if obs.Title != "" || obs.URL != "" || obs.Text != "" {
+		return renderBrowserPageState(obs)
+	}
+	return ""
+}
+
+func renderBrowserPageState(obs browserObservation) string {
+	location := ""
+	if obs.Title != "" && obs.URL != "" {
+		location = "`" + obs.Title + "` (" + obs.URL + ")"
+	} else if obs.Title != "" {
+		location = "`" + obs.Title + "`"
+	} else if obs.URL != "" {
+		location = obs.URL
+	}
+	preview := firstUsefulLine(obs.Text)
+	if preview != "" {
+		preview = truncateText(preview, 220)
+	}
+	if location != "" && preview != "" {
+		return "Halaman browser saat ini " + location + ". Ringkasan teks: \"" + preview + "\"."
+	}
+	if location != "" {
+		return "Halaman browser saat ini " + location + "."
+	}
+	if preview != "" {
+		return "Ringkasan teks halaman browser: \"" + preview + "\"."
+	}
+	return ""
+}
+
+func truncateText(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	if maxLen <= 0 || len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + "..."
+}
+
+func toIntFromAny(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			return int(parsed), true
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return parsed, true
+		}
+	default:
+		return 0, false
+	}
+	return 0, false
+}
+
+func intToString(value int) string {
+	return strconv.Itoa(value)
 }
 
 func summarizeTerminalObservationChain(observations []chat.ChatEvent) string {

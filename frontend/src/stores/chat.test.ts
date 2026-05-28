@@ -524,6 +524,51 @@ describe('active terminal routing', () => {
   });
 });
 
+describe('refreshSessionState', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+  });
+
+  it('restores idle status when persisted transcript already ended', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-refresh',
+        recordId: 'record-refresh',
+        agentId: 'opencode',
+        title: 'Refresh me',
+        messages: [],
+        status: 'streaming',
+        stalled: true,
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+      }],
+      activeSessionId: 'live-refresh',
+    });
+    getChatSessionState.mockResolvedValue({
+      session: { id: 'record-refresh', agentId: 'opencode', title: 'Refresh me', workDir: '/repo', status: 'closed', createdAt: 1, updatedAt: 40 },
+      messages: [
+        { id: 'user-refresh', sessionId: 'record-refresh', role: 'user', content: 'halo', timestamp: 10 },
+        { id: 'assistant-refresh', sessionId: 'record-refresh', role: 'assistant', content: 'selesai', timestamp: 30 },
+      ],
+      events: [
+        { id: 'evt-refresh-text', sessionId: 'record-refresh', kind: 'text', payloadJson: JSON.stringify({ type: 'text', text: 'selesai' }), seq: 1, timestamp: 30 },
+        { id: 'evt-refresh-done', sessionId: 'record-refresh', kind: 'done', payloadJson: JSON.stringify({ type: 'done', stopReason: 'end_turn' }), seq: 2, timestamp: 31 },
+      ],
+      snapshot: null,
+    });
+
+    await useChatStore.getState().refreshSessionState('live-refresh');
+
+    const session = useChatStore.getState().sessions[0];
+    expect(session.status).toBe('idle');
+    expect(session.stalled).toBe(false);
+    expect(session.lastEventAt).toBe(40);
+    expect(session.messages.some((message) => message.role === 'assistant' && message.content === 'selesai')).toBe(true);
+  });
+});
+
 describe('parseSnapshotJson', () => {
   it('parses valid JSON array', () => {
     const result = parseSnapshotJson<Array<{ name: string }>>('[{"name":"test"}]');

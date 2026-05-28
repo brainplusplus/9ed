@@ -72,6 +72,52 @@ func TestNormalizeTransport(t *testing.T) {
 	}
 }
 
+func TestNormalizeSelectorCandidate(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "trim quoted selector", input: ` "a[href^="/berita/"]" `, want: `a[href^="/berita/"]`},
+		{name: "strip markdown underscore artifact", input: `_a[href*="news.detik.com"]`, want: `a[href*="news.detik.com"]`},
+		{name: "trim backticks", input: "`article h2 a`", want: "article h2 a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeSelectorCandidate(tt.input); got != tt.want {
+				t.Fatalf("normalizeSelectorCandidate(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelectorFallbackCandidatesDetikExpansion(t *testing.T) {
+	raw := `a[href^="/berita/"] | .media_text h2 a, article a`
+	candidates := selectorFallbackCandidates(raw, "https://www.detik.com")
+	mustContain := []string{
+		`a[href^="/berita/"]`,
+		`a[href*="/berita/"]`,
+		`.media_text h2 a`,
+		`article a`,
+		`a[href*="news.detik.com/berita/"]`,
+		`a[href*="/berita/d-"]`,
+	}
+	for _, want := range mustContain {
+		if !stringSliceContains(candidates, want) {
+			t.Fatalf("selectorFallbackCandidates missing %q in %#v", want, candidates)
+		}
+	}
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestManagerTabsAndProxyTarget(t *testing.T) {
 	manager := NewManager()
 	tab, err := manager.CreateTab("localhost:3000")
