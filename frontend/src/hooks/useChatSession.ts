@@ -178,7 +178,8 @@ async function buildActiveBrowserContext(selection: BrowserElementSelection | nu
   }
 
   if (activeTab.transport === 'webrtc') {
-    lines.push('Browser control: Use MCP tools 9ed_browser_goto, 9ed_browser_click, 9ed_browser_type, 9ed_browser_press, 9ed_browser_scroll, 9ed_browser_inspect, 9ed_browser_screenshot, 9ed_browser_console_logs, and 9ed_browser_network_requests for browser actions in this active tab. Browser actions accept timeoutMs when the page or action may be slow; default is 15000ms and max is 60000ms. Use the shortest useful chain: navigate, inspect when needed, click/type once, then answer when the requested page state is reached.');
+    lines.push('Browser control: Use MCP tools 9ed_browser_goto, 9ed_browser_click, 9ed_browser_type, 9ed_browser_press, 9ed_browser_scroll, 9ed_browser_inspect, 9ed_browser_page_source, 9ed_browser_screenshot, 9ed_browser_console_logs, and 9ed_browser_network_requests for browser actions in this active tab. Browser actions accept timeoutMs when the page or action may be slow; default is 15000ms and max is 60000ms. Use the shortest useful chain: navigate, inspect/page_source when needed, click/type once, then answer when the requested page state is reached.');
+    lines.push('Screenshot guardrail: only call 9ed_browser_screenshot when visual proof/debug or image analysis is explicitly needed. For normal DOM/text/navigation tasks, prefer inspect or page_source instead of screenshot.');
   } else {
     lines.push('Browser control: unavailable for this linked tab because it uses Proxy transport. Switch this project to an active WebRTC browser tab if you want the agent to control the browser directly.');
   }
@@ -307,13 +308,15 @@ export function useChatSession(): UseChatSessionResult {
       void (async () => {
         const beforeRefresh = useChatStore.getState().sessions.find((s) => s.id === sessionId);
         if (beforeRefresh?.status !== 'streaming') return;
+        const beforeEventAt = beforeRefresh.lastEventAt ?? 0;
+        const beforeMessageCount = beforeRefresh.messages.length;
 
         appendSessionDebugRef.current(sessionId, {
           source: 'session',
           level: 'info',
           message: 'stall probe: refreshing persisted session state before marking stalled',
         });
-        await refreshSessionStateRef.current(sessionId);
+        await refreshSessionStateRef.current(sessionId).catch(() => {});
 
         const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
         if (session?.status !== 'streaming') {
@@ -324,11 +327,22 @@ export function useChatSession(): UseChatSessionResult {
           });
           return;
         }
+        const afterEventAt = session.lastEventAt ?? 0;
+        const replayRecovered = afterEventAt > beforeEventAt || session.messages.length > beforeMessageCount;
+        if (replayRecovered) {
+          appendSessionDebugRef.current(sessionId, {
+            source: 'session',
+            level: 'info',
+            message: 'stall guard: recovered by state resync',
+          });
+          scheduleStallTimer(sessionId);
+          return;
+        }
 
         useChatStore.getState().setSessionStalled(sessionId, true);
         const lastTool = [...session.messages].reverse().find((msg) => msg.role === 'tool_call' && msg.toolCall);
         const lastToolStatus = lastTool?.toolCall?.status;
-        const lastToolTitle = lastTool?.toolCall?.title ?? 'unknown';
+        const lastToolTitle = lastTool?.toolCall?.title ?? '(belum ada tool event)';
         appendSessionDebugRef.current(sessionId, {
           source: 'session',
           level: 'warn',

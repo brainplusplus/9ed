@@ -91,12 +91,15 @@ type chatStream struct {
 	turnRecoverySeq  int
 	turnRecovery     *time.Timer
 	turnRecoveryTool string
+	turnWatchdogSeq  int
+	turnWatchdog     *time.Timer
 	mu               sync.Mutex
 	done             chan struct{}
 }
 
 var interactiveToolDoneTimeout = 3500 * time.Millisecond
 var interactiveToolUnsureTimeout = 9 * time.Second
+var interactiveTurnInactivityTimeout = 45 * time.Second
 
 func newChatStream(sessionID string, session chat.ChatSession, persist chatEventPersister, onDone func()) *chatStream {
 	return &chatStream{
@@ -119,7 +122,9 @@ func (s *chatStream) StartTurn() {
 	s.turnObservations = nil
 	s.cancelToolFallbackLocked()
 	s.cancelTurnRecoveryLocked()
+	s.cancelTurnWatchdogLocked()
 	s.mu.Unlock()
+	s.armTurnWatchdog(interactiveTurnInactivityTimeout)
 }
 
 func (s *chatStream) Subscribe() *chatSubscriber {
@@ -149,6 +154,9 @@ func (s *chatStream) Unsubscribe(sub *chatSubscriber) {
 func (s *chatStream) run() {
 	defer func() {
 		s.mu.Lock()
+		s.cancelToolFallbackLocked()
+		s.cancelTurnRecoveryLocked()
+		s.cancelTurnWatchdogLocked()
 		subscriberCount := len(s.subscribers)
 		close(s.done)
 		for sub := range s.subscribers {
@@ -193,6 +201,7 @@ func (s *chatStream) publish(evt chat.ChatEvent) {
 	}
 	s.handleToolFallbackTrigger(evt)
 	s.handleTurnRecoveryTrigger(evt)
+	s.handleTurnWatchdogTrigger(evt)
 	if s.persist != nil {
 		s.persist(evt)
 	}
@@ -202,6 +211,7 @@ func (s *chatStream) publish(evt chat.ChatEvent) {
 		s.turnObservations = nil
 		s.cancelToolFallbackLocked()
 		s.cancelTurnRecoveryLocked()
+		s.cancelTurnWatchdogLocked()
 		s.turnDoneEmitted = true
 	}
 	defer s.mu.Unlock()
@@ -265,6 +275,7 @@ func isInteractiveMCPTool(title string) bool {
 		value == "active_terminal_start" ||
 		value == "active_terminal_read" ||
 		strings.HasPrefix(value, "9ed_browser_") ||
+		strings.HasPrefix(value, "9ed-active-browser_") ||
 		strings.HasPrefix(value, "active_browser_") ||
 		strings.HasPrefix(value, "browser_")
 }
@@ -272,6 +283,7 @@ func isInteractiveMCPTool(title string) bool {
 func isBrowserMCPTool(title string) bool {
 	value := strings.TrimSpace(strings.ToLower(title))
 	return strings.HasPrefix(value, "9ed_browser_") ||
+		strings.HasPrefix(value, "9ed-active-browser_") ||
 		strings.HasPrefix(value, "active_browser_") ||
 		strings.HasPrefix(value, "browser_")
 }
@@ -286,6 +298,36 @@ func (s *chatStream) handleTurnRecoveryTrigger(evt chat.ChatEvent) {
 		s.mu.Lock()
 		s.cancelTurnRecoveryLocked()
 		s.mu.Unlock()
+	}
+}
+
+func (s *chatStream) handleTurnWatchdogTrigger(evt chat.ChatEvent) {
+	if shouldRefreshTurnWatchdog(evt) {
+		s.armTurnWatchdog(interactiveTurnInactivityTimeout)
+		return
+	}
+	if shouldCancelTurnWatchdog(evt) {
+		s.mu.Lock()
+		s.cancelTurnWatchdogLocked()
+		s.mu.Unlock()
+	}
+}
+
+func shouldRefreshTurnWatchdog(evt chat.ChatEvent) bool {
+	switch evt.Type {
+	case "done", "error":
+		return false
+	default:
+		return true
+	}
+}
+
+func shouldCancelTurnWatchdog(evt chat.ChatEvent) bool {
+	switch evt.Type {
+	case "done", "error":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -345,6 +387,45 @@ func (s *chatStream) cancelTurnRecoveryLocked() {
 	if s.turnRecovery != nil {
 		s.turnRecovery.Stop()
 		s.turnRecovery = nil
+	}
+}
+
+func (s *chatStream) armTurnWatchdog(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnDoneEmitted {
+		return
+	}
+	s.cancelTurnWatchdogLocked()
+	s.turnWatchdogSeq++
+	seq := s.turnWatchdogSeq
+	s.turnWatchdog = time.AfterFunc(timeout, func() {
+		s.mu.Lock()
+		if seq != s.turnWatchdogSeq || s.turnDoneEmitted {
+			s.mu.Unlock()
+			return
+		}
+		observations := append([]chat.ChatEvent(nil), s.turnObservations...)
+		s.turnWatchdog = nil
+		s.mu.Unlock()
+
+		debug.Printf("[chat/stream] inactivity watchdog fired session=%s timeout=%s", s.sessionID, timeout)
+		_ = s.session.Cancel()
+		if text := synthesizeTurnRecoveryText(observations); text != "" {
+			s.publish(chat.ChatEvent{Type: "text", Text: text})
+		}
+		s.publish(chat.ChatEvent{Type: "done", StopReason: "turn_inactivity_timeout_stream"})
+	})
+}
+
+func (s *chatStream) cancelTurnWatchdogLocked() {
+	s.turnWatchdogSeq++
+	if s.turnWatchdog != nil {
+		s.turnWatchdog.Stop()
+		s.turnWatchdog = nil
 	}
 }
 
@@ -542,8 +623,11 @@ type browserObservation struct {
 	URL    string
 	Title  string
 	Text   string
+	HTML   string
 	Path   string
 	Count  int
+	Bytes  int
+	Cut    bool
 }
 
 func summarizeBrowserObservationChain(observations []chat.ChatEvent) string {
@@ -593,11 +677,20 @@ func parseBrowserObservation(evt chat.ChatEvent) browserObservation {
 	if text, ok := payload["text"].(string); ok {
 		obs.Text = strings.TrimSpace(text)
 	}
+	if html, ok := payload["html"].(string); ok {
+		obs.HTML = strings.TrimSpace(html)
+	}
 	if path, ok := payload["path"].(string); ok {
 		obs.Path = strings.TrimSpace(path)
 	}
 	if count, ok := toIntFromAny(payload["count"]); ok {
 		obs.Count = count
+	}
+	if bytes, ok := toIntFromAny(payload["htmlBytes"]); ok {
+		obs.Bytes = bytes
+	}
+	if truncated, ok := payload["truncated"].(bool); ok {
+		obs.Cut = truncated
 	}
 	return obs
 }
@@ -607,6 +700,7 @@ func browserActionFromObservation(evt chat.ChatEvent) string {
 		return action
 	}
 	value := strings.TrimSpace(strings.ToLower(evt.ToolTitle))
+	value = strings.TrimPrefix(value, "9ed-active-browser_")
 	value = strings.TrimPrefix(value, "9ed_browser_")
 	value = strings.TrimPrefix(value, "active_browser_")
 	value = strings.TrimPrefix(value, "browser_")
@@ -664,6 +758,16 @@ func renderBrowserObservationSummary(obs browserObservation) string {
 	case "screenshot":
 		if obs.Path != "" {
 			return "Screenshot browser tersimpan di `" + obs.Path + "`."
+		}
+	case "page_source", "source":
+		if obs.Bytes > 0 {
+			if obs.Cut {
+				return "Page source browser berhasil diambil (`" + intToString(obs.Bytes) + "` bytes, terpotong sesuai limit)."
+			}
+			return "Page source browser berhasil diambil (`" + intToString(obs.Bytes) + "` bytes)."
+		}
+		if obs.HTML != "" {
+			return "Page source browser berhasil diambil."
 		}
 	case "console_logs", "console":
 		if obs.Count > 0 {

@@ -120,11 +120,12 @@ type chatBrowserRunRequest struct {
 	DeltaX    float64  `json:"deltaX,omitempty"`
 	DeltaY    float64  `json:"deltaY,omitempty"`
 	Limit     int      `json:"limit,omitempty"`
+	MaxBytes  int      `json:"maxBytes,omitempty"`
 	TimeoutMS int      `json:"timeoutMs,omitempty"`
 }
 
 func summarizeBrowserRunRequest(req chatBrowserRunRequest) string {
-	parts := make([]string, 0, 8)
+	parts := make([]string, 0, 10)
 	if url := strings.TrimSpace(req.URL); url != "" {
 		parts = append(parts, "url="+truncateBrowserLogValue(url, 120))
 	}
@@ -146,6 +147,9 @@ func summarizeBrowserRunRequest(req chatBrowserRunRequest) string {
 	}
 	if req.Limit > 0 {
 		parts = append(parts, "limit="+strconv.Itoa(req.Limit))
+	}
+	if req.MaxBytes > 0 {
+		parts = append(parts, "maxBytes="+strconv.Itoa(req.MaxBytes))
 	}
 	if req.TimeoutMS > 0 {
 		parts = append(parts, "timeoutMs="+strconv.Itoa(req.TimeoutMS))
@@ -197,6 +201,9 @@ func browserToolRawInput(req chatBrowserRunRequest) string {
 	}
 	if req.Limit > 0 {
 		payload["limit"] = req.Limit
+	}
+	if req.MaxBytes > 0 {
+		payload["maxBytes"] = req.MaxBytes
 	}
 	if req.TimeoutMS > 0 {
 		payload["timeoutMs"] = req.TimeoutMS
@@ -251,6 +258,11 @@ func browserToolOutcome(action string, detail string) string {
 			return "Captured " + detail
 		}
 		return "Captured screenshot"
+	case "page_source", "source":
+		if detail != "" {
+			return "Read " + detail
+		}
+		return "Read page source"
 	case "console_logs", "console":
 		if detail != "" {
 			return "Read " + detail
@@ -266,6 +278,42 @@ func browserToolOutcome(action string, detail string) string {
 			return detail
 		}
 		return "Browser action completed"
+	}
+}
+
+func browserBridgeToolTitle(name string) string {
+	value := strings.TrimSpace(name)
+	if value == "" {
+		return "9ed-active-browser_9ed_browser_unknown"
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "9ed-active-browser_") {
+		return value
+	}
+	if !strings.Contains(value, "_") {
+		value = "9ed_browser_" + value
+	}
+	return "9ed-active-browser_" + value
+}
+
+func browserToolEventContent(action string, detail string, payload any) string {
+	summary := browserToolOutcome(action, detail)
+	if payload == nil {
+		return summary
+	}
+	data, err := json.Marshal(payload)
+	if err != nil || len(data) == 0 {
+		return summary
+	}
+	return summary + "\n\n" + string(data)
+}
+
+func browserPageSourceEventPayload(source browser.PageSourceResult) map[string]any {
+	return map[string]any{
+		"url":       source.URL,
+		"title":     source.Title,
+		"htmlBytes": source.HTMLBytes,
+		"truncated": source.Truncated,
 	}
 }
 
@@ -745,7 +793,7 @@ func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
 	if toolName == "" {
 		toolName = action
 	}
-	payloadSummary := summarizeBrowserRunRequest(req)
+	bridgeToolName := browserBridgeToolTitle(toolName)
 	stream := a.chatStreams.GetOrCreate(req.SessionID, session, a.newChatEventPersister(req.SessionID))
 	a.chatStreams.Touch(req.SessionID)
 	toolCallID := fmt.Sprintf("active-browser-%d", time.Now().UnixNano())
@@ -753,15 +801,16 @@ func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
 	stream.publish(chat.ChatEvent{
 		Type:         "tool_call",
 		ToolCallID:   toolCallID,
-		ToolTitle:    toolName,
+		ToolTitle:    bridgeToolName,
 		ToolKind:     "browser",
 		ToolStatus:   "pending",
 		ToolRawInput: toolRawInput,
 	})
+	payloadSummary := summarizeBrowserRunRequest(req)
 	stream.publish(chat.ChatEvent{
 		Type:         "tool_call_update",
 		ToolCallID:   toolCallID,
-		ToolTitle:    toolName,
+		ToolTitle:    bridgeToolName,
 		ToolStatus:   "in_progress",
 		ToolContent:  browserToolOutcome(action, payloadSummary),
 		ToolRawInput: toolRawInput,
@@ -777,13 +826,13 @@ func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
 		action,
 		payloadSummary,
 	)
-	logOutcome := func(err error, outcome string) {
+	logOutcome := func(err error, outcome string, eventContent string) {
 		waitForInteractiveToolFloor(actionCtx, phaseStartedAt)
 		if err != nil {
 			stream.publish(chat.ChatEvent{
 				Type:         "tool_call_update",
 				ToolCallID:   toolCallID,
-				ToolTitle:    toolName,
+				ToolTitle:    bridgeToolName,
 				ToolStatus:   "failed",
 				ToolContent:  err.Error(),
 				ToolRawInput: toolRawInput,
@@ -805,12 +854,16 @@ func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
+		content := strings.TrimSpace(eventContent)
+		if content == "" {
+			content = browserToolOutcome(action, outcome)
+		}
 		stream.publish(chat.ChatEvent{
 			Type:         "tool_call_update",
 			ToolCallID:   toolCallID,
-			ToolTitle:    toolName,
+			ToolTitle:    bridgeToolName,
 			ToolStatus:   "completed",
-			ToolContent:  browserToolOutcome(action, outcome),
+			ToolContent:  content,
 			ToolRawInput: toolRawInput,
 		})
 		debug.BrowserMCPLog(
@@ -831,112 +884,141 @@ func (a *API) handleChatBrowserRun(w http.ResponseWriter, r *http.Request) {
 	case "goto", "navigate":
 		result, err := a.browser.TabNavigate(actionCtx, tabID, req.URL)
 		if err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		logOutcome(nil, "url="+truncateBrowserLogValue(result.URL, 120))
+		outcome := "url=" + truncateBrowserLogValue(result.URL, 120)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, result))
 		writeJSON(w, http.StatusOK, result)
 	case "click":
 		if err := a.browser.TabClick(actionCtx, tabID, req.Selector, req.X, req.Y); err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
 		if inspectErr != nil {
-			logOutcome(nil, "clicked")
-			writeJSON(w, http.StatusOK, map[string]string{"status": "clicked"})
+			payload := map[string]string{"status": "clicked"}
+			logOutcome(nil, "clicked", browserToolEventContent(action, "clicked", payload))
+			writeJSON(w, http.StatusOK, payload)
 			return
 		}
-		logOutcome(nil, "clicked title="+truncateBrowserLogValue(result.Title, 80))
+		outcome := "clicked title=" + truncateBrowserLogValue(result.Title, 80)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, result))
 		writeJSON(w, http.StatusOK, result)
 	case "type":
 		if err := a.browser.TabType(actionCtx, tabID, req.Selector, req.Text); err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
 		if inspectErr != nil {
-			logOutcome(nil, "typed")
-			writeJSON(w, http.StatusOK, map[string]string{"status": "typed"})
+			payload := map[string]string{"status": "typed"}
+			logOutcome(nil, "typed", browserToolEventContent(action, "typed", payload))
+			writeJSON(w, http.StatusOK, payload)
 			return
 		}
-		logOutcome(nil, "typed title="+truncateBrowserLogValue(result.Title, 80))
+		outcome := "typed title=" + truncateBrowserLogValue(result.Title, 80)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, result))
 		writeJSON(w, http.StatusOK, result)
 	case "press":
 		if err := a.browser.TabPress(actionCtx, tabID, req.Key); err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
 		if inspectErr != nil {
-			logOutcome(nil, "pressed")
-			writeJSON(w, http.StatusOK, map[string]string{"status": "pressed"})
+			payload := map[string]string{"status": "pressed"}
+			logOutcome(nil, "pressed", browserToolEventContent(action, "pressed", payload))
+			writeJSON(w, http.StatusOK, payload)
 			return
 		}
-		logOutcome(nil, "pressed title="+truncateBrowserLogValue(result.Title, 80))
+		outcome := "pressed title=" + truncateBrowserLogValue(result.Title, 80)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, result))
 		writeJSON(w, http.StatusOK, result)
 	case "scroll":
 		if err := a.browser.TabScroll(actionCtx, tabID, req.DeltaX, req.DeltaY); err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		result, inspectErr := a.browser.TabInspect(actionCtx, tabID)
 		if inspectErr != nil {
-			logOutcome(nil, "scrolled")
-			writeJSON(w, http.StatusOK, map[string]string{"status": "scrolled"})
+			payload := map[string]string{"status": "scrolled"}
+			logOutcome(nil, "scrolled", browserToolEventContent(action, "scrolled", payload))
+			writeJSON(w, http.StatusOK, payload)
 			return
 		}
-		logOutcome(nil, "scrolled title="+truncateBrowserLogValue(result.Title, 80))
+		outcome := "scrolled title=" + truncateBrowserLogValue(result.Title, 80)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, result))
 		writeJSON(w, http.StatusOK, result)
 	case "inspect":
 		result, err := a.browser.TabInspect(actionCtx, tabID)
 		if err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		logOutcome(nil, "title="+truncateBrowserLogValue(result.Title, 80))
+		outcome := "title=" + truncateBrowserLogValue(result.Title, 80)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, result))
 		writeJSON(w, http.StatusOK, result)
 	case "screenshot":
 		data, err := a.browser.TabScreenshot(actionCtx, tabID)
 		if err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		path, err := saveBrowserCapture("active-browser", data)
 		if err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		logOutcome(nil, "path="+truncateBrowserLogValue(path, 120))
-		writeJSON(w, http.StatusOK, map[string]string{"path": path, "mimeType": "image/png"})
+		payload := map[string]string{"path": path, "mimeType": "image/png"}
+		outcome := "path=" + truncateBrowserLogValue(path, 120)
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, payload))
+		writeJSON(w, http.StatusOK, payload)
+	case "page_source", "source":
+		source, err := a.browser.TabPageSource(actionCtx, tabID, req.MaxBytes)
+		if err != nil {
+			logOutcome(err, "", "")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		outcome := fmt.Sprintf("htmlBytes=%d", source.HTMLBytes)
+		if source.Truncated {
+			outcome += " truncated"
+		}
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, browserPageSourceEventPayload(source)))
+		writeJSON(w, http.StatusOK, source)
 	case "console_logs", "console":
 		logs, err := a.browser.TabConsoleLogs(tabID, req.Limit)
 		if err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		logOutcome(nil, fmt.Sprintf("entries=%d", len(logs)))
-		writeJSON(w, http.StatusOK, map[string]any{"entries": logs, "count": len(logs)})
+		payload := map[string]any{"entries": logs, "count": len(logs)}
+		outcome := fmt.Sprintf("entries=%d", len(logs))
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, map[string]any{"count": len(logs)}))
+		writeJSON(w, http.StatusOK, payload)
 	case "network_requests", "network":
 		entries, err := a.browser.TabNetworkRequests(tabID, req.Limit)
 		if err != nil {
-			logOutcome(err, "")
+			logOutcome(err, "", "")
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		logOutcome(nil, fmt.Sprintf("entries=%d", len(entries)))
-		writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries)})
+		payload := map[string]any{"entries": entries, "count": len(entries)}
+		outcome := fmt.Sprintf("entries=%d", len(entries))
+		logOutcome(nil, outcome, browserToolEventContent(action, outcome, map[string]any{"count": len(entries)}))
+		writeJSON(w, http.StatusOK, payload)
 	default:
-		logOutcome(fmt.Errorf("unsupported browser action: %s", req.Action), "")
+		logOutcome(fmt.Errorf("unsupported browser action: %s", req.Action), "", "")
 		http.Error(w, "unsupported browser action: "+req.Action, http.StatusBadRequest)
 	}
 }

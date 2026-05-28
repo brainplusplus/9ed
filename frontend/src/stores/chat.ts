@@ -838,24 +838,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessionState.session?.updatedAt ?? 0,
         session.lastEventAt ?? 0,
       );
-      const refreshedStatus = replayed.terminalState === 'idle' || replayed.terminalState === 'error' || sessionState.session?.status === 'closed'
-        ? 'idle'
-        : session.status;
+      const streamClosed = replayed.terminalState === 'idle' || sessionState.session?.status === 'closed';
+      const streamErrored = replayed.terminalState === 'error';
       set((state) => ({
-        sessions: updateSession(state.sessions, session.id, (s) => ({
-          ...s,
-          title: replayed.title ?? s.title,
-          messages: replayed.messages.length > 0 ? replayed.messages : s.messages,
-          commands: replayed.commands ?? snapshotCommands ?? s.commands,
-          configOptions: replayed.configOptions ?? snapshotConfig ?? s.configOptions,
-          contextWindow: replayed.contextWindow ?? s.contextWindow,
-          contextUsed: replayed.contextUsed ?? s.contextUsed,
-          costAmount: replayed.costAmount ?? s.costAmount,
-          costCurrency: replayed.costCurrency ?? s.costCurrency,
-          status: refreshedStatus,
-          stalled: false,
-          lastEventAt: refreshedLastEventAt || s.lastEventAt,
-        })),
+        sessions: updateSession(state.sessions, session.id, (s) => {
+          let nextStatus = s.status;
+          if (streamErrored && s.status === 'streaming') {
+            nextStatus = 'error';
+          } else if (streamClosed && s.status === 'streaming') {
+            nextStatus = 'idle';
+          }
+          return {
+            ...s,
+            title: replayed.title ?? s.title,
+            messages: replayed.messages.length > 0 ? replayed.messages : s.messages,
+            commands: replayed.commands ?? snapshotCommands ?? s.commands,
+            configOptions: replayed.configOptions ?? snapshotConfig ?? s.configOptions,
+            contextWindow: replayed.contextWindow ?? s.contextWindow,
+            contextUsed: replayed.contextUsed ?? s.contextUsed,
+            costAmount: replayed.costAmount ?? s.costAmount,
+            costCurrency: replayed.costCurrency ?? s.costCurrency,
+            status: nextStatus,
+            pendingPermission: nextStatus === 'streaming' ? s.pendingPermission : undefined,
+            stalled: false,
+            lastEventAt: refreshedLastEventAt || s.lastEventAt,
+          };
+        }),
       }));
     } catch {
     }

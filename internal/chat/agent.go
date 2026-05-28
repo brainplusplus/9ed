@@ -204,6 +204,12 @@ type promptCompletion struct {
 	result *acp.SessionPromptResult
 }
 
+type acpToolMeta struct {
+	title    string
+	kind     acp.ToolKind
+	rawInput json.RawMessage
+}
+
 type acpSession struct {
 	id                 string
 	agentID            string
@@ -231,6 +237,7 @@ type acpSession struct {
 	resumed            bool
 	terminals          map[string]*acpTerminal
 	routedToolCalls    map[string]bool
+	toolMeta           map[string]acpToolMeta
 }
 
 func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (*acpSession, error) {
@@ -285,6 +292,7 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, o
 		activeBrowserTabID: opts.ActiveBrowserTabID,
 		terminals:          make(map[string]*acpTerminal),
 		routedToolCalls:    make(map[string]bool),
+		toolMeta:           make(map[string]acpToolMeta),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -348,6 +356,7 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		resumed:            true,
 		terminals:          make(map[string]*acpTerminal),
 		routedToolCalls:    make(map[string]bool),
+		toolMeta:           make(map[string]acpToolMeta),
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -485,6 +494,9 @@ func (s *acpSession) clearToolRecovery() {
 
 func (s *acpSession) scheduleToolRecovery(title string) {
 	if !isInteractiveMCPToolTitle(title) {
+		return
+	}
+	if isBrowserToolCallTitle(title) {
 		return
 	}
 	s.turnMu.Lock()
@@ -676,8 +688,12 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 		s.clearToolRecovery()
 		var update acp.ToolCallUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
+			s.rememberToolMeta(update.ToolCallID, update.Title, update.Kind, update.RawInput)
 			if s.useActiveBrowser && isBrowserToolCallTitle(update.Title) {
 				debug.BrowserMCPLog("agent", "info", "tool call session=%s tab=%s id=%s title=%s status=%s input=%s", s.sessionID, s.activeBrowserTabID, update.ToolCallID, update.Title, update.Status, summarizeToolRawJSON(update.RawInput))
+				// Browser tool events are bridged by /api/chat/browser/run as the
+				// canonical stream source to avoid duplicated tool cards.
+				return
 			}
 			if s.redirectToolCallToActiveTerminal(update) {
 				return
@@ -703,8 +719,14 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 	case acp.UpdateToolCallUpdate:
 		var update acp.ToolCallStatusUpdate
 		if jsonUnmarshal(params.Update, &update) == nil {
+			s.applyRememberedToolMeta(&update)
 			if s.useActiveBrowser && isBrowserToolCallTitle(update.Title) {
 				debug.BrowserMCPLog("agent", "info", "tool update session=%s tab=%s id=%s title=%s status=%s input=%s", s.sessionID, s.activeBrowserTabID, update.ToolCallID, update.Title, update.Status, summarizeToolRawJSON(update.RawInput))
+				s.clearToolRecovery()
+				if update.Status == acp.ToolStatusCompleted || update.Status == acp.ToolStatusFailed {
+					delete(s.toolMeta, update.ToolCallID)
+				}
+				return
 			}
 			if update.Status != acp.ToolStatusCompleted && update.Status != acp.ToolStatusFailed {
 				tool := acp.ToolCallUpdate{
@@ -750,6 +772,7 @@ func (s *acpSession) handleNotification(notif *acp.Notification) {
 			}
 			s.events <- evt
 			if update.Status == acp.ToolStatusCompleted || update.Status == acp.ToolStatusFailed {
+				delete(s.toolMeta, update.ToolCallID)
 				s.scheduleToolRecovery(update.Title)
 			} else {
 				s.clearToolRecovery()
@@ -1059,7 +1082,47 @@ func commandFromToolCall(tool acp.ToolCallUpdate) string {
 
 func isBrowserToolCallTitle(title string) bool {
 	value := strings.TrimSpace(strings.ToLower(title))
-	return strings.HasPrefix(value, "9ed_browser_") || strings.HasPrefix(value, "active_browser_") || strings.HasPrefix(value, "browser_")
+	return strings.HasPrefix(value, "9ed_browser_") ||
+		strings.HasPrefix(value, "9ed-active-browser_") ||
+		strings.HasPrefix(value, "active_browser_") ||
+		strings.HasPrefix(value, "browser_")
+}
+
+func (s *acpSession) rememberToolMeta(toolCallID, title string, kind acp.ToolKind, rawInput json.RawMessage) {
+	if strings.TrimSpace(toolCallID) == "" {
+		return
+	}
+	meta := s.toolMeta[toolCallID]
+	if strings.TrimSpace(title) != "" {
+		meta.title = title
+	}
+	if strings.TrimSpace(string(kind)) != "" {
+		meta.kind = kind
+	}
+	if len(rawInput) > 0 {
+		meta.rawInput = append(json.RawMessage(nil), rawInput...)
+	}
+	s.toolMeta[toolCallID] = meta
+}
+
+func (s *acpSession) applyRememberedToolMeta(update *acp.ToolCallStatusUpdate) {
+	if update == nil || strings.TrimSpace(update.ToolCallID) == "" {
+		return
+	}
+	s.rememberToolMeta(update.ToolCallID, update.Title, update.Kind, update.RawInput)
+	meta, ok := s.toolMeta[update.ToolCallID]
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(update.Title) == "" {
+		update.Title = meta.title
+	}
+	if strings.TrimSpace(string(update.Kind)) == "" {
+		update.Kind = meta.kind
+	}
+	if len(update.RawInput) == 0 && len(meta.rawInput) > 0 {
+		update.RawInput = append(json.RawMessage(nil), meta.rawInput...)
+	}
 }
 
 func isInteractiveMCPToolTitle(title string) bool {

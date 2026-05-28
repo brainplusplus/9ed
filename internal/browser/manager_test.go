@@ -268,6 +268,36 @@ func TestCopyTelemetryLogsHonorsLimit(t *testing.T) {
 	}
 }
 
+func TestResolvePageSourceLimit(t *testing.T) {
+	if got := resolvePageSourceLimit(0); got != defaultPageSourceMaxBytes {
+		t.Fatalf("resolvePageSourceLimit(0) = %d, want %d", got, defaultPageSourceMaxBytes)
+	}
+	if got := resolvePageSourceLimit(-1); got != defaultPageSourceMaxBytes {
+		t.Fatalf("resolvePageSourceLimit(-1) = %d, want %d", got, defaultPageSourceMaxBytes)
+	}
+	if got := resolvePageSourceLimit(maxPageSourceMaxBytes + 1); got != maxPageSourceMaxBytes {
+		t.Fatalf("resolvePageSourceLimit(max+1) = %d, want %d", got, maxPageSourceMaxBytes)
+	}
+	if got := resolvePageSourceLimit(12345); got != 12345 {
+		t.Fatalf("resolvePageSourceLimit(12345) = %d, want 12345", got)
+	}
+}
+
+func TestTruncateUTF8ByBytes(t *testing.T) {
+	source := "halo🙂dunia"
+	truncated, clipped := truncateUTF8ByBytes(source, 7)
+	if !clipped {
+		t.Fatal("expected clipped=true")
+	}
+	if truncated != "halo" {
+		t.Fatalf("truncateUTF8ByBytes produced invalid boundary result %q", truncated)
+	}
+	full, clippedFull := truncateUTF8ByBytes(source, 100)
+	if clippedFull || full != source {
+		t.Fatalf("expected full source unchanged, got %q clipped=%v", full, clippedFull)
+	}
+}
+
 func TestResolveTelemetryLimit(t *testing.T) {
 	if got := resolveTelemetryLimit(0); got != defaultTelemetryReadLimit {
 		t.Fatalf("resolveTelemetryLimit(0) = %d, want %d", got, defaultTelemetryReadLimit)

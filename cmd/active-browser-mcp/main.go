@@ -89,6 +89,7 @@ func handle(req rpcRequest) any {
 
 func browserTools() []map[string]any {
 	timeout := numberProp("Maximum time to wait for this browser action, in milliseconds. Default 15000, max 60000.")
+	maxBytes := numberProp("Maximum source bytes to return for page source (default 200000, max 600000).")
 	return []map[string]any{
 		{
 			"name":        "9ed_browser_goto",
@@ -122,8 +123,13 @@ func browserTools() []map[string]any {
 		},
 		{
 			"name":        "9ed_browser_screenshot",
-			"description": "Capture a screenshot of the active 9ed WebRTC browser tab and return the local image path.",
+			"description": "Capture a screenshot of the active 9ed WebRTC browser tab and return the local image path. Use this only when visual evidence is required (UI verification, debug artifact, or image analysis). Prefer inspect/page source for normal navigation and text extraction tasks.",
 			"inputSchema": schema(map[string]any{"timeoutMs": timeout}, []string{}),
+		},
+		{
+			"name":        "9ed_browser_page_source",
+			"description": "Read current page HTML source from the active 9ed WebRTC browser tab. Use this to inspect DOM/page structure when selectors are uncertain.",
+			"inputSchema": schema(map[string]any{"maxBytes": maxBytes, "timeoutMs": timeout}, []string{}),
 		},
 		{
 			"name":        "9ed_browser_console_logs",
@@ -169,7 +175,10 @@ func callTool(raw json.RawMessage) any {
 
 func browserDecisionHint(action string) string {
 	switch strings.TrimSpace(strings.ToLower(action)) {
-	case "inspect", "console_logs", "network_requests", "screenshot":
+	case "inspect", "console_logs", "network_requests", "screenshot", "page_source", "source":
+		if action == "screenshot" {
+			return "Decision: sufficient_to_answer=true. Only use screenshot when visual proof/debug is required. If text/DOM evidence is enough, avoid more screenshots and answer now."
+		}
 		return "Decision: sufficient_to_answer=true. If this observation already satisfies the user's request, answer now and avoid extra browser tool calls."
 	case "goto", "navigate", "click", "type", "press", "scroll":
 		return "Decision: sufficient_to_answer=false. Continue with one minimal follow-up browser observation/action only if needed to answer the user."
@@ -194,6 +203,8 @@ func mapToolAction(name string) string {
 		return "inspect"
 	case "9ed_browser_screenshot", "active_browser_screenshot", "browser_screenshot":
 		return "screenshot"
+	case "9ed_browser_page_source", "9ed_browser_source", "active_browser_page_source", "browser_page_source", "active_browser_source", "browser_source":
+		return "page_source"
 	case "9ed_browser_console_logs", "9ed_browser_console", "active_browser_console_logs", "browser_console_logs", "active_browser_console":
 		return "console_logs"
 	case "9ed_browser_network_requests", "9ed_browser_network", "active_browser_network_requests", "browser_network_requests", "active_browser_network":

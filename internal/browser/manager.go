@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	playwright "github.com/playwright-community/playwright-go"
@@ -51,6 +52,14 @@ type InspectResult struct {
 	Title     string `json:"title"`
 	Text      string `json:"text"`
 	TextBytes int    `json:"textBytes"`
+}
+
+type PageSourceResult struct {
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	HTML      string `json:"html"`
+	HTMLBytes int    `json:"htmlBytes"`
+	Truncated bool   `json:"truncated"`
 }
 
 type ConsoleEntry struct {
@@ -115,6 +124,8 @@ const (
 	telemetryBufferSize                  = 400
 	defaultTelemetryReadLimit            = 60
 	maxTelemetryReadLimit                = 400
+	defaultPageSourceMaxBytes            = 200000
+	maxPageSourceMaxBytes                = 600000
 	automationDefaultTimeoutMs           = 15000.0
 	automationDefaultNavigationTimeoutMs = 20000.0
 	automationScreenshotTimeoutMs        = 8000.0
@@ -554,6 +565,32 @@ func (m *Manager) TabInspect(ctx context.Context, id string) (InspectResult, err
 	}
 	defer release()
 	return inspectPage(page)
+}
+
+func (m *Manager) TabPageSource(ctx context.Context, id string, maxBytes int) (PageSourceResult, error) {
+	page, release, err := m.acquireTabPage(ctx, id)
+	if err != nil {
+		return PageSourceResult{}, err
+	}
+	defer release()
+
+	content, err := page.Content()
+	if err != nil {
+		m.recoverBrowserRuntimeLocked(id, err)
+		return PageSourceResult{}, err
+	}
+	title, titleErr := page.Title()
+	if titleErr != nil {
+		title = ""
+	}
+	html, truncated := truncateUTF8ByBytes(content, resolvePageSourceLimit(maxBytes))
+	return PageSourceResult{
+		URL:       strings.TrimSpace(page.URL()),
+		Title:     strings.TrimSpace(title),
+		HTML:      html,
+		HTMLBytes: len([]byte(content)),
+		Truncated: truncated,
+	}, nil
 }
 
 func (m *Manager) TabNavigate(ctx context.Context, id string, rawURL string) (InspectResult, error) {
@@ -1879,6 +1916,28 @@ func resolveTelemetryLimit(limit int) int {
 		return maxTelemetryReadLimit
 	}
 	return limit
+}
+
+func resolvePageSourceLimit(limit int) int {
+	if limit <= 0 {
+		return defaultPageSourceMaxBytes
+	}
+	if limit > maxPageSourceMaxBytes {
+		return maxPageSourceMaxBytes
+	}
+	return limit
+}
+
+func truncateUTF8ByBytes(value string, maxBytes int) (string, bool) {
+	raw := []byte(value)
+	if maxBytes <= 0 || len(raw) <= maxBytes {
+		return value, false
+	}
+	clipped := raw[:maxBytes]
+	for len(clipped) > 0 && !utf8.Valid(clipped) {
+		clipped = clipped[:len(clipped)-1]
+	}
+	return string(clipped), true
 }
 
 func effectiveBrowserURL(current string, fallback string) string {

@@ -38,6 +38,7 @@ function ToolCallStatusIcon({ status }: { status: string }) {
 export function displayToolTitle(title: string): string {
   const value = title.trim();
   if (!value) return 'Tool step';
+  const normalized = value.replace(/^9ed-active-browser_/, '');
   const mapped: Record<string, string> = {
     '9ed_browser_goto': '9ed_browser_goto',
     '9ed_browser_click': '9ed_browser_click',
@@ -60,7 +61,7 @@ export function displayToolTitle(title: string): string {
     active_terminal_run: 'active_terminal_run',
     active_terminal_read: 'active_terminal_read',
   };
-  return mapped[value] ?? value.replace(/^active_/, '').replace(/_/g, ' ');
+  return mapped[normalized] ?? normalized.replace(/^active_/, '').replace(/_/g, ' ');
 }
 
 export function describeToolInput(tc: import('../../types').ToolCallInfo): string | null {

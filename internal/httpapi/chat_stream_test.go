@@ -63,6 +63,33 @@ func TestChatStreamEmitsSessionClosedDoneAfterNewTurn(t *testing.T) {
 	}
 }
 
+func TestChatStreamWatchdogRecoversTurnWithoutToolEvents(t *testing.T) {
+	originalInactivity := interactiveTurnInactivityTimeout
+	interactiveTurnInactivityTimeout = 40 * time.Millisecond
+	defer func() {
+		interactiveTurnInactivityTimeout = originalInactivity
+	}()
+
+	session := &fakeChatSession{
+		events: make(chan chat.ChatEvent, 2),
+		done:   make(chan struct{}),
+	}
+	stream := newChatStream("session-1", session, nil, nil)
+	stream.Start()
+
+	sub := stream.Subscribe()
+	defer stream.Unsubscribe(sub)
+
+	stream.StartTurn()
+	done := readChatEventTimeout(t, sub.C, 250*time.Millisecond)
+	if done.Type != "done" || done.StopReason != "turn_inactivity_timeout_stream" {
+		t.Fatalf("expected inactivity recovery done, got %#v", done)
+	}
+	if session.cancelCalls != 1 {
+		t.Fatalf("expected cancel to be invoked once, got %d", session.cancelCalls)
+	}
+}
+
 func TestChatStreamRegistryLatestTracksTouchedStream(t *testing.T) {
 	registry := newChatStreamRegistry()
 	sessionA := &fakeChatSession{events: make(chan chat.ChatEvent), done: make(chan struct{})}
