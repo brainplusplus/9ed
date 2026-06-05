@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/brainplusplus/9ed/internal/chat/acpinstall"
 	"github.com/brainplusplus/9ed/internal/config"
 	"github.com/brainplusplus/9ed/internal/debug"
 	"github.com/brainplusplus/9ed/internal/server"
@@ -38,6 +39,9 @@ func main() {
 	go func() {
 		serverErrCh <- srv.ListenAndServe()
 	}()
+
+	// Update installed ACP adapters in background on startup
+	go acpinstall.UpdateAllInstalled()
 
 	waitForPortListening(cfg.Port, 5*time.Second)
 

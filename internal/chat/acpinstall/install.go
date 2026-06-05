@@ -2,8 +2,10 @@ package acpinstall
 
 import (
 	"fmt"
+	"log"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -90,6 +92,54 @@ func Update(agentID string) error {
 	return install(info)
 }
 
+// UpdateAllInstalled checks all known adapters and updates the ones already installed.
+// Runs updates concurrently. Logs progress to stdout.
+func UpdateAllInstalled() {
+	var wg sync.WaitGroup
+
+	// Special case: opencode uses its own upgrade command
+	if _, err := exec.LookPath("opencode"); err == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Printf("[acpinstall] updating opencode (opencode upgrade)...")
+			cmd := exec.Command("opencode", "upgrade")
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				log.Printf("[acpinstall] update opencode failed: %v: %s", err, strings.TrimSpace(string(output)))
+			} else {
+				log.Printf("[acpinstall] opencode updated")
+			}
+		}()
+	}
+
+	for _, info := range adapters {
+		if _, err := exec.LookPath(info.BinaryName); err != nil {
+			continue // not installed, skip
+		}
+
+		wg.Add(1)
+		go func(info AdapterInfo) {
+			defer wg.Done()
+			log.Printf("[acpinstall] updating %s (%s)...", info.ID, info.Package)
+			if err := updateOne(&info); err != nil {
+				log.Printf("[acpinstall] update %s failed: %v", info.ID, err)
+			} else {
+				log.Printf("[acpinstall] %s updated", info.ID)
+			}
+		}(info)
+	}
+
+	wg.Wait()
+}
+
+func updateOne(info *AdapterInfo) error {
+	installMu.Lock()
+	defer installMu.Unlock()
+
+	return install(info)
+}
+
 func install(info *AdapterInfo) error {
 	switch info.Manager {
 	case "npm":
@@ -113,7 +163,11 @@ func npmInstallGlobal(pkg string) error {
 	} else {
 		cmd = exec.Command(npm, "install", "-g", pkg)
 	}
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func pipInstall(pkg string) error {
@@ -124,5 +178,9 @@ func pipInstall(pkg string) error {
 		}
 	}
 	cmd := exec.Command(pip, "install", "--upgrade", pkg)
-	return cmd.Run()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
