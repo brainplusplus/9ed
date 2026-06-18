@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -24,6 +26,8 @@ type Adapter struct {
 	cmd    *exec.Cmd
 	client *Client
 
+	stderr *cappedBuffer
+
 	sessionID     string
 	agentInfo     ImplementationInfo
 	agentCaps     AgentCapabilities
@@ -38,7 +42,8 @@ func NewAdapter(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	cmd.Dir = cfg.WorkDir
 	cmd.Env = append(os.Environ(), cfg.Env...)
-	cmd.Stderr = os.Stderr
+	stderr := &cappedBuffer{max: 8 * 1024}
+	cmd.Stderr = io.MultiWriter(os.Stderr, stderr)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -59,11 +64,12 @@ func NewAdapter(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 		cfg:    cfg,
 		cmd:    cmd,
 		client: client,
+		stderr: stderr,
 	}
 
 	if err := a.initialize(ctx); err != nil {
 		_ = a.Close()
-		return nil, fmt.Errorf("initialize: %w", err)
+		return nil, fmt.Errorf("initialize: %w%s", err, stderr.suffix())
 	}
 
 	return a, nil
@@ -292,4 +298,40 @@ func (a *Adapter) Close() error {
 		_ = a.cmd.Wait()
 	}
 	return nil
+}
+
+// cappedBuffer is a thread-safe writer that retains at most max bytes of the
+// most recent output. It is used to capture a subprocess's stderr tail so that
+// fatal startup messages (e.g. a corrupted Bun/npm global install) can be
+// surfaced in the returned error instead of being lost to os.Stderr only.
+type cappedBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.buf = append(c.buf, p...)
+	if c.max > 0 && len(c.buf) > c.max {
+		c.buf = c.buf[len(c.buf)-c.max:]
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.buf)
+}
+
+// suffix returns the captured stderr formatted for appending to an error
+// message, or an empty string when nothing was captured.
+func (c *cappedBuffer) suffix() string {
+	s := strings.TrimSpace(c.String())
+	if s == "" {
+		return ""
+	}
+	return ": " + s
 }

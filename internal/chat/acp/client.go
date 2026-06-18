@@ -86,7 +86,13 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		return nil, ctx.Err()
 	case <-c.done:
 		return nil, c.getErr()
-	case resp := <-respCh:
+	case resp, ok := <-respCh:
+		// Channel is closed (and drained) when the read loop exits, e.g. the
+		// agent subprocess died. A closed channel yields a nil *Response, so
+		// guard against it to avoid a nil pointer dereference.
+		if !ok || resp == nil {
+			return nil, c.getErr()
+		}
 		if resp.Error != nil {
 			return nil, resp.Error
 		}

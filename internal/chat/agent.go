@@ -131,15 +131,35 @@ type AgentDescriptor struct {
 	ACPInstallable bool     `json:"acpInstallable,omitempty"`
 }
 
-var activeTerminalMCPServers []acp.MCPServer
-var activeBrowserMCPServers []acp.MCPServer
+// activeMCPServersMu guards the active terminal/browser MCP server lists so
+// callers from different goroutines (HTTP handlers, ACP session spawns,
+// startup configuration) cannot race on these slices.
+var (
+	activeMCPServersMu       sync.RWMutex
+	activeTerminalMCPServers []acp.MCPServer
+	activeBrowserMCPServers  []acp.MCPServer
+)
 
 func SetActiveTerminalMCPServers(servers []acp.MCPServer) {
-	activeTerminalMCPServers = servers
+	activeMCPServersMu.Lock()
+	defer activeMCPServersMu.Unlock()
+	activeTerminalMCPServers = append(activeTerminalMCPServers[:0:0], servers...)
 }
 
 func SetActiveBrowserMCPServers(servers []acp.MCPServer) {
-	activeBrowserMCPServers = servers
+	activeMCPServersMu.Lock()
+	defer activeMCPServersMu.Unlock()
+	activeBrowserMCPServers = append(activeBrowserMCPServers[:0:0], servers...)
+}
+
+// snapshotActiveMCPServers returns a copy of the current MCP server slices
+// under a read lock. Callers must not mutate the returned slices.
+func snapshotActiveMCPServers() (terminal, browser []acp.MCPServer) {
+	activeMCPServersMu.RLock()
+	defer activeMCPServersMu.RUnlock()
+	terminal = append(terminal, activeTerminalMCPServers...)
+	browser = append(browser, activeBrowserMCPServers...)
+	return terminal, browser
 }
 
 type SessionOptions struct {
@@ -150,14 +170,109 @@ type SessionOptions struct {
 }
 
 func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
-	servers := make([]acp.MCPServer, 0, len(activeTerminalMCPServers)+len(activeBrowserMCPServers))
+	terminalServers, browserServers := snapshotActiveMCPServers()
+	servers := make([]acp.MCPServer, 0, len(terminalServers)+len(browserServers))
 	if opts.UseActiveTerminal {
-		servers = append(servers, activeTerminalMCPServers...)
+		servers = append(servers, terminalServers...)
 	}
 	// Keep browser MCP tools always registered so runtime browser toggle does not
 	// produce "invalid tool" errors on already-connected ACP sessions.
-	servers = append(servers, activeBrowserMCPServers...)
+	servers = append(servers, browserServers...)
 	return servers
+}
+
+// newAdapterWithHeal spawns an ACP adapter with resilience against concurrent
+// updates and corrupted installs.
+//
+// Strategy:
+//  1. If a background update is in progress for this adapter, wait for it to
+//     finish before attempting to spawn (avoids "file busy" / "remap" errors).
+//  2. If spawn fails with a corruption error, force-reinstall and retry with
+//     exponential backoff (up to 3 attempts).
+//  3. Between retries, check again whether a background update is running.
+//
+// This handles all adapters (opencode, claude, codex, etc.) uniformly.
+func newAdapterWithHeal(ctx context.Context, agentID string, cfg acp.AdapterConfig) (*acp.Adapter, error) {
+	// If a background update is in progress for this adapter, wait for it
+	// to finish before trying to spawn. This prevents the common case of
+	// "spawn fails because binary is being replaced".
+	if acpinstall.IsUpdating(agentID) {
+		debug.Printf("[acpinstall] %s is being updated, waiting before spawn...", agentID)
+		if !acpinstall.WaitForUpdate(ctx, agentID) {
+			return nil, fmt.Errorf("spawn %s cancelled while waiting for update: %w", agentID, ctx.Err())
+		}
+		debug.Printf("[acpinstall] %s update finished, proceeding with spawn", agentID)
+	}
+
+	adapter, err := acp.NewAdapter(ctx, cfg)
+	if err == nil {
+		return adapter, nil
+	}
+
+	if !acpinstall.IsCorruptInstallError(err) {
+		return nil, err
+	}
+
+	// Retry up to 3 times with increasing delay.
+	// This handles the case where a background UpdateAllInstalled() is still
+	// running and the binary is temporarily unavailable.
+	const maxRetries = 3
+	delays := []time.Duration{1 * time.Second, 3 * time.Second, 5 * time.Second}
+	originalErr := err
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		debug.Printf("[acpinstall] spawn %s failed (attempt %d/%d, corrupt install detected), repairing...", agentID, attempt+1, maxRetries)
+
+		// If a background update started between our attempts, wait for it
+		// instead of fighting over the binary.
+		if acpinstall.IsUpdating(agentID) {
+			debug.Printf("[acpinstall] %s update in progress, waiting...", agentID)
+			if !acpinstall.WaitForUpdate(ctx, agentID) {
+				return nil, fmt.Errorf("auto-repair %s cancelled while waiting for update: %w (original: %v)", agentID, ctx.Err(), originalErr)
+			}
+			// Update finished — try spawn directly without repair.
+			adapter, err = acp.NewAdapter(ctx, cfg)
+			if err == nil {
+				return adapter, nil
+			}
+			if !acpinstall.IsCorruptInstallError(err) {
+				return nil, err
+			}
+		}
+
+		repaired, repairErr := acpinstall.RepairIfCorrupt(agentID, err)
+		if !repaired {
+			return nil, err
+		}
+		if repairErr != nil {
+			debug.Printf("[acpinstall] repair %s failed on attempt %d: %v", agentID, attempt+1, repairErr)
+			select {
+			case <-time.After(delays[attempt]):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("auto-repair %s cancelled: %w (original: %v)", agentID, ctx.Err(), originalErr)
+			}
+			continue
+		}
+
+		// Wait after repair to let file system operations settle (especially on Windows).
+		select {
+		case <-time.After(delays[attempt]):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("auto-repair %s cancelled: %w (original: %v)", agentID, ctx.Err(), originalErr)
+		}
+
+		debug.Printf("[acpinstall] repaired corrupted install for %s, retrying spawn (attempt %d/%d)", agentID, attempt+1, maxRetries)
+		adapter, err = acp.NewAdapter(ctx, cfg)
+		if err == nil {
+			return adapter, nil
+		}
+
+		if !acpinstall.IsCorruptInstallError(err) {
+			return nil, err
+		}
+	}
+
+	return nil, fmt.Errorf("auto-repair %s exhausted %d retries: %w (original: %v)", agentID, maxRetries, err, originalErr)
 }
 
 // NewChatSession creates a ChatSession using ACP if supported, falling back to PTY.
@@ -240,6 +355,20 @@ type acpSession struct {
 	toolMeta           map[string]acpToolMeta
 }
 
+// registryEnvForAgent returns env entries (in KEY=VALUE form) configured by
+// the ACP registry for the resolved binary distribution of an adapter, or nil.
+func registryEnvForAgent(agentID string) []string {
+	_, _, env := acpinstall.IsolatedBinarySpec(agentID)
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
 func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (*acpSession, error) {
 	if workDir == "" {
 		workDir = currentWorkingDirectory()
@@ -256,10 +385,11 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, o
 		Command:    acpCommand,
 		Args:       agent.ACPArgs,
 		WorkDir:    workDir,
+		Env:        registryEnvForAgent(agent.ID),
 		MCPServers: activeMCPServersForOptions(opts),
 	}
 
-	adapter, err := acp.NewAdapter(acpCtx, cfg)
+	adapter, err := newAdapterWithHeal(acpCtx, agent.ID, cfg)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -319,10 +449,11 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		Command:    acpCommand,
 		Args:       agent.ACPArgs,
 		WorkDir:    workDir,
+		Env:        registryEnvForAgent(agent.ID),
 		MCPServers: activeMCPServersForOptions(opts),
 	}
 
-	adapter, err := acp.NewAdapter(acpCtx, cfg)
+	adapter, err := newAdapterWithHeal(acpCtx, agent.ID, cfg)
 	if err != nil {
 		cancel()
 		return nil, err

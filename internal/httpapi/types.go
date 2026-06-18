@@ -26,6 +26,15 @@ type wsOutboundMessage struct {
 
 type writeFileRequest struct {
 	Content string `json:"content"`
+	// IfMatch optionally enforces optimistic concurrency: when non-empty, the
+	// write is rejected with 409 Conflict unless the on-disk file currently
+	// has this version. Pass the Version field returned by GET (or "new" to
+	// require a non-existent destination).
+	IfMatch string `json:"ifMatch,omitempty"`
+}
+
+type writeFileResponse struct {
+	Version string `json:"version"`
 }
 
 type createEntryRequest struct {

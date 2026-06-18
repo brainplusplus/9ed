@@ -57,6 +57,11 @@ var ptyFallbackArgs = map[string][]string{
 }
 
 // DiscoverAgentDescriptors returns agents with ACP capability metadata.
+//
+// ACP resolution order for each agent:
+//  1. 9ed-managed isolated prefix install (~/.9ed/adapters/npx/{id}/...)
+//  2. Globally installed binary on PATH
+//  3. Marked installable via the registry/EnsureInstalled flow
 func DiscoverAgentDescriptors() []AgentDescriptor {
 	descriptors := make([]AgentDescriptor, 0, len(knownAgents))
 	for _, ka := range knownAgents {
@@ -74,15 +79,32 @@ func DiscoverAgentDescriptors() []AgentDescriptor {
 			d.Command = fullPath
 		}
 
-		if ka.acpCmd == ka.cmd {
+		// 9ed-managed install (binary archive or npm prefix) takes precedence
+		// because we control its version and lifecycle. Fall back to PATH
+		// (user-installed globally), then to the registry installer.
+		isolated, isoArgs, _ := acpinstall.IsolatedBinarySpec(ka.id)
+		switch {
+		case isolated != "":
+			d.SupportsACP = true
+			d.ACPCommand = isolated
+			if isoArgs != nil {
+				// Registry-supplied args from a binary distribution (may be empty).
+				d.ACPArgs = isoArgs
+			} else {
+				d.ACPArgs = ka.acpArgs
+			}
+		case ka.acpCmd == ka.cmd:
+			// Same binary serves both PTY and ACP roles (legacy path).
 			d.SupportsACP = d.Available
 			d.ACPArgs = ka.acpArgs
-		} else if acpPath, err := exec.LookPath(ka.acpCmd); err == nil {
-			d.SupportsACP = true
-			d.ACPCommand = acpPath
-			d.ACPArgs = ka.acpArgs
-		} else if acpinstall.GetAdapterInfo(ka.id) != nil {
-			d.ACPInstallable = true
+		default:
+			if acpPath, err := exec.LookPath(ka.acpCmd); err == nil {
+				d.SupportsACP = true
+				d.ACPCommand = acpPath
+				d.ACPArgs = ka.acpArgs
+			} else if acpinstall.GetAdapterInfo(ka.id) != nil {
+				d.ACPInstallable = true
+			}
 		}
 
 		descriptors = append(descriptors, d)

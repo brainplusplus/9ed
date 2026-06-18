@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/brainplusplus/9ed/internal/debug"
 	"github.com/brainplusplus/9ed/internal/filesystem"
@@ -152,6 +154,11 @@ func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		// ETag mirrors content.Version so HTTP-aware clients (or proxies) can
+		// use If-Match without parsing the JSON body.
+		if content.Version != "" {
+			w.Header().Set("ETag", `"`+content.Version+`"`)
+		}
 		writeJSON(w, http.StatusOK, content)
 
 	case http.MethodPut:
@@ -160,11 +167,28 @@ func (a *API) handleFileContent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if err := filesystem.WriteFile(validated, req.Content); err != nil {
+
+		// Allow the precondition to be expressed either via the JSON body
+		// (req.IfMatch) or the standard HTTP If-Match header. Body wins
+		// when both are provided.
+		ifMatch := req.IfMatch
+		if ifMatch == "" {
+			ifMatch = strings.Trim(r.Header.Get("If-Match"), `"`)
+		}
+
+		newVersion, err := filesystem.WriteFileAtomic(validated, req.Content, ifMatch)
+		if err != nil {
+			if errors.Is(err, filesystem.ErrVersionMismatch) {
+				http.Error(w, "file was modified by another client; reload before saving", http.StatusPreconditionFailed)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		if newVersion != "" {
+			w.Header().Set("ETag", `"`+newVersion+`"`)
+		}
+		writeJSON(w, http.StatusOK, writeFileResponse{Version: newVersion})
 
 	default:
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
