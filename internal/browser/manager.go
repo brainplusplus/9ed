@@ -1336,6 +1336,13 @@ func (m *Manager) acquireTabPage(ctx context.Context, id string) (playwright.Pag
 	}, nil
 }
 
+// AcquireTabPage returns the Playwright page for a browser tab, with a release
+// function that must be called when done. Used by visualstream to attach a
+// CDP screencast source and input handler (ADR-0001).
+func (m *Manager) AcquireTabPage(ctx context.Context, id string) (playwright.Page, func(), error) {
+	return m.acquireTabPage(ctx, id)
+}
+
 func (m *Manager) tabPageLocked(ctx context.Context, id string) (playwright.Page, error) {
 	m.mu.Lock()
 	tab, ok := m.tabs[id]

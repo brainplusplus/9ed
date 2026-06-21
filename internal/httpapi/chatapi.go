@@ -16,6 +16,9 @@ import (
 	"github.com/brainplusplus/9ed/internal/chat/agentconfig"
 	"github.com/brainplusplus/9ed/internal/debug"
 	"github.com/brainplusplus/9ed/internal/terminal"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 type chatCreateRequest struct {
@@ -92,6 +95,18 @@ type chatWSInbound struct {
 	ActiveTerminalID   string `json:"activeTerminalId,omitempty"`
 	UseActiveBrowser   bool   `json:"useActiveBrowser,omitempty"`
 	ActiveBrowserTabID string `json:"activeBrowserTabId,omitempty"`
+
+	// ADR-0006: client identity for multi-device / multi-tab session resume.
+	ClientID string `json:"clientId,omitempty"`
+	// ADR-0006: timestamp for app-level ping/pong liveness.
+	Timestamp int64 `json:"ts,omitempty"`
+	// ADR-0002: cursor for fetch_timeline RPC (afterSeq).
+	AfterSeq int64 `json:"afterSeq,omitempty"`
+	// ADR-0002: limit for fetch_timeline RPC.
+	Limit int `json:"limit,omitempty"`
+	// ADR-0005: cursor position for collaborative overlay (row, col).
+	CursorRow int `json:"cursorRow,omitempty"`
+	CursorCol int `json:"cursorCol,omitempty"`
 }
 
 type chatAttachment struct {
@@ -1220,6 +1235,11 @@ func (a *API) newChatEventPersister(sessionID string) chatEventPersister {
 	debug.Printf("[chat/persist] attached live=%s record=%s", sessionID, persistRecordID)
 
 	persistSeq, _ := a.chatStore.NextEventSeq(persistRecordID)
+	// ADR-0002: track current epoch for this session's event timeline.
+	persistEpoch, _ := a.chatStore.GetCurrentEpoch(persistRecordID)
+	if persistEpoch == "" {
+		persistEpoch = uuid.NewString()
+	}
 	var mu sync.Mutex
 	var assistantText strings.Builder
 	assistantMessageID := ""
@@ -1308,6 +1328,7 @@ func (a *API) newChatEventPersister(sessionID string) chatEventPersister {
 				PayloadJSON: string(payload),
 				Seq:         persistSeq,
 				Timestamp:   now,
+				Epoch:       persistEpoch,
 			}
 			persistSeq++
 			if err := a.chatStore.AppendEvent(record); err == nil {
@@ -1356,16 +1377,97 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	sub := stream.Subscribe()
 	defer stream.Unsubscribe(sub)
 
+	// ADR-0002: replay-on-subscribe — send last N events to new subscriber
+	// so client B connecting mid-turn sees recent history immediately.
+	if a.chatStore != nil {
+		persistRecordID := a.chatSessionManager.RecordIDFor(sessionID)
+		if persistRecordID == sessionID {
+			persistRecordID = a.chatStore.ResolveRecordID(sessionID)
+		}
+		if persistRecordID != "" {
+			if recent, err := a.chatStore.GetEventsTail(persistRecordID, 50); err == nil {
+				for _, rec := range recent {
+					var evt chat.ChatEvent
+					if json.Unmarshal([]byte(rec.PayloadJSON), &evt) == nil {
+						_ = conn.WriteJSON(evt)
+					}
+				}
+				if len(recent) > 0 {
+					debug.Printf("[chat/replay] sent %d recent events to new subscriber session=%s", len(recent), sessionID)
+				}
+			}
+		}
+	}
+
+	// ADR-0005: PTY replay-on-subscribe — send ring buffer content for PTY
+	// sessions so client B sees recent terminal output immediately. For TUI
+	// mode (alternate screen), raw ring buffer bytes are not useful, so we
+	// request a serialized snapshot from existing subscribers instead.
+	if ptySess, ok := session.(*chat.PtySession); ok {
+		if ptySess.IsTUIModePublic() {
+			// TUI mode: request snapshot from existing subscribers.
+			// The client with the terminal state will serialize and send back.
+			stream.publishDirect(chat.ChatEvent{Type: "tui_snapshot_request"})
+			debug.Printf("[chat/replay] requested TUI snapshot from existing subscribers session=%s", sessionID)
+		} else if snapshot := ptySess.RingBufferSnapshotPublic(); len(snapshot) > 0 {
+			_ = conn.WriteJSON(chat.ChatEvent{Type: "pty_replay", Text: string(snapshot)})
+			debug.Printf("[chat/replay] sent %d bytes PTY ring buffer to new subscriber session=%s", len(snapshot), sessionID)
+		}
+	}
+
+	// ADR-0006: ClientId registration for multi-device / multi-tab resume.
+	// clientId is extracted from the first inbound message (hello) or generated.
+	var (
+		cc *chatConnection
+		cs *chatSocket
+	)
+	// ADR-0006: remove socket from connection registry on handler exit.
+	// The chatConnection itself survives during the grace window (ADR-0003).
+	// cs may be nil if no message with clientId was received; removeSocket handles nil.
+	defer a.chatConnections.removeSocket(cs)
+
+	// ADR-0006: Hybrid liveness — server sends RFC645 protocol pings (browser
+	// auto-responds) and client sends app-level JSON pings. Both with deadline.
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(a.livenessTimeout))
+		return nil
+	})
+
+	// Server-side protocol ping ticker (RFC645 PingMessage).
+	pongTimeout := a.livenessTimeout
+	pingInterval := a.livenessPingInterval
+	pingTicker := time.NewTicker(pingInterval)
+	defer pingTicker.Stop()
+
+	// readDeadline is reset on every successful read (message or pong).
+	_ = conn.SetReadDeadline(time.Now().Add(pongTimeout))
+
+	// Outbound goroutine: fan-out chat events + server pings.
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			// ADR-0003: priority channel (critical events) checked first.
+			case evt, ok := <-sub.priority:
+				if !ok {
+					return
+				}
+				if err := conn.WriteJSON(evt); err != nil {
+					cancel()
+					return
+				}
 			case evt, ok := <-sub.C:
 				if !ok {
 					return
 				}
 				if err := conn.WriteJSON(evt); err != nil {
+					cancel()
+					return
+				}
+			case <-pingTicker.C:
+				// RFC645 protocol ping (browser auto-responds with pong).
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					cancel()
 					return
 				}
@@ -1380,7 +1482,34 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Reset read deadline on any successful read.
+		_ = conn.SetReadDeadline(time.Now().Add(pongTimeout))
+
+		// ADR-0006: app-level ping/pong from client (client-side liveness).
+		if msg.Type == "ping" {
+			_ = conn.WriteJSON(chatWSInbound{Type: "pong", Timestamp: time.Now().UnixMilli()})
+			continue
+		}
+		if msg.Type == "pong" {
+			continue
+		}
+
+		// ADR-0006: register clientId on first message (hello or any message).
+		if cc == nil && msg.ClientID != "" {
+			cc, cs = a.chatConnections.registerSocket(msg.ClientID, sessionID, conn)
+		} else if cc != nil {
+			cc.mu.Lock()
+			cc.lastSeen = time.Now()
+			cc.mu.Unlock()
+		}
+
 		switch msg.Type {
+		case "hello":
+			// ClientId handshake acknowledged; nothing else to do beyond registration above.
+			if cc != nil {
+				_ = conn.WriteJSON(chatWSInbound{Type: "hello_ack", ClientID: cc.clientID})
+			}
+
 		case "message":
 			a.chatStreams.Touch(sessionID)
 			stream.StartTurn()
@@ -1396,11 +1525,26 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 					Name: attachment.Name,
 				})
 			}
+			// ADR-0005: soft lock check for PTY mode.
+			if ptySess, ok := session.(*chat.PtySession); ok && msg.ClientID != "" {
+				if !ptySess.AcquireInputLockPublic(msg.ClientID) {
+					stream.publish(chat.ChatEvent{Type: "error", Error: "input_locked", ToolTitle: ptySess.InputLockHolderPublic()})
+					return
+				}
+				defer ptySess.ReleaseInputLockPublic(msg.ClientID)
+			}
 			if err := session.Send(ctx, content, attachments); err != nil {
 				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
 
 		case "cancel":
+			// ADR-0005: soft lock check for PTY mode.
+			if ptySess, ok := session.(*chat.PtySession); ok && msg.ClientID != "" {
+				if !ptySess.AcquireInputLockPublic(msg.ClientID) {
+					stream.publish(chat.ChatEvent{Type: "error", Error: "input_locked", ToolTitle: ptySess.InputLockHolderPublic()})
+					return
+				}
+			}
 			if err := session.Cancel(); err != nil {
 				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
 			}
@@ -1426,10 +1570,115 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "set_use_active_browser":
 			session.SetUseActiveBrowser(msg.UseActiveBrowser, msg.ActiveBrowserTabID)
 
+		case "fetch_timeline":
+			// ADR-0002: cursor-based catch-up RPC.
+			a.handleFetchTimeline(conn, sessionID, msg)
+
+		case "tui_snapshot":
+			// ADR-0005: client sends serialized terminal state for TUI mode.
+			// Broadcast to all subscribers so new joiners get the snapshot.
+			stream.publishDirect(chat.ChatEvent{Type: "tui_snapshot", Text: msg.Content})
+
+		case "cursor_position":
+			// ADR-0005: collaborative cursor overlay — broadcast cursor position
+			// from one client to all others.
+			if msg.ClientID != "" {
+				stream.publishDirect(chat.ChatEvent{
+					Type:      "cursor_position",
+					Text:      msg.ClientID,
+					ToolTitle: fmt.Sprintf("%d:%d", msg.CursorRow, msg.CursorCol),
+				})
+			}
+
 		default:
 			stream.publish(chat.ChatEvent{Type: "error", Error: "unsupported message type: " + msg.Type})
 		}
 	}
+}
+
+// handleFetchTimeline handles the fetch_timeline WS RPC for cursor-based
+// catch-up (ADR-0002). Client sends {type:"fetch_timeline", afterSeq: N} and
+// receives {type:"timeline", events: [...], epoch: "...", hasMore: bool}.
+func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg chatWSInbound) {
+	if a.chatStore == nil {
+		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: "chat store unavailable"})
+		return
+	}
+
+	persistRecordID := a.chatSessionManager.RecordIDFor(sessionID)
+	if persistRecordID == sessionID {
+		persistRecordID = a.chatStore.ResolveRecordID(sessionID)
+	}
+	if persistRecordID == "" {
+		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: "session record not found"})
+		return
+	}
+
+	limit := 50
+	if msg.Limit > 0 {
+		limit = msg.Limit
+	}
+	afterSeq := msg.AfterSeq // ADR-0002: proper cursor field
+	if afterSeq <= 0 {
+		// No cursor — return tail (last N events).
+		events, err := a.chatStore.GetEventsTail(persistRecordID, limit)
+		if err != nil {
+			_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+			return
+		}
+		a.sendTimelineResponse(conn, events, persistRecordID, len(events) >= limit)
+		return
+	}
+
+	events, err := a.chatStore.GetEventsAfterSeq(persistRecordID, afterSeq, limit)
+	if err != nil {
+		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+		return
+	}
+	a.sendTimelineResponse(conn, events, persistRecordID, len(events) >= limit)
+}
+
+func (a *API) sendTimelineResponse(conn *websocket.Conn, events []chat.EventRecord, recordID string, hasMore bool) {
+	epoch := ""
+	if len(events) > 0 {
+		epoch = events[len(events)-1].Epoch
+	}
+	if epoch == "" {
+		epoch, _ = a.chatStore.GetCurrentEpoch(recordID)
+	}
+
+	type timelineEvent struct {
+		Type  string          `json:"type"`
+		Seq   int64           `json:"seq"`
+		Epoch string          `json:"epoch,omitempty"`
+		Event chat.ChatEvent  `json:"event"`
+	}
+	type timelineResponse struct {
+		Type    string          `json:"type"`
+		Events  []timelineEvent `json:"events"`
+		Epoch   string          `json:"epoch"`
+		HasMore bool            `json:"hasMore"`
+	}
+
+	var tevents []timelineEvent
+	for _, rec := range events {
+		var evt chat.ChatEvent
+		if json.Unmarshal([]byte(rec.PayloadJSON), &evt) == nil {
+			tevents = append(tevents, timelineEvent{
+				Type:  "timeline_event",
+				Seq:   rec.Seq,
+				Epoch: rec.Epoch,
+				Event: evt,
+			})
+		}
+	}
+
+	_ = conn.WriteJSON(timelineResponse{
+		Type:    "timeline",
+		Events:  tevents,
+		Epoch:   epoch,
+		HasMore: hasMore,
+	})
 }
 
 func (a *API) handleChatRestore(w http.ResponseWriter, r *http.Request) {

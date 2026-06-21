@@ -5,21 +5,26 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Port               string
-	BasicAuthUsername  string
-	BasicAuthPassword  string
-	WorkspaceRoot      string
-	AutokillPort       bool
-	Tunnel             bool
-	TunnelEngine       string
-	Debug              bool
-	DebugWatcher       bool
-	TerminalAIMaxLines int
+	Port                 string
+	BasicAuthUsername    string
+	BasicAuthPassword    string
+	WorkspaceRoot        string
+	AutokillPort         bool
+	Tunnel               bool
+	TunnelEngine         string
+	Debug                bool
+	DebugWatcher         bool
+	TerminalAIMaxLines   int
+	LivenessPingInterval time.Duration
+	LivenessTimeout      time.Duration
+	StreamCoalesceWindow time.Duration
+	SessionGraceWindow   time.Duration
 }
 
 func LoadFromEnv() (Config, error) {
@@ -50,6 +55,10 @@ func LoadFromEnv() (Config, error) {
 		Debug:              dbg == "true" || dbg == "1",
 		DebugWatcher:       dbgWatcher == "true" || dbgWatcher == "1",
 		TerminalAIMaxLines: termAIMaxLines,
+		LivenessPingInterval: parseDurationEnv("LIVENESS_PING_INTERVAL", 10*time.Second),
+		LivenessTimeout:      parseDurationEnv("LIVENESS_TIMEOUT", 15*time.Second),
+		StreamCoalesceWindow: parseDurationEnv("STREAM_COALESCE_WINDOW", 60*time.Millisecond),
+		SessionGraceWindow:   parseDurationEnv("SESSION_GRACE_WINDOW", 10*time.Minute),
 	}
 
 	if cfg.Port == "" {
@@ -69,4 +78,15 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseDurationEnv(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	return fallback
 }

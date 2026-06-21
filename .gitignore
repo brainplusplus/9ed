@@ -13,3 +13,6 @@ coverage/
 .omx/
 .opencode-jce/
 .opencode-context.md
+
+# Reference repos (embedded git repos)
+references/

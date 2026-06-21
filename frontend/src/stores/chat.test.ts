@@ -489,6 +489,8 @@ describe('active terminal routing', () => {
     registerTerminal('term-1', {
       getScrollback: () => '',
       sendCommand,
+      serialize: () => '',
+      write: () => {},
       cwd: '/repo',
       shellType: 'powershell',
     });

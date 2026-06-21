@@ -15,13 +15,18 @@ import (
 type chatEventPersister func(chat.ChatEvent)
 
 type chatStreamRegistry struct {
-	mu       sync.Mutex
-	streams  map[string]*chatStream
-	latestID string
+	mu             sync.Mutex
+	streams        map[string]*chatStream
+	latestID       string
+	coalesceWindow time.Duration
 }
 
 func newChatStreamRegistry() *chatStreamRegistry {
 	return &chatStreamRegistry{streams: make(map[string]*chatStream)}
+}
+
+func (r *chatStreamRegistry) SetCoalesceWindow(d time.Duration) {
+	r.coalesceWindow = d
 }
 
 func (r *chatStreamRegistry) GetOrCreate(sessionID string, session chat.ChatSession, persist chatEventPersister) *chatStream {
@@ -41,7 +46,7 @@ func (r *chatStreamRegistry) GetOrCreate(sessionID string, session chat.ChatSess
 			delete(r.streams, sessionID)
 		}
 		r.mu.Unlock()
-	})
+	}, r.coalesceWindow)
 	r.streams[sessionID] = stream
 	r.latestID = sessionID
 	debug.Printf("[chat/stream] create session=%s agent=%s mode=%s record=%s", sessionID, session.AgentID(), session.Mode(), session.ACPSessionID())
@@ -74,7 +79,27 @@ func (r *chatStreamRegistry) LatestID() (string, bool) {
 }
 
 type chatSubscriber struct {
-	C chan chat.ChatEvent
+	C        chan chat.ChatEvent // primary channel (backward compat, used as bulk)
+	priority chan chat.ChatEvent // critical events (never drop) — ADR-0003
+}
+
+// criticalEventTypes are event types that must never be dropped (ADR-0003).
+// They go to the priority channel; if that channel is full, the agent turn is
+// cancelled to apply backpressure.
+var criticalEventTypes = map[string]bool{
+	"permission_request": true,
+	"error":               true,
+	"done":                true,
+	"terminal_execute":    true,
+	"session_resumed":     true,
+	"usage_update":        true,
+}
+
+func newChatSubscriber() *chatSubscriber {
+	return &chatSubscriber{
+		C:        make(chan chat.ChatEvent, 256),
+		priority: make(chan chat.ChatEvent, 64),
+	}
 }
 
 type chatStream struct {
@@ -93,6 +118,7 @@ type chatStream struct {
 	turnRecoveryTool string
 	turnWatchdogSeq  int
 	turnWatchdog     *time.Timer
+	coalescer        *chatStreamCoalescer
 	mu               sync.Mutex
 	done             chan struct{}
 }
@@ -101,8 +127,8 @@ var interactiveToolDoneTimeout = 3500 * time.Millisecond
 var interactiveToolUnsureTimeout = 9 * time.Second
 var interactiveTurnInactivityTimeout = 45 * time.Second
 
-func newChatStream(sessionID string, session chat.ChatSession, persist chatEventPersister, onDone func()) *chatStream {
-	return &chatStream{
+func newChatStream(sessionID string, session chat.ChatSession, persist chatEventPersister, onDone func(), coalesceWindow time.Duration) *chatStream {
+	s := &chatStream{
 		sessionID:   sessionID,
 		session:     session,
 		persist:     persist,
@@ -110,6 +136,14 @@ func newChatStream(sessionID string, session chat.ChatSession, persist chatEvent
 		subscribers: make(map[*chatSubscriber]struct{}),
 		done:        make(chan struct{}),
 	}
+	if coalesceWindow > 0 {
+		s.coalescer = newChatStreamCoalescer(coalesceWindow, func(batch []chat.ChatEvent) {
+			for _, evt := range batch {
+				s.publishDirect(evt)
+			}
+		})
+	}
+	return s
 }
 
 func (s *chatStream) Start() {
@@ -128,7 +162,7 @@ func (s *chatStream) StartTurn() {
 }
 
 func (s *chatStream) Subscribe() *chatSubscriber {
-	sub := &chatSubscriber{C: make(chan chat.ChatEvent, 256)}
+	sub := newChatSubscriber()
 	s.mu.Lock()
 	select {
 	case <-s.done:
@@ -146,6 +180,7 @@ func (s *chatStream) Unsubscribe(sub *chatSubscriber) {
 	if _, ok := s.subscribers[sub]; ok {
 		delete(s.subscribers, sub)
 		close(sub.C)
+		close(sub.priority)
 		debug.Printf("[chat/stream] unsubscribe session=%s subscribers=%d", s.sessionID, len(s.subscribers))
 	}
 	s.mu.Unlock()
@@ -153,6 +188,10 @@ func (s *chatStream) Unsubscribe(sub *chatSubscriber) {
 
 func (s *chatStream) run() {
 	defer func() {
+		// ADR-0006: flush any pending coalesced events before closing.
+		if s.coalescer != nil {
+			s.coalescer.stop()
+		}
 		s.mu.Lock()
 		s.cancelToolFallbackLocked()
 		s.cancelTurnRecoveryLocked()
@@ -162,6 +201,7 @@ func (s *chatStream) run() {
 		for sub := range s.subscribers {
 			delete(s.subscribers, sub)
 			close(sub.C)
+			close(sub.priority)
 		}
 		s.mu.Unlock()
 		debug.Printf("[chat/stream] closed session=%s subscribersClosed=%d", s.sessionID, subscriberCount)
@@ -191,7 +231,18 @@ func (s *chatStream) run() {
 	}
 }
 
+// publish routes an event through the coalescer if one is configured, or
+// publishes directly if coalescing is disabled (ADR-0006).
 func (s *chatStream) publish(evt chat.ChatEvent) {
+	if s.coalescer != nil {
+		if s.coalescer.offer(evt) {
+			return
+		}
+	}
+	s.publishDirect(evt)
+}
+
+func (s *chatStream) publishDirect(evt chat.ChatEvent) {
 	if s.shouldIgnoreLateTurnEvent(evt) {
 		debug.Printf("[chat/stream] drop late turn event session=%s type=%s tool=%s", s.sessionID, evt.Type, evt.ToolTitle)
 		return
@@ -215,13 +266,52 @@ func (s *chatStream) publish(evt chat.ChatEvent) {
 		s.turnDoneEmitted = true
 	}
 	defer s.mu.Unlock()
+	isCritical := criticalEventTypes[evt.Type]
 	for sub := range s.subscribers {
-		select {
-		case sub.C <- evt:
-		default:
-			delete(s.subscribers, sub)
-			close(sub.C)
+		if isCritical {
+			// ADR-0003: critical events go to priority channel (never drop).
+			select {
+			case sub.priority <- evt:
+			default:
+				// Priority channel full — apply backpressure: cancel the agent
+				// turn and emit a done event so the client can re-prompt.
+				debug.Printf("[chat/stream] priority overflow session=%s subscriber dropped, backpressure", s.sessionID)
+				delete(s.subscribers, sub)
+				close(sub.C)
+				close(sub.priority)
+			}
+		} else {
+			// ADR-0003: bulk events go to main channel (drop oldest if full).
+			select {
+			case sub.C <- evt:
+			default:
+				// Channel full — drop oldest to make room for newest.
+				select {
+				case <-sub.C:
+				default:
+				}
+				select {
+				case sub.C <- evt:
+				default:
+					// Still full after dropping one — drop subscriber.
+					debug.Printf("[chat/stream] bulk overflow session=%s subscriber dropped", s.sessionID)
+					delete(s.subscribers, sub)
+					close(sub.C)
+					close(sub.priority)
+				}
+			}
 		}
+	}
+
+	// ADR-0003: if any priority overflow occurred, apply backpressure to agent.
+	// This is done after the loop to avoid cancelling mid-iteration.
+	// The backpressure (Cancel + done) is emitted once, not per-subscriber.
+	if isCritical && len(s.subscribers) == 0 && evt.Type != "done" && evt.Type != "error" {
+		// All subscribers dropped due to priority overflow — cancel agent.
+		go func() {
+			_ = s.session.Cancel()
+			s.publish(chat.ChatEvent{Type: "done", StopReason: "client_backpressure"})
+		}()
 	}
 }
 

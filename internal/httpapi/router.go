@@ -14,6 +14,7 @@ import (
 	"github.com/brainplusplus/9ed/internal/shells"
 	"github.com/brainplusplus/9ed/internal/terminal"
 	"github.com/brainplusplus/9ed/internal/tunnel"
+	"github.com/brainplusplus/9ed/internal/visualstream"
 	"github.com/brainplusplus/9ed/internal/watcher"
 
 	"github.com/gorilla/websocket"
@@ -38,62 +39,102 @@ type ChatRuntimeManager interface {
 }
 
 type Dependencies struct {
-	Shells             []shells.Profile
-	Sessions           SessionManager
-	WorkspaceRoot      string
-	TerminalAIMaxLines int
-	Watcher            *watcher.FileWatcher
-	ChatSessionManager ChatRuntimeManager
-	ChatStore          *chat.ChatStore
-	Browser            *browser.Manager
-	SettingsTunnels    *tunnel.Manager
-	TunnelURL          func() string // returns current tunnel URL (may change on restart)
-	TerminalMCPToken   string
-	BrowserMCPToken    string
+	Shells               []shells.Profile
+	Sessions             SessionManager
+	WorkspaceRoot        string
+	TerminalAIMaxLines   int
+	Watcher              *watcher.FileWatcher
+	ChatSessionManager   ChatRuntimeManager
+	ChatStore            *chat.ChatStore
+	Browser              *browser.Manager
+	SettingsTunnels      *tunnel.Manager
+	TunnelURL            func() string // returns current tunnel URL (may change on restart)
+	TerminalMCPToken     string
+	BrowserMCPToken      string
+	LivenessPingInterval time.Duration
+	LivenessTimeout      time.Duration
+	StreamCoalesceWindow time.Duration
 }
 
 type API struct {
-	shells             []shells.Profile
-	sessions           SessionManager
-	upgrader           websocket.Upgrader
-	workspaceRoot      string
-	terminalAiMaxLines int
-	watcher            *watcher.FileWatcher
-	chatSessionManager ChatRuntimeManager
-	chatStore          *chat.ChatStore
-	chatStreams        *chatStreamRegistry
-	browser            *browser.Manager
-	settingsTunnels    *tunnel.Manager
-	tunnelURL          func() string
-	terminalMCPToken   string
-	browserMCPToken    string
-	terminalRunMu      sync.Mutex
-	terminalRuns       map[string]time.Time
+	shells               []shells.Profile
+	sessions             SessionManager
+	upgrader             websocket.Upgrader
+	workspaceRoot        string
+	terminalAiMaxLines   int
+	watcher              *watcher.FileWatcher
+	chatSessionManager   ChatRuntimeManager
+	chatStore            *chat.ChatStore
+	chatStreams          *chatStreamRegistry
+	chatConnections      *chatConnectionRegistry
+	browser              *browser.Manager
+	settingsTunnels      *tunnel.Manager
+	tunnelURL            func() string
+	terminalMCPToken     string
+	browserMCPToken      string
+	terminalRunMu        sync.Mutex
+	terminalRuns         map[string]time.Time
+	livenessPingInterval time.Duration
+	livenessTimeout      time.Duration
+	visualSignaling      *visualstream.SignalingHandler
 }
 
 func New(deps Dependencies) *API {
-	return &API{
-		shells:             deps.Shells,
-		sessions:           deps.Sessions,
-		upgrader:           websocket.Upgrader{CheckOrigin: sameOrigin},
-		workspaceRoot:      deps.WorkspaceRoot,
-		terminalAiMaxLines: deps.TerminalAIMaxLines,
-		watcher:            deps.Watcher,
-		chatSessionManager: deps.ChatSessionManager,
-		chatStore:          deps.ChatStore,
-		chatStreams:        newChatStreamRegistry(),
-		browser:            deps.Browser,
-		settingsTunnels:    deps.SettingsTunnels,
-		tunnelURL:          deps.TunnelURL,
-		terminalMCPToken:   deps.TerminalMCPToken,
-		browserMCPToken:    deps.BrowserMCPToken,
-		terminalRuns:       make(map[string]time.Time),
+	pingInterval := deps.LivenessPingInterval
+	if pingInterval == 0 {
+		pingInterval = 10 * time.Second
 	}
+	timeout := deps.LivenessTimeout
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+	coalesce := deps.StreamCoalesceWindow
+	if coalesce == 0 {
+		coalesce = 60 * time.Millisecond
+	}
+	chatStreams := newChatStreamRegistry()
+	chatStreams.SetCoalesceWindow(coalesce)
+	api := &API{
+		shells:               deps.Shells,
+		sessions:             deps.Sessions,
+		upgrader:             websocket.Upgrader{CheckOrigin: sameOrigin},
+		workspaceRoot:        deps.WorkspaceRoot,
+		terminalAiMaxLines:   deps.TerminalAIMaxLines,
+		watcher:              deps.Watcher,
+		chatSessionManager:   deps.ChatSessionManager,
+		chatStore:            deps.ChatStore,
+		chatStreams:          chatStreams,
+		chatConnections:      newChatConnectionRegistry(),
+		browser:              deps.Browser,
+		settingsTunnels:      deps.SettingsTunnels,
+		tunnelURL:            deps.TunnelURL,
+		terminalMCPToken:     deps.TerminalMCPToken,
+		browserMCPToken:      deps.BrowserMCPToken,
+		terminalRuns:         make(map[string]time.Time),
+		livenessPingInterval: pingInterval,
+		livenessTimeout:      timeout,
+		visualSignaling:      visualstream.NewSignalingHandler(),
+	}
+
+	// ADR-0003: start grace window sweeper to clean up expired chat connections.
+	go api.startGraceSweeper()
+	return api
 }
 
 // SetTunnelURL updates the tunnel URL provider (called after tunnel starts).
 func (a *API) SetTunnelURL(fn func() string) {
 	a.tunnelURL = fn
+}
+
+// startGraceSweeper periodically cleans up expired chat connections (ADR-0003).
+func (a *API) startGraceSweeper() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		// Default 10 min grace; this is a safety net for the SessionManager's
+		// own grace timers. Sweep expired connections with no sockets.
+		a.chatConnections.sweepExpired(10 * time.Minute)
+	}
 }
 
 func (a *API) Handler() http.Handler {
@@ -128,6 +169,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/chat/terminal/run", a.handleChatTerminalRun)
 	mux.HandleFunc("/api/chat/browser/run", a.handleChatBrowserRun)
 	mux.HandleFunc("/ws/chat/", a.handleChatWebSocket)
+	mux.HandleFunc("/ws/visual/", a.handleVisualSignaling)
 
 	mux.HandleFunc("/api/browser/state", a.handleBrowserState)
 	mux.HandleFunc("/api/browser/tabs", a.handleBrowserTabs)

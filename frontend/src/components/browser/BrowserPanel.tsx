@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '../../stores/workspace';
 import type { BrowserAutomationStatus, BrowserElementSelection, BrowserMCPDebugEntry, BrowserSelectionMode, BrowserTab, BrowserTransport } from '../../types';
 import { useInspectMode } from './useInspectMode';
 import { InspectOverlay, RemoteInspectOverlay, SelectedHighlight, InspectMiniPanel } from './InspectOverlay';
+import { useVisualStream } from '../../hooks/useVisualStream';
 
 const DEFAULT_URL = 'localhost:3000';
 const VIEWPORT_PRESETS = {
@@ -357,6 +358,7 @@ export function BrowserPanel() {
   const addressEditingRef = useRef(false);
   const createMenuRef = useRef<HTMLDivElement | null>(null);
   const webrtcSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const webrtcCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const webrtcObjectUrlRef = useRef<string | null>(null);
   const webrtcRefreshInFlightRef = useRef(false);
   const webrtcRefreshPendingRef = useRef(false);
@@ -400,6 +402,16 @@ export function BrowserPanel() {
   );
   const activeTabId = activeTab?.id ?? null;
   const activeTabIsWebRTC = activeTab?.transport === 'webrtc';
+
+  // WebRTC visual streaming: when connected, live JPEG tiles are drawn to
+  // the canvas via DataChannel (ADR-0001). Falls back to HTTP screenshot
+  // polling when not connected or connecting.
+  const visualStream = useVisualStream(
+    activeTabIsWebRTC ? activeTabId : null,
+    webrtcCanvasRef,
+  );
+  const webrtcStreamConnected = visualStream.connected;
+
   const resolveBrowserProjectId = useCallback((tabId?: string | null) => {
     const store = useWorkspaceStore.getState();
     if (tabId) {
@@ -771,13 +783,20 @@ export function BrowserPanel() {
     if (!activeTabIsWebRTC || !activeTabId) {
       return;
     }
-    requestWebRTCFrameRefresh();
+    // When WebRTC DataChannel streaming is connected, live frames arrive via
+    // the canvas — skip the HTTP screenshot polling to save bandwidth.
+    // refreshBrowserState still runs to sync navigation/file-chooser state.
+    if (!webrtcStreamConnected) {
+      requestWebRTCFrameRefresh();
+    }
     const interval = window.setInterval(() => {
       void refreshBrowserState().catch(() => {});
-      requestWebRTCFrameRefresh();
+      if (!webrtcStreamConnected) {
+        requestWebRTCFrameRefresh();
+      }
     }, 1500);
     return () => window.clearInterval(interval);
-  }, [activeTabId, activeTabIsWebRTC, refreshBrowserState, reloadNonce, requestWebRTCFrameRefresh]);
+  }, [activeTabId, activeTabIsWebRTC, refreshBrowserState, reloadNonce, requestWebRTCFrameRefresh, webrtcStreamConnected]);
 
   useEffect(() => {
     if (!activeTabIsWebRTC || !activeTabId) {
@@ -1867,13 +1886,27 @@ export function BrowserPanel() {
                   onKeyDown={handleWebRTCKeyDown}
                   onPaste={handleWebRTCPaste}
                 >
-                  <img
-                    className="browser-webrtc-image"
-                    src={webrtcImageSrc ?? undefined}
-                    alt={displayTitle(activeTab)}
-                    draggable={false}
-                  />
-                  {webrtcFrameLoading && !webrtcImageSrc && !error && (
+                  {webrtcStreamConnected ? (
+                    <canvas
+                      ref={webrtcCanvasRef}
+                      className="browser-webrtc-image"
+                      style={{ width: '100%', height: '100%' }}
+                    />
+                  ) : (
+                    <img
+                      className="browser-webrtc-image"
+                      src={webrtcImageSrc ?? undefined}
+                      alt={displayTitle(activeTab)}
+                      draggable={false}
+                    />
+                  )}
+                  {visualStream.connecting && !webrtcStreamConnected && (
+                    <div className="browser-webrtc-loading">
+                      <div className="browser-loading-spinner" />
+                      <span className="browser-loading-text">Establishing WebRTC stream…</span>
+                    </div>
+                  )}
+                  {webrtcFrameLoading && !webrtcImageSrc && !error && !webrtcStreamConnected && (
                     <div className="browser-webrtc-loading">
                       <div className="browser-loading-spinner" />
                       <span className="browser-loading-text">Loading browser frame…</span>

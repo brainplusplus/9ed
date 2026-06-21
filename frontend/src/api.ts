@@ -548,6 +548,18 @@ export function createChatWebSocket(sessionId: string): WebSocket {
   return new WebSocket(`${protocol}//${window.location.host}/ws/chat/${sessionId}`);
 }
 
+// ADR-0006: clientId for multi-device / multi-tab session resume.
+// Generated once per browser, stored in localStorage, sent on WS connect.
+export function getClientId(): string {
+  const KEY = '9ed:clientId';
+  let id = localStorage.getItem(KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+
 export async function getChatHistory(workDir?: string): Promise<HistorySessionRecord[]> {
 	const params = new URLSearchParams();
 	if (workDir) {

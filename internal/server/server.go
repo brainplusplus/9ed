@@ -50,6 +50,9 @@ func New(cfg config.Config) *Server {
 	}
 
 	chatSessionMgr := chat.NewSessionManager()
+	if cfg.SessionGraceWindow > 0 {
+		chatSessionMgr.SetGraceWindow(cfg.SessionGraceWindow)
+	}
 	terminalMCPToken := randomToken()
 	browserMCPToken := randomToken()
 	cwd, _ := os.Getwd()
@@ -84,18 +87,21 @@ func New(cfg config.Config) *Server {
 	}
 
 	api := httpapi.New(httpapi.Dependencies{
-		Shells:             profiles,
-		Sessions:           manager,
-		WorkspaceRoot:      cfg.WorkspaceRoot,
-		TerminalAIMaxLines: cfg.TerminalAIMaxLines,
-		Watcher:            fw,
-		ChatSessionManager: chatSessionMgr,
-		ChatStore:          chatStore,
-		Browser:            browserMgr,
-		SettingsTunnels:    settingsTunnels,
-		TunnelURL:          func() string { return "" }, // placeholder, set via SetTunnel
-		TerminalMCPToken:   terminalMCPToken,
-		BrowserMCPToken:    browserMCPToken,
+		Shells:               profiles,
+		Sessions:             manager,
+		WorkspaceRoot:        cfg.WorkspaceRoot,
+		TerminalAIMaxLines:   cfg.TerminalAIMaxLines,
+		Watcher:              fw,
+		ChatSessionManager:   chatSessionMgr,
+		ChatStore:            chatStore,
+		Browser:              browserMgr,
+		SettingsTunnels:      settingsTunnels,
+		TunnelURL:            func() string { return "" }, // placeholder, set via SetTunnel
+		TerminalMCPToken:     terminalMCPToken,
+		BrowserMCPToken:      browserMCPToken,
+		LivenessPingInterval: cfg.LivenessPingInterval,
+		LivenessTimeout:      cfg.LivenessTimeout,
+		StreamCoalesceWindow: cfg.StreamCoalesceWindow,
 	})
 
 	return &Server{
@@ -137,7 +143,22 @@ func (s *Server) Handler() http.Handler {
 	outer.Handle("/api/chat/terminal/run", s.api.Handler())
 	outer.Handle("/api/chat/browser/run", s.api.Handler())
 	outer.Handle("/", protected)
-	return outer
+	return panicRecovery(outer)
+}
+
+// panicRecovery wraps an http.Handler with a recovery middleware that catches
+// panics from request handlers (including goroutines spawned within them) and
+// returns a 500 response instead of crashing the server process.
+func panicRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[server] panic recovered: %v", rec)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Addr() string {

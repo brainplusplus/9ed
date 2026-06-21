@@ -147,6 +147,28 @@ export function TerminalView(props: TerminalViewProps) {
       sendCommand: (command: string) => {
         sendMessage({ type: 'input', data: command + '\r' });
       },
+      serialize: () => {
+        // ADR-0005: serialize the terminal's visual state (TUI snapshot).
+        // Iterates over the buffer lines to produce a text representation.
+        const term = terminalRef.current;
+        if (!term) return '';
+        const buffer = term.buffer.active;
+        const lines: string[] = [];
+        for (let i = 0; i < buffer.length; i++) {
+          const line = buffer.getLine(i);
+          if (line) {
+            lines.push(line.translateToString(true));
+          }
+        }
+        return lines.join('\n');
+      },
+      write: (data: string) => {
+        // ADR-0005: write raw bytes to the terminal (PTY replay).
+        const term = terminalRef.current;
+        if (term) {
+          term.write(data);
+        }
+      },
       cwd: cwd ?? '',
       shellType,
     });

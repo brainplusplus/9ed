@@ -418,6 +418,9 @@ export type ChatEvent = {
   permissionId?: string;
   permissionTitle?: string;
   permissionOptions?: PermissionOptionInfo[];
+  // ADR-0002: cursor tracking for gap/stale detection.
+  seq?: number;
+  epoch?: string;
 };
 
 export type PendingPermission = {
@@ -509,4 +512,28 @@ export type TranscriptSnapshotRecord = {
 export type TranscriptResponse = {
   events: TranscriptEventRecord[];
   snapshot: TranscriptSnapshotRecord;
+};
+
+// ADR-0002: timeline catch-up response from fetch_timeline RPC.
+export type TimelineEvent = {
+  type: string;
+  seq: number;
+  epoch?: string;
+  event: ChatEvent;
+};
+
+export type TimelineResponse = {
+  type: 'timeline';
+  events: TimelineEvent[];
+  epoch: string;
+  hasMore: boolean;
+};
+
+// ADR-0001: WebRTC visual signaling messages.
+export type VisualSignalingMessage = {
+  type: 'offer' | 'answer' | 'ice-candidate' | 'error';
+  sessionId: string;
+  sdp?: string;
+  ice?: RTCIceCandidateInit;
+  iceServers?: RTCIceServer[];
 };

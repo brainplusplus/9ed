@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createChatWebSocket, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserTab, isBackendTemporarilyUnavailable } from '../api';
+import { createChatWebSocket, getClientId, getBrowserState, getConfig, getLiveChatSessions, inspectBrowserTab, isBackendTemporarilyUnavailable } from '../api';
 import { normalizeWorkDir, useChatStore } from '../stores/chat';
 import { useWorkspaceStore } from '../stores/workspace';
 import { getTerminalHandle } from '../terminalRegistry';
 import { terminalCommandDialect, terminalShellLabel } from '../terminalIntegration';
 import type { Attachment } from '../components/chat/ChatInput';
-import type { BrowserElementSelection, BrowserInspectResult, BrowserSelectionMode, ChatEvent, ChatSessionKind, CodeContext, TerminalContext } from '../types';
+import type { BrowserElementSelection, BrowserInspectResult, BrowserSelectionMode, ChatEvent, ChatSessionKind, CodeContext, TerminalContext, TimelineResponse } from '../types';
 import type { QueuedMessage } from '../stores/chat';
 
 const CONNECT_TIMEOUT_MS = 10000;
@@ -13,6 +13,8 @@ const INITIAL_CONNECT_DELAY_MS = 250;
 const MAX_RECONNECT_ATTEMPTS = 6;
 const RECONNECT_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
 const STREAM_STALL_MS = 15000;
+// ADR-0006: client-side app-level ping interval (server also sends RFC645 protocol pings).
+const LIVENESS_PING_INTERVAL_MS = 10000;
 
 type UseChatSessionResult = {
   sendMessage: (content: string, context?: CodeContext, attachments?: Attachment[]) => Promise<void>;
@@ -22,6 +24,7 @@ type UseChatSessionResult = {
   rejectPermission: (permissionId: string) => void;
   setAutoApprove: (enabled: boolean) => void;
   connected: boolean;
+  fetchTimeline: (sessionId: string, afterSeq?: number) => void;
 };
 
 type ChatConnection = {
@@ -35,6 +38,8 @@ type ChatConnection = {
   seq: number;
   hasConnected: boolean;
   disposed: boolean;
+  // ADR-0006: client-side app-level ping timer.
+  livenessTimer?: number;
 };
 
 function socketIsOpen(conn: ChatConnection | undefined): boolean {
@@ -265,6 +270,8 @@ export function useChatSession(): UseChatSessionResult {
   const stallTimersRef = useRef<Map<string, number>>(new Map());
   const lastTerminalControlKeyRef = useRef<string>('');
   const lastBrowserControlKeyRef = useRef<string>('');
+  // ADR-0002: per-session cursor tracking for stale/gap detection.
+  const cursorRef = useRef<Map<string, { seq: number; epoch: string }>>(new Map());
 
   const connectionTargets = useMemo(
     () => sessions
@@ -292,6 +299,11 @@ export function useChatSession(): UseChatSessionResult {
     if (conn.reconnectTimer !== undefined) {
       window.clearTimeout(conn.reconnectTimer);
       conn.reconnectTimer = undefined;
+    }
+    // ADR-0006: clear client-side app-level ping timer.
+    if (conn.livenessTimer !== undefined) {
+      window.clearInterval(conn.livenessTimer);
+      conn.livenessTimer = undefined;
     }
   }, []);
 
@@ -552,12 +564,134 @@ export function useChatSession(): UseChatSessionResult {
           setSessionKindRef.current(sessionId, 'live');
           upgradedRef.current.add(sessionId);
         }
+        // ADR-0006: send hello with clientId for multi-device / multi-tab resume.
+        const clientId = getClientId();
+        ws.send(JSON.stringify({ type: 'hello', clientId, ts: Date.now() }));
+        // ADR-0002: on reconnect, fetch timeline events after last known cursor
+        // to fill any gaps that occurred while the socket was disconnected.
+        const cursor = cursorRef.current.get(sessionId);
+        if (cursor && cursor.seq > 0) {
+          ws.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: cursor.seq }));
+        }
+        // ADR-0006: start client-side app-level ping (server also sends RFC645 protocol pings).
+        conn.livenessTimer = window.setInterval(() => {
+          if (seq !== conn.seq || conn.disposed || !socketIsOpen(conn)) {
+            return;
+          }
+          ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+        }, LIVENESS_PING_INTERVAL_MS);
       };
 
       ws.onmessage = (event) => {
         if (seq !== conn.seq || conn.disposed) return;
         try {
           const data = JSON.parse(event.data) as ChatEvent;
+          // ADR-0006: skip liveness control messages (pong, hello_ack).
+          if (data.type === 'pong' || data.type === 'hello_ack') {
+            return;
+          }
+          // ADR-0002: timeline catch-up response — replay events and update cursor.
+          if (data.type === 'timeline') {
+            const timeline = data as unknown as TimelineResponse;
+            if (timeline.events && timeline.events.length > 0) {
+              for (const tevt of timeline.events) {
+                const evt = { ...tevt.event, seq: tevt.seq, epoch: tevt.epoch };
+                handleChatEventRef.current(sessionId, evt);
+              }
+              const last = timeline.events[timeline.events.length - 1];
+              cursorRef.current.set(sessionId, { seq: last.seq, epoch: last.epoch ?? timeline.epoch });
+              // If hasMore, fetch the next page.
+              if (timeline.hasMore) {
+                conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: last.seq }));
+              }
+            }
+            return;
+          }
+          // ADR-0005: PTY replay — write raw bytes to the associated terminal.
+          if (data.type === 'pty_replay') {
+            const sessionState = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+            const terminalId = sessionState?.terminalId ?? sessionId;
+            const handle = getTerminalHandle(terminalId);
+            if (handle && data.text) {
+              handle.write(data.text);
+            }
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'info',
+              message: `pty replay ${data.text?.length ?? 0} bytes`,
+            });
+            return;
+          }
+          // ADR-0004: session resumed — refresh state, don't show as error.
+          if (data.type === 'session_resumed') {
+            // ADR-0002: reset cursor on epoch change (session resumed = new epoch).
+            cursorRef.current.delete(sessionId);
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'info',
+              message: 'agent session resumed after crash',
+            });
+            void refreshSessionStateRef.current(sessionId);
+            return;
+          }
+          // ADR-0005: TUI snapshot request — serialize terminal and send back.
+          if (data.type === 'tui_snapshot_request') {
+            const sessionState = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+            const terminalId = sessionState?.terminalId ?? sessionId;
+            const handle = getTerminalHandle(terminalId);
+            if (handle) {
+              const snapshot = handle.serialize();
+              if (snapshot && conn.ws && socketIsOpen(conn)) {
+                conn.ws.send(JSON.stringify({ type: 'tui_snapshot', content: snapshot }));
+              }
+            }
+            return;
+          }
+          // ADR-0005: TUI snapshot — write serialized terminal state.
+          if (data.type === 'tui_snapshot') {
+            const sessionState = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+            const terminalId = sessionState?.terminalId ?? sessionId;
+            const handle = getTerminalHandle(terminalId);
+            if (handle && data.text) {
+              handle.write(data.text);
+            }
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'info',
+              message: `tui snapshot ${data.text?.length ?? 0} bytes`,
+            });
+            return;
+          }
+          // ADR-0005: collaborative cursor overlay — another client's cursor.
+          if (data.type === 'cursor_position') {
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'info',
+              message: `cursor from ${data.text ?? 'unknown'} at ${data.toolTitle ?? '0:0'}`,
+            });
+            return;
+          }
+          // ADR-0005: input locked — another client is typing.
+          if (data.type === 'error' && data.error === 'input_locked') {
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'warn',
+              message: `input locked by ${data.toolTitle ?? 'another client'}`,
+            });
+            return;
+          }
+          // ADR-0003: client backpressure — agent cancelled due to overflow.
+          if (data.type === 'done' && data.stopReason === 'client_backpressure') {
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'warn',
+              message: 'agent cancelled due to client backpressure',
+            });
+          }
+          // ADR-0002: update cursor tracking (seq + epoch).
+          if (data.seq !== undefined && data.seq > 0) {
+            cursorRef.current.set(sessionId, { seq: data.seq, epoch: data.epoch ?? cursorRef.current.get(sessionId)?.epoch ?? '' });
+          }
           appendSessionDebugRef.current(sessionId, {
             source: data.type === 'tool_call' || data.type === 'tool_call_update' ? 'tool' : 'ws',
             level: data.type === 'error' ? 'error' : 'info',
@@ -889,5 +1023,16 @@ export function useChatSession(): UseChatSessionResult {
     sendControl({ type: 'set_auto_approve', autoApprove: enabled });
   }, [sendControl]);
 
-  return { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected };
+  // ADR-0002: fetch timeline events after a cursor for catch-up on reconnect.
+  // Called when a WS reconnects and the client needs to fill gaps in event
+  // history. The server returns events after the given seq, grouped by epoch.
+  const fetchTimeline = useCallback((sessionId: string, afterSeq?: number) => {
+    const conn = connectionsRef.current.get(sessionId);
+    if (!conn || !socketIsOpen(conn)) return;
+    const cursor = cursorRef.current.get(sessionId);
+    const seq = afterSeq ?? cursor?.seq ?? 0;
+    conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: seq }));
+  }, []);
+
+  return { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected, fetchTimeline };
 }

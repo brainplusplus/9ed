@@ -97,6 +97,7 @@ type ChatSession interface {
 	Cancel() error
 	Close() error
 	Done() <-chan struct{}
+	Err() error
 	Mode() SessionMode
 	RespondPermission(resp PermissionResponse)
 	SetAutoApprove(enabled bool)
@@ -167,6 +168,7 @@ type SessionOptions struct {
 	ActiveTerminalID   string
 	UseActiveBrowser   bool
 	ActiveBrowserTabID string
+	AutoRestart        bool // ADR-0004: auto-restart subprocess on crash via session/resume
 }
 
 func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
@@ -353,6 +355,16 @@ type acpSession struct {
 	terminals          map[string]*acpTerminal
 	routedToolCalls    map[string]bool
 	toolMeta           map[string]acpToolMeta
+
+	// ADR-0004: auto-restart on subprocess crash.
+	agentDesc       AgentDescriptor
+	sessionOpts     SessionOptions
+	autoRestart     bool
+	restartMu       sync.Mutex
+	restarting      bool
+	maxRetries      int
+	restartBaseDelay time.Duration
+	restartMaxDelay  time.Duration
 }
 
 // registryEnvForAgent returns env entries (in KEY=VALUE form) configured by
@@ -488,6 +500,13 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		terminals:          make(map[string]*acpTerminal),
 		routedToolCalls:    make(map[string]bool),
 		toolMeta:           make(map[string]acpToolMeta),
+		// ADR-0004: auto-restart config
+		agentDesc:        agent,
+		sessionOpts:      opts,
+		autoRestart:      opts.AutoRestart,
+		maxRetries:       3,
+		restartBaseDelay: 500 * time.Millisecond,
+		restartMaxDelay:  30 * time.Second,
 	}
 
 	if len(result.ConfigOptions) > 0 {
@@ -511,6 +530,7 @@ func (s *acpSession) WorkDir() string          { return s.workDir }
 func (s *acpSession) Mode() SessionMode        { return ModeACP }
 func (s *acpSession) Events() <-chan ChatEvent { return s.events }
 func (s *acpSession) Done() <-chan struct{}    { return s.done }
+func (s *acpSession) Err() error               { return s.adapter.Err() }
 func (s *acpSession) ACPSessionID() string     { return s.sessionID }
 func (s *acpSession) IsResumed() bool          { return s.resumed }
 
@@ -777,13 +797,139 @@ func (s *acpSession) processNotifications() {
 			if s.useActiveBrowser {
 				debug.BrowserMCPLog("agent", "error", "adapter done session=%s tab=%s err=%v", s.sessionID, s.activeBrowserTabID, s.adapter.Err())
 			}
+
+			// ADR-0004: attempt auto-restart before closing the session.
+			if s.autoRestart && s.tryRestart() {
+				// Restart succeeded — continue processing notifications from new adapter.
+				continue
+			}
+
+			// Restart failed or disabled — emit done with crash reason.
+			s.events <- ChatEvent{Type: "done", StopReason: "agent_crash_unrecoverable"}
 			return
 		}
 	}
 }
 
-func (s *acpSession) emitPromptDone(completion promptCompletion) {
-	if completion.result == nil {
+// tryRestart attempts to restart the ACP subprocess via session/resume with
+// bounded retry + exponential backoff (ADR-0004). Returns true if the adapter
+// was successfully restarted and the session can continue processing.
+func (s *acpSession) tryRestart() bool {
+	s.restartMu.Lock()
+	if s.restarting {
+		s.restartMu.Unlock()
+		return false
+	}
+	s.restarting = true
+	s.restartMu.Unlock()
+	defer func() {
+		s.restartMu.Lock()
+		s.restarting = false
+		s.restartMu.Unlock()
+	}()
+
+	adapterErr := s.adapter.Err()
+	debug.Printf("[chat/restart] subprocess exited, attempting restart session=%s err=%v", s.sessionID, adapterErr)
+
+	// Error classification: persistent errors don't retry.
+	if isPersistentError(adapterErr) {
+		debug.Printf("[chat/restart] persistent error, no retry: %v", adapterErr)
+		s.events <- ChatEvent{Type: "error", Error: fmt.Sprintf("agent crashed: %v", adapterErr)}
+		return false
+	}
+
+	// Capability check: agent must support session/resume.
+	if !s.adapter.SupportsResume() {
+		debug.Printf("[chat/restart] agent does not support session/resume")
+		s.events <- ChatEvent{Type: "error", Error: "agent does not support session/resume"}
+		return false
+	}
+
+	for attempt := 0; attempt < s.maxRetries; attempt++ {
+		delay := s.restartBackoff(attempt)
+		debug.Printf("[chat/restart] attempt %d/%d after %v", attempt+1, s.maxRetries, delay)
+
+		select {
+		case <-s.ctx.Done():
+			return false
+		case <-time.After(delay):
+		}
+
+		// Close old adapter.
+		_ = s.adapter.Close()
+
+		// Re-create adapter.
+		acpCommand := s.agentDesc.Command
+		if s.agentDesc.ACPCommand != "" {
+			acpCommand = s.agentDesc.ACPCommand
+		}
+		cfg := acp.AdapterConfig{
+			Command:    acpCommand,
+			Args:       s.agentDesc.ACPArgs,
+			WorkDir:    s.workDir,
+			Env:        registryEnvForAgent(s.agentID),
+			MCPServers: activeMCPServersForOptions(s.sessionOpts),
+		}
+
+		newAdapter, err := newAdapterWithHeal(s.ctx, s.agentID, cfg)
+		if err != nil {
+			debug.Printf("[chat/restart] attempt %d adapter create failed: %v", attempt+1, err)
+			if isPersistentError(err) {
+				s.events <- ChatEvent{Type: "error", Error: fmt.Sprintf("agent restart failed: %v", err)}
+				return false
+			}
+			continue
+		}
+
+		// Resume session.
+		result, err := newAdapter.ResumeSession(s.ctx, s.sessionID, s.workDir)
+		if err != nil {
+			debug.Printf("[chat/restart] attempt %d resume failed: %v", attempt+1, err)
+			_ = newAdapter.Close()
+			if isPersistentError(err) {
+				s.events <- ChatEvent{Type: "error", Error: fmt.Sprintf("agent resume failed: %v", err)}
+				return false
+			}
+			continue
+		}
+
+		// Success — swap adapter.
+		s.adapter = newAdapter
+		if result.SessionID != "" {
+			s.sessionID = result.SessionID
+		}
+		debug.Printf("[chat/restart] resumed successfully on attempt %d session=%s", attempt+1, s.sessionID)
+
+		// Emit session_resumed event (ADR-0004 + ADR-0002 epoch regeneration).
+		s.events <- ChatEvent{Type: "session_resumed", Text: s.sessionID}
+
+		// Do NOT spawn a new processNotifications goroutine — the existing
+		// goroutine (which called tryRestart) will `continue` its select loop
+		// and read from the new adapter. Spawning a second goroutine would
+		// cause a race condition with two goroutines competing for the same
+		// adapter channels.
+		return true
+	}
+
+	// All retries exhausted.
+	s.events <- ChatEvent{Type: "error", Error: fmt.Sprintf("agent restart failed after %d attempts", s.maxRetries)}
+	return false
+}
+
+func (s *acpSession) restartBackoff(attempt int) time.Duration {
+	delay := s.restartBaseDelay * time.Duration(1<<uint(attempt))
+	if delay > s.restartMaxDelay {
+		delay = s.restartMaxDelay
+	}
+	// Add jitter (up to 20%).
+	jitter := time.Duration(0)
+	if delay > 0 {
+		jitter = time.Duration(int64(delay) * int64(20) / int64(100))
+	}
+	return delay + jitter
+}
+
+func (s *acpSession) emitPromptDone(completion promptCompletion) {	if completion.result == nil {
 		if s.useActiveBrowser {
 			debug.BrowserMCPLog("agent", "error", "prompt completed without result session=%s tab=%s turn=%d", s.sessionID, s.activeBrowserTabID, completion.turnID)
 		}

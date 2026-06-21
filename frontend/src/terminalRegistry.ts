@@ -10,6 +10,10 @@ export type TerminalHandle = {
   getScrollback: (maxLines: number) => string;
   /** Send a command string to the terminal (appends \r). Instant. */
   sendCommand: (command: string) => void;
+  /** Serialize the terminal's current visual state (ADR-0005 TUI snapshot). */
+  serialize: () => string;
+  /** Write raw data bytes to the terminal (ADR-0005 PTY replay). */
+  write: (data: string) => void;
   /** The working directory the terminal was started in. */
   cwd: string;
   /** Shell type (bash, zsh, powershell, etc). */

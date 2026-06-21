@@ -63,6 +63,7 @@ type EventRecord struct {
 	PayloadJSON string `json:"payloadJson"`
 	Seq         int64  `json:"seq"`
 	Timestamp   int64  `json:"timestamp"`
+	Epoch       string `json:"epoch,omitempty"` // ADR-0002: timeline epoch (UUID, changes on session resume)
 }
 
 // SessionSnapshot stores the latest session UI state (commands, configOptions)
@@ -175,6 +176,7 @@ CREATE TABLE IF NOT EXISTS chat_events (
     payload_json TEXT NOT NULL DEFAULT '{}',
     seq INTEGER NOT NULL,
     timestamp INTEGER NOT NULL,
+    epoch TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
 );
 
@@ -504,8 +506,8 @@ func (s *ChatStore) DeleteTunnelConfig(id string) error {
 
 func (s *ChatStore) AppendEvent(evt EventRecord) error {
 	_, err := s.db.Exec(
-		`INSERT INTO chat_events (id, session_id, kind, payload_json, seq, timestamp) VALUES (?, ?, ?, ?, ?, ?)`,
-		evt.ID, evt.SessionID, evt.Kind, evt.PayloadJSON, evt.Seq, evt.Timestamp,
+		`INSERT INTO chat_events (id, session_id, kind, payload_json, seq, timestamp, epoch) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		evt.ID, evt.SessionID, evt.Kind, evt.PayloadJSON, evt.Seq, evt.Timestamp, evt.Epoch,
 	)
 	if err != nil {
 		return err
@@ -519,7 +521,7 @@ func (s *ChatStore) AppendEvent(evt EventRecord) error {
 
 func (s *ChatStore) GetEvents(sessionID string) ([]EventRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT id, session_id, kind, payload_json, seq, timestamp FROM chat_events WHERE session_id = ? ORDER BY seq ASC`,
+		`SELECT id, session_id, kind, payload_json, seq, timestamp, epoch FROM chat_events WHERE session_id = ? ORDER BY seq ASC`,
 		sessionID,
 	)
 	if err != nil {
@@ -530,7 +532,7 @@ func (s *ChatStore) GetEvents(sessionID string) ([]EventRecord, error) {
 	var events []EventRecord
 	for rows.Next() {
 		var e EventRecord
-		if err := rows.Scan(&e.ID, &e.SessionID, &e.Kind, &e.PayloadJSON, &e.Seq, &e.Timestamp); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Kind, &e.PayloadJSON, &e.Seq, &e.Timestamp, &e.Epoch); err != nil {
 			return nil, err
 		}
 		events = append(events, e)
@@ -575,6 +577,75 @@ func (s *ChatStore) NextEventSeq(sessionID string) (int64, error) {
 		return maxSeq.Int64 + 1, nil
 	}
 	return 1, nil
+}
+
+// GetCurrentEpoch returns the latest epoch for a session's events (ADR-0002).
+// Returns empty string if no events exist yet.
+func (s *ChatStore) GetCurrentEpoch(sessionID string) (string, error) {
+	var epoch string
+	err := s.db.QueryRow(
+		`SELECT epoch FROM chat_events WHERE session_id = ? ORDER BY seq DESC LIMIT 1`,
+		sessionID,
+	).Scan(&epoch)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return epoch, err
+}
+
+// GetEventsAfterSeq returns events with seq > afterSeq, up to limit (ADR-0002).
+// Used for cursor-based catch-up when a client reconnects.
+func (s *ChatStore) GetEventsAfterSeq(sessionID string, afterSeq int64, limit int) ([]EventRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, session_id, kind, payload_json, seq, timestamp, epoch FROM chat_events
+		 WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`,
+		sessionID, afterSeq, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []EventRecord
+	for rows.Next() {
+		var e EventRecord
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Kind, &e.PayloadJSON, &e.Seq, &e.Timestamp, &e.Epoch); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetEventsTail returns the last N events for a session (ADR-0002).
+// Used for replay-on-subscribe when a new client connects.
+func (s *ChatStore) GetEventsTail(sessionID string, limit int) ([]EventRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, session_id, kind, payload_json, seq, timestamp, epoch FROM (
+			SELECT * FROM chat_events WHERE session_id = ? ORDER BY seq DESC LIMIT ?
+		) ORDER BY seq ASC`,
+		sessionID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []EventRecord
+	for rows.Next() {
+		var e EventRecord
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Kind, &e.PayloadJSON, &e.Seq, &e.Timestamp, &e.Epoch); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 func (s *ChatStore) ResolveRecordID(liveSessionID string) string {
@@ -686,6 +757,38 @@ func migrateSchema(db *sql.DB) error {
 	}
 	if !hasWorkDirIdx {
 		if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_workdir ON chat_sessions(work_dir, updated_at DESC)"); err != nil {
+			return err
+		}
+	}
+
+	// ADR-0002: migrate chat_events to add epoch column.
+	var eventCols []string
+	eventColRows, err := db.Query("PRAGMA table_info(chat_events)")
+	if err != nil {
+		return err
+	}
+	for eventColRows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dfltValue interface{}
+		var pk int
+		if err := eventColRows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			eventColRows.Close()
+			return err
+		}
+		eventCols = append(eventCols, name)
+	}
+	eventColRows.Close()
+
+	hasEpoch := false
+	for _, c := range eventCols {
+		if c == "epoch" {
+			hasEpoch = true
+		}
+	}
+	if !hasEpoch {
+		if _, err := db.Exec("ALTER TABLE chat_events ADD COLUMN epoch TEXT NOT NULL DEFAULT ''"); err != nil {
 			return err
 		}
 	}

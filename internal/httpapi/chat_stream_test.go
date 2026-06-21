@@ -17,7 +17,7 @@ func TestChatStreamBroadcastsToSubscribersAndPersistsOnce(t *testing.T) {
 	var persisted []chat.ChatEvent
 	stream := newChatStream("session-1", session, func(evt chat.ChatEvent) {
 		persisted = append(persisted, evt)
-	}, nil)
+	}, nil, 0)
 	stream.Start()
 
 	subA := stream.Subscribe()
@@ -44,21 +44,21 @@ func TestChatStreamEmitsSessionClosedDoneAfterNewTurn(t *testing.T) {
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
 	defer stream.Unsubscribe(sub)
 
 	stream.publish(chat.ChatEvent{Type: "done", StopReason: "end_turn"})
-	if got := readChatEvent(t, sub.C); got.Type != "done" || got.StopReason != "end_turn" {
+	if got := readSubEvent(t, sub); got.Type != "done" || got.StopReason != "end_turn" {
 		t.Fatalf("expected prior turn done event, got %#v", got)
 	}
 
 	stream.StartTurn()
 	close(session.done)
 
-	if got := readChatEvent(t, sub.C); got.Type != "done" || got.StopReason != "session_closed" {
+	if got := readSubEvent(t, sub); got.Type != "done" || got.StopReason != "session_closed" {
 		t.Fatalf("expected session_closed done after turn reset, got %#v", got)
 	}
 }
@@ -74,14 +74,14 @@ func TestChatStreamWatchdogRecoversTurnWithoutToolEvents(t *testing.T) {
 		events: make(chan chat.ChatEvent, 2),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
 	defer stream.Unsubscribe(sub)
 
 	stream.StartTurn()
-	done := readChatEventTimeout(t, sub.C, 250*time.Millisecond)
+	done := readSubEventTimeout(t, sub, 250*time.Millisecond)
 	if done.Type != "done" || done.StopReason != "turn_inactivity_timeout_stream" {
 		t.Fatalf("expected inactivity recovery done, got %#v", done)
 	}
@@ -120,7 +120,7 @@ func TestChatStreamDoesNotSynthesizeTerminalFallbackAfterToolCompletion(t *testi
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -132,10 +132,10 @@ func TestChatStreamDoesNotSynthesizeTerminalFallbackAfterToolCompletion(t *testi
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: check\nTerminal status: completed\n\nOutput:\n8183 Established 874616 server",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected tool update first, got %#v", got)
 	}
-	assertNoChatEvent(t, sub.C, 300*time.Millisecond)
+	assertNoSubEvent(t, sub, 300*time.Millisecond)
 }
 
 func TestChatStreamKeepsBareDoneWithoutSyntheticFallbackText(t *testing.T) {
@@ -143,7 +143,7 @@ func TestChatStreamKeepsBareDoneWithoutSyntheticFallbackText(t *testing.T) {
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -155,15 +155,15 @@ func TestChatStreamKeepsBareDoneWithoutSyntheticFallbackText(t *testing.T) {
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: check\nTerminal status: completed\n\nOutput:\n8183 Established 874616 server",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected tool update first, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{Type: "done", StopReason: "end_turn"})
-	done := readChatEvent(t, sub.C)
+	done := readSubEvent(t, sub)
 	if done.Type != "done" || done.StopReason != "end_turn" {
 		t.Fatalf("expected original done, got %#v", done)
 	}
-	assertNoChatEvent(t, sub.C, 200*time.Millisecond)
+	assertNoSubEvent(t, sub, 200*time.Millisecond)
 }
 
 func TestChatStreamThinkingDoesNotTriggerSyntheticFallbackText(t *testing.T) {
@@ -171,7 +171,7 @@ func TestChatStreamThinkingDoesNotTriggerSyntheticFallbackText(t *testing.T) {
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -183,14 +183,14 @@ func TestChatStreamThinkingDoesNotTriggerSyntheticFallbackText(t *testing.T) {
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: check\nTerminal status: completed\n\nOutput:\n8183 Established 874616 server",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected tool update first, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{Type: "thinking"})
-	if got := readChatEvent(t, sub.C); got.Type != "thinking" {
+	if got := readSubEvent(t, sub); got.Type != "thinking" {
 		t.Fatalf("expected thinking event, got %#v", got)
 	}
-	assertNoChatEvent(t, sub.C, 300*time.Millisecond)
+	assertNoSubEvent(t, sub, 300*time.Millisecond)
 }
 
 func TestChatStreamRecoversDoneAfterCompletedInteractiveToolChainStall(t *testing.T) {
@@ -207,7 +207,7 @@ func TestChatStreamRecoversDoneAfterCompletedInteractiveToolChainStall(t *testin
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -220,7 +220,7 @@ func TestChatStreamRecoversDoneAfterCompletedInteractiveToolChainStall(t *testin
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: netstat -ano | Select-String \":8183\"\nTerminal status: completed\n\nOutput:\nTCP    127.0.0.1:8183    127.0.0.1:59105    ESTABLISHED    30792",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected tool update first, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{
@@ -230,7 +230,7 @@ func TestChatStreamRecoversDoneAfterCompletedInteractiveToolChainStall(t *testin
 		ToolKind:   "execute",
 		ToolStatus: "pending",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call" {
 		t.Fatalf("expected second tool call, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{
@@ -240,14 +240,14 @@ func TestChatStreamRecoversDoneAfterCompletedInteractiveToolChainStall(t *testin
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: Get-Process -Id 821452, 30792, 125156 | Format-Table Name, Id, SessionId -AutoSize\nTerminal status: completed\n\nOutput:\nName                Id SessionId\n----                -- ---------\nactive-terminal-mcp 125156         1\nchrome             30792         1\nserver            821452         1",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected second tool update, got %#v", got)
 	}
-	text := readChatEventTimeout(t, sub.C, 300*time.Millisecond)
+	text := readSubEventTimeout(t, sub, 300*time.Millisecond)
 	if text.Type != "text" || !strings.Contains(text.Text, "Untuk port `8183`, proses yang dicek adalah") || !strings.Contains(text.Text, "`server` (PID `821452`)") {
 		t.Fatalf("expected synthesized recovery text, got %#v", text)
 	}
-	done := readChatEventTimeout(t, sub.C, 300*time.Millisecond)
+	done := readSubEventTimeout(t, sub, 300*time.Millisecond)
 	if done.Type != "done" || done.StopReason != "tool_completion_timeout_stream" {
 		t.Fatalf("expected stream recovery done, got %#v", done)
 	}
@@ -270,7 +270,7 @@ func TestChatStreamThinkingCancelsDoneRecovery(t *testing.T) {
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -282,14 +282,14 @@ func TestChatStreamThinkingCancelsDoneRecovery(t *testing.T) {
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: Get-Process -Id 152164 | Format-Table Name, Id, SessionId -AutoSize\nTerminal status: completed\n\nOutput:\nName       Id SessionId\n----       -- ---------\nserver 152164         1",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected tool update first, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{Type: "thinking"})
-	if got := readChatEvent(t, sub.C); got.Type != "thinking" {
+	if got := readSubEvent(t, sub); got.Type != "thinking" {
 		t.Fatalf("expected thinking event, got %#v", got)
 	}
-	assertNoChatEvent(t, sub.C, 120*time.Millisecond)
+	assertNoSubEvent(t, sub, 120*time.Millisecond)
 	if session.cancelCalls != 0 {
 		t.Fatalf("expected no cancel after continued progress, got %d", session.cancelCalls)
 	}
@@ -309,7 +309,7 @@ func TestChatStreamUnsureTerminalObservationWaitsLongerBeforeRecovery(t *testing
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -322,11 +322,11 @@ func TestChatStreamUnsureTerminalObservationWaitsLongerBeforeRecovery(t *testing
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: Get-NetTCPConnection -LocalPort 8183 | Format-List\nTerminal status: completed\nDecision: if this output contains the requested fact, answer now. Run another command only for missing information, not for redundant confirmation.\n\nOutput:\nLocalPort : 8183\nOwningProcess : 956544",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected tool update first, got %#v", got)
 	}
-	assertNoChatEvent(t, sub.C, 80*time.Millisecond)
-	text := readChatEventTimeout(t, sub.C, 200*time.Millisecond)
+	assertNoSubEvent(t, sub, 80*time.Millisecond)
+	text := readSubEventTimeout(t, sub, 200*time.Millisecond)
 	if text.Type != "text" || !strings.Contains(text.Text, "port `8183`") || !strings.Contains(text.Text, "`956544`") {
 		t.Fatalf("expected delayed recovery summary, got %#v", text)
 	}
@@ -364,7 +364,7 @@ func TestChatStreamUnsureBrowserNavigationDoesNotSynthesizeFinalAnswer(t *testin
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -382,11 +382,11 @@ func TestChatStreamUnsureBrowserNavigationDoesNotSynthesizeFinalAnswer(t *testin
 			`{"url":"https://example.com/docs","title":"Integration Fixture","text":"BROWSER_CHAIN_TARGET appears on this page."}`,
 		}, "\n"),
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected browser tool update first, got %#v", got)
 	}
-	assertNoChatEvent(t, sub.C, 80*time.Millisecond)
-	assertNoChatEvent(t, sub.C, 240*time.Millisecond)
+	assertNoSubEvent(t, sub, 80*time.Millisecond)
+	assertNoSubEvent(t, sub, 240*time.Millisecond)
 	if session.cancelCalls != 0 {
 		t.Fatalf("expected incomplete browser navigation not to cancel agent, got %d", session.cancelCalls)
 	}
@@ -424,7 +424,7 @@ func TestChatStreamRecoversDoneAfterCompletedBrowserToolChainStall(t *testing.T)
 		events: make(chan chat.ChatEvent, 6),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
@@ -442,7 +442,7 @@ func TestChatStreamRecoversDoneAfterCompletedBrowserToolChainStall(t *testing.T)
 			`{"url":"https://example.com/docs","title":"Setup Page","text":"Setup page for integration test."}`,
 		}, "\n"),
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected first browser tool update, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{
@@ -452,7 +452,7 @@ func TestChatStreamRecoversDoneAfterCompletedBrowserToolChainStall(t *testing.T)
 		ToolKind:   "browser",
 		ToolStatus: "pending",
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call" {
 		t.Fatalf("expected inspect tool call, got %#v", got)
 	}
 	stream.publish(chat.ChatEvent{
@@ -467,14 +467,14 @@ func TestChatStreamRecoversDoneAfterCompletedBrowserToolChainStall(t *testing.T)
 			`{"url":"https://example.com/docs","title":"Integration Fixture","text":"BROWSER_CHAIN_TARGET is visible in the hero section."}`,
 		}, "\n"),
 	})
-	if got := readChatEvent(t, sub.C); got.Type != "tool_call_update" {
+	if got := readSubEvent(t, sub); got.Type != "tool_call_update" {
 		t.Fatalf("expected inspect tool update, got %#v", got)
 	}
-	text := readChatEventTimeout(t, sub.C, 300*time.Millisecond)
+	text := readSubEventTimeout(t, sub, 300*time.Millisecond)
 	if text.Type != "text" || !strings.Contains(text.Text, "Integration Fixture") || !strings.Contains(text.Text, "BROWSER_CHAIN_TARGET") {
 		t.Fatalf("expected synthesized browser recovery text, got %#v", text)
 	}
-	done := readChatEventTimeout(t, sub.C, 300*time.Millisecond)
+	done := readSubEventTimeout(t, sub, 300*time.Millisecond)
 	if done.Type != "done" || done.StopReason != "tool_completion_timeout_stream" {
 		t.Fatalf("expected stream recovery done, got %#v", done)
 	}
@@ -488,14 +488,14 @@ func TestChatStreamDropsLateToolEventsAfterDone(t *testing.T) {
 		events: make(chan chat.ChatEvent, 4),
 		done:   make(chan struct{}),
 	}
-	stream := newChatStream("session-1", session, nil, nil)
+	stream := newChatStream("session-1", session, nil, nil, 0)
 	stream.Start()
 
 	sub := stream.Subscribe()
 	defer stream.Unsubscribe(sub)
 
 	stream.publish(chat.ChatEvent{Type: "done", StopReason: "tool_completion_timeout_stream"})
-	done := readChatEvent(t, sub.C)
+	done := readSubEvent(t, sub)
 	if done.Type != "done" {
 		t.Fatalf("expected done event, got %#v", done)
 	}
@@ -507,7 +507,7 @@ func TestChatStreamDropsLateToolEventsAfterDone(t *testing.T) {
 		ToolStatus:  "completed",
 		ToolContent: "Terminal command: Get-Process -Id 956544\nTerminal status: completed\n\nOutput:\nserver",
 	})
-	assertNoChatEvent(t, sub.C, 80*time.Millisecond)
+	assertNoSubEvent(t, sub, 80*time.Millisecond)
 }
 
 func TestChatStreamFallbackSummarizesProcessNameCommand(t *testing.T) {
@@ -548,6 +548,37 @@ func readChatEventTimeout(t *testing.T, ch <-chan chat.ChatEvent, timeout time.D
 	}
 }
 
+// readSubEvent reads from both the priority and bulk channels of a subscriber
+// (ADR-0003: critical events go to priority, bulk events to C).
+func readSubEvent(t *testing.T, sub *chatSubscriber) chat.ChatEvent {
+	t.Helper()
+	return readSubEventTimeout(t, sub, time.Second)
+}
+
+func readSubEventTimeout(t *testing.T, sub *chatSubscriber, timeout time.Duration) chat.ChatEvent {
+	t.Helper()
+	select {
+	case evt := <-sub.priority:
+		return evt
+	case evt := <-sub.C:
+		return evt
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for chat event")
+		return chat.ChatEvent{}
+	}
+}
+
+func assertNoSubEvent(t *testing.T, sub *chatSubscriber, timeout time.Duration) {
+	t.Helper()
+	select {
+	case evt := <-sub.priority:
+		t.Fatalf("expected no chat event, got %#v", evt)
+	case evt := <-sub.C:
+		t.Fatalf("expected no chat event, got %#v", evt)
+	case <-time.After(timeout):
+	}
+}
+
 func assertNoChatEvent(t *testing.T, ch <-chan chat.ChatEvent, timeout time.Duration) {
 	t.Helper()
 	select {
@@ -569,6 +600,7 @@ func (s *fakeChatSession) WorkDir() string                                      
 func (s *fakeChatSession) Mode() chat.SessionMode                                { return chat.ModeACP }
 func (s *fakeChatSession) Events() <-chan chat.ChatEvent                         { return s.events }
 func (s *fakeChatSession) Done() <-chan struct{}                                 { return s.done }
+func (s *fakeChatSession) Err() error                                             { return nil }
 func (s *fakeChatSession) Send(context.Context, string, []chat.Attachment) error { return nil }
 func (s *fakeChatSession) Cancel() error                                         { s.cancelCalls++; return nil }
 func (s *fakeChatSession) Close() error                                          { close(s.done); return nil }

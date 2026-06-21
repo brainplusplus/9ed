@@ -570,6 +570,7 @@ func (s *apiFakeChatSession) WorkDir() string                                   
 func (s *apiFakeChatSession) Mode() chat.SessionMode                                { return s.mode }
 func (s *apiFakeChatSession) Events() <-chan chat.ChatEvent                         { return s.events }
 func (s *apiFakeChatSession) Done() <-chan struct{}                                 { return s.done }
+func (s *apiFakeChatSession) Err() error                                             { return nil }
 func (s *apiFakeChatSession) Send(context.Context, string, []chat.Attachment) error { return nil }
 func (s *apiFakeChatSession) Cancel() error                                         { return nil }
 func (s *apiFakeChatSession) Close() error                                          { close(s.done); return nil }
