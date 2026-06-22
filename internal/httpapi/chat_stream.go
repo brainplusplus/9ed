@@ -64,6 +64,40 @@ func (r *chatStreamRegistry) Touch(sessionID string) bool {
 	return true
 }
 
+// ReplaceSession invalidates any existing stream for sessionID and creates a
+// fresh one bound to the new session. This is needed because the run()
+// goroutine of the old stream listens on the old session's Events()/Done()
+// channels. When a session is resumed (e.g. after toggling MCP options) and the
+// ACP agent returns the same session ID, GetOrCreate would wrongly reuse the
+// stale stream. ReplaceSession ensures the stream is rebound to the new
+// session's channels.
+func (r *chatStreamRegistry) ReplaceSession(sessionID string, session chat.ChatSession, persist chatEventPersister) *chatStream {
+	r.mu.Lock()
+	if old, ok := r.streams[sessionID]; ok {
+		delete(r.streams, sessionID)
+		r.mu.Unlock()
+		old.invalidate()
+		r.mu.Lock()
+	}
+	r.mu.Unlock()
+	return r.GetOrCreate(sessionID, session, persist)
+}
+
+// Invalidate closes and removes the stream for sessionID if it exists,
+// without emitting a session_closed event. Used when a session is being
+// replaced by one with a different ID.
+func (r *chatStreamRegistry) Invalidate(sessionID string) {
+	r.mu.Lock()
+	old, ok := r.streams[sessionID]
+	if ok {
+		delete(r.streams, sessionID)
+	}
+	r.mu.Unlock()
+	if ok {
+		old.invalidate()
+	}
+}
+
 func (r *chatStreamRegistry) LatestID() (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -121,6 +155,7 @@ type chatStream struct {
 	coalescer        *chatStreamCoalescer
 	mu               sync.Mutex
 	done             chan struct{}
+	closeOnce        sync.Once
 }
 
 var interactiveToolDoneTimeout = 3500 * time.Millisecond
@@ -148,6 +183,36 @@ func newChatStream(sessionID string, session chat.ChatSession, persist chatEvent
 
 func (s *chatStream) Start() {
 	go s.run()
+}
+
+// invalidate signals the run() goroutine to exit immediately without emitting
+// a session_closed done event. Subscribers' channels are closed so any pending
+// WebSocket handlers exit promptly. Called by ReplaceSession when a new session
+// replaces an existing one with the same ID.
+func (s *chatStream) invalidate() {
+	s.mu.Lock()
+	select {
+	case <-s.done:
+		s.mu.Unlock()
+		return
+	default:
+	}
+	if s.coalescer != nil {
+		s.coalescer.stop()
+	}
+	s.cancelToolFallbackLocked()
+	s.cancelTurnRecoveryLocked()
+	s.cancelTurnWatchdogLocked()
+	s.closeOnce.Do(func() {
+		close(s.done)
+	})
+	for sub := range s.subscribers {
+		delete(s.subscribers, sub)
+		close(sub.C)
+		close(sub.priority)
+	}
+	s.mu.Unlock()
+	debug.Printf("[chat/stream] invalidated session=%s", s.sessionID)
 }
 
 func (s *chatStream) StartTurn() {
@@ -197,7 +262,9 @@ func (s *chatStream) run() {
 		s.cancelTurnRecoveryLocked()
 		s.cancelTurnWatchdogLocked()
 		subscriberCount := len(s.subscribers)
-		close(s.done)
+		s.closeOnce.Do(func() {
+			close(s.done)
+		})
 		for sub := range s.subscribers {
 			delete(s.subscribers, sub)
 			close(sub.C)
@@ -212,6 +279,9 @@ func (s *chatStream) run() {
 
 	for {
 		select {
+		case <-s.done:
+			debug.Printf("[chat/stream] invalidated session=%s", s.sessionID)
+			return
 		case <-s.session.Done():
 			debug.Printf("[chat/stream] session done session=%s", s.sessionID)
 			s.mu.Lock()

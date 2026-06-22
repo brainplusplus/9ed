@@ -115,6 +115,93 @@ func TestChatStreamRegistryLatestTracksTouchedStream(t *testing.T) {
 	close(sessionB.done)
 }
 
+func TestChatStreamRegistryReplaceSessionRebindsToNewSession(t *testing.T) {
+	registry := newChatStreamRegistry()
+
+	// Old session and stream.
+	oldSession := &fakeChatSession{
+		events: make(chan chat.ChatEvent, 4),
+		done:   make(chan struct{}),
+	}
+	oldStream := registry.GetOrCreate("session-1", oldSession, nil)
+	sub := oldStream.Subscribe()
+	defer oldStream.Unsubscribe(sub)
+
+	// Simulate the old session producing an event — subscriber should receive it.
+	oldSession.events <- chat.ChatEvent{Type: "text", Text: "old"}
+	got := readChatEvent(t, sub.C)
+	if got.Text != "old" {
+		t.Fatalf("expected 'old', got %q", got.Text)
+	}
+
+	// ReplaceSession should invalidate the old stream and create a new one.
+	newSession := &fakeChatSession{
+		events: make(chan chat.ChatEvent, 4),
+		done:   make(chan struct{}),
+	}
+	newStream := registry.ReplaceSession("session-1", newSession, nil)
+
+	if newStream == oldStream {
+		t.Fatal("expected ReplaceSession to return a new stream")
+	}
+
+	// Old subscriber channel should be closed.
+	select {
+	case _, ok := <-sub.C:
+		if ok {
+			t.Fatal("expected old subscriber channel to be closed after ReplaceSession")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for old subscriber channel to close")
+	}
+
+	// New stream should deliver events from the new session.
+	newSub := newStream.Subscribe()
+	defer newStream.Unsubscribe(newSub)
+
+	newSession.events <- chat.ChatEvent{Type: "text", Text: "new"}
+	got = readChatEvent(t, newSub.C)
+	if got.Text != "new" {
+		t.Fatalf("expected 'new', got %q", got.Text)
+	}
+
+	// Old session events should NOT reach the new stream.
+	oldSession.events <- chat.ChatEvent{Type: "text", Text: "stale"}
+	assertNoChatEvent(t, newSub.C, 200*time.Millisecond)
+
+	close(newSession.done)
+}
+
+func TestChatStreamRegistryInvalidateClosesSubscribers(t *testing.T) {
+	registry := newChatStreamRegistry()
+	session := &fakeChatSession{
+		events: make(chan chat.ChatEvent, 4),
+		done:   make(chan struct{}),
+	}
+	stream := registry.GetOrCreate("session-1", session, nil)
+	sub := stream.Subscribe()
+	defer stream.Unsubscribe(sub)
+
+	registry.Invalidate("session-1")
+
+	// Subscriber channel should be closed.
+	select {
+	case _, ok := <-sub.C:
+		if ok {
+			t.Fatal("expected subscriber channel to be closed after Invalidate")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subscriber channel to close")
+	}
+
+	// Registry should no longer have the stream.
+	if registry.Touch("session-1") {
+		t.Fatal("expected Touch to return false after Invalidate")
+	}
+
+	close(session.done)
+}
+
 func TestChatStreamDoesNotSynthesizeTerminalFallbackAfterToolCompletion(t *testing.T) {
 	session := &fakeChatSession{
 		events: make(chan chat.ChatEvent, 4),

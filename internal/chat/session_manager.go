@@ -75,8 +75,19 @@ func (m *SessionManager) Resume(ctx context.Context, agent AgentDescriptor, work
 
 	m.mu.Lock()
 	m.cancelGraceTimerLocked(session.ID())
+	// Close the old session if one exists with the same ID (common when the ACP
+	// agent returns the same session ID after resume). Without this, the old
+	// session's adapter subprocess and goroutines leak.
+	var oldSession ChatSession
+	if existing, ok := m.sessions[session.ID()]; ok {
+		oldSession = existing
+	}
 	m.sessions[session.ID()] = session
 	m.mu.Unlock()
+
+	if oldSession != nil {
+		go func(s ChatSession) { _ = s.Close() }(oldSession)
+	}
 
 	return session, nil
 }

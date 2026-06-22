@@ -1451,6 +1451,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			// ADR-0003: priority channel (critical events) checked first.
 			case evt, ok := <-sub.priority:
 				if !ok {
+					cancel()
 					return
 				}
 				if err := conn.WriteJSON(evt); err != nil {
@@ -1459,6 +1460,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			case evt, ok := <-sub.C:
 				if !ok {
+					cancel()
 					return
 				}
 				if err := conn.WriteJSON(evt); err != nil {
@@ -1853,6 +1855,18 @@ func (a *API) handleChatResume(w http.ResponseWriter, r *http.Request) {
 	}
 	if previousLiveID != "" && previousLiveID != session.ID() {
 		a.chatSessionManager.Remove(previousLiveID)
+	}
+
+	// Invalidate any stale chatStream bound to the old session. When the ACP
+	// agent returns the same session ID after resume, the old stream's run()
+	// goroutine is still listening on the OLD session's Events()/Done()
+	// channels. Without replacement, new events from the resumed session would
+	// never reach subscribers, causing "connecting forever".
+	if a.chatStreams != nil {
+		if previousLiveID != "" && previousLiveID != session.ID() {
+			a.chatStreams.Invalidate(previousLiveID)
+		}
+		a.chatStreams.ReplaceSession(session.ID(), session, a.newChatEventPersister(session.ID()))
 	}
 
 	if a.chatStore != nil {
