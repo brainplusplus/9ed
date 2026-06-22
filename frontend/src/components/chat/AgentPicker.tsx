@@ -116,6 +116,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
+  const toggleUseActiveTerminal = useChatStore((s) => s.toggleUseActiveTerminal);
   const restartActiveSessionForTerminal = useChatStore((s) => s.restartActiveSessionForTerminal);
   const restartActiveSessionForBrowser = useChatStore((s) => s.restartActiveSessionForBrowser);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
@@ -126,7 +127,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   const hasActiveSession = !!activeSession;
   const activeBrowserTabId = activeProject?.activeBrowserTabId ?? null;
   const browserCurrentEnabled = !!(activeSession?.useActiveBrowser ?? useActiveBrowser);
-  const terminalCurrentEnabled = !!activeSession?.useActiveTerminal;
+  const terminalCurrentEnabled = !!(activeSession?.useActiveTerminal ?? (useActiveTerminal && !!activeTerminalId));
   const browserCanRestart = !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
   const browserCanEnable = browserCanRestart && !!activeBrowserTabId;
   const browserToggleEnabled = !activeSession ? true : (browserCurrentEnabled ? browserCanRestart : browserCanEnable);
@@ -140,6 +141,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
         ? 'Restart this ready agent session with or without the active browser MCP bridge'
         : 'Browser can be toggled when the agent is Ready'));
   const terminalReady = !!activeTerminalId && !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
+  const terminalCanPreSet = !activeSession && !!activeTerminalId;
   const terminalToggleTitle = !activeTerminalId
     ? 'No terminal active'
     : terminalReady
@@ -169,8 +171,15 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   };
 
   const handleTerminalToggle = () => {
+    const enabled = !(activeSession?.useActiveTerminal ?? (useActiveTerminal && !!activeTerminalId));
+    if (!activeSession) {
+      if (enabled !== useActiveTerminal) {
+        toggleUseActiveTerminal();
+      }
+      return;
+    }
     if (!terminalReady) return;
-    void restartActiveSessionForTerminal(!(useActiveTerminal && !!activeTerminalId));
+    void restartActiveSessionForTerminal(enabled);
   };
 
   return (
@@ -223,14 +232,14 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
         <span className="chat-config-toggle-label">Browser</span>
       </label>
       <label
-        className={`chat-config-toggle chat-config-toggle-mcp${terminalCurrentEnabled ? ' active' : ''}${!terminalReady ? ' disabled' : ''}`}
+        className={`chat-config-toggle chat-config-toggle-mcp${terminalCurrentEnabled ? ' active' : ''}${!terminalReady && !terminalCanPreSet ? ' disabled' : ''}`}
         title={terminalToggleTitle}
       >
         <input
           type="checkbox"
-          checked={!!activeSession?.useActiveTerminal}
+          checked={terminalCurrentEnabled}
           onChange={handleTerminalToggle}
-          disabled={busy || !terminalReady}
+          disabled={busy || (!terminalReady && !terminalCanPreSet)}
         />
         <span className="chat-config-toggle-label">Terminal</span>
       </label>

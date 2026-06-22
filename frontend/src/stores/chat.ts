@@ -1233,7 +1233,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const previousEnabled = state.useActiveTerminal;
     const terminalId = enabled ? state.activeTerminalId ?? undefined : undefined;
-    const browserState = activeBrowserStateForWorkDir(state, session.workDir);
+    const browserEnabled = session.useActiveBrowser ?? state.useActiveBrowser;
+    const browserTabId = browserEnabled ? activeBrowserTabForWorkDir(session.workDir) : undefined;
+    const browserSelection = browserEnabled ? state.browserSelection : null;
+    const browserSelectionMode = state.browserSelectionMode;
+    const browserSelectionCapture = browserEnabled ? state.browserSelectionCapture : null;
     set({ useActiveTerminal: enabled });
 
     if (session.useActiveTerminal === enabled) return true;
@@ -1248,7 +1252,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'connecting', kind: 'archived' })),
       }));
 
-      const resumed = await resumeChatSession(recordId, session.agentId, session.workDir!, session.acpSessionId, enabled, enabled ? get().activeTerminalId : undefined, browserState.enabled, browserState.tabId);
+      const resumed = await resumeChatSession(recordId, session.agentId, session.workDir!, session.acpSessionId, enabled, enabled ? get().activeTerminalId : undefined, browserEnabled, browserTabId);
       if (!('id' in resumed)) {
         throw new Error(resumed.resumeError ?? 'Restart failed');
       }
@@ -1268,10 +1272,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           acpSessionId,
           useActiveTerminal: enabled,
           terminalId,
-          useActiveBrowser: browserState.enabled,
-          browserSelection: browserState.selection,
-          browserSelectionMode: browserState.selectionMode,
-          browserSelectionCapture: browserState.selectionCapture,
+          useActiveBrowser: browserEnabled,
+          browserSelection: browserSelection,
+          browserSelectionMode: browserSelectionMode,
+          browserSelectionCapture: browserSelectionCapture,
         };
         const nextSessions = [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
         const nextState = { ...current, sessions: nextSessions };
