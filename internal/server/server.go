@@ -81,9 +81,15 @@ func New(cfg config.Config) *Server {
 	}
 
 	browserMgr := browser.NewManager()
-	settingsTunnels := tunnel.NewManager(chatStore, cfg.Port, cfg.Tunnel, cfg.TunnelEngine)
-	if err := settingsTunnels.Load(); err != nil {
-		log.Printf("warning: settings tunnels unavailable: %v", err)
+	var settingsTunnels *tunnel.Manager
+	if chatStore != nil {
+		settingsTunnels = tunnel.NewManager(chatStore, cfg.Port, cfg.Tunnel, cfg.TunnelEngine)
+		if err := settingsTunnels.Load(); err != nil {
+			log.Printf("warning: settings tunnels unavailable: %v", err)
+		}
+	} else {
+		settingsTunnels = tunnel.NewManager(nil, cfg.Port, cfg.Tunnel, cfg.TunnelEngine)
+		log.Printf("warning: settings tunnels disabled: chat store unavailable")
 	}
 
 	api := httpapi.New(httpapi.Dependencies{

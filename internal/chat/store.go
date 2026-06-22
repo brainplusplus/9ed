@@ -2,6 +2,7 @@ package chat
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -94,6 +95,21 @@ func NewChatStore(dbPath string) (*ChatStore, error) {
 		return nil, err
 	}
 
+	// Retry on disk I/O errors (common on Windows when the previous process
+	// was just killed and the OS hasn't released the WAL file lock yet).
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		store, err := openChatStore(dbPath)
+		if err == nil {
+			return store, nil
+		}
+		lastErr = err
+		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("after retries: %w", lastErr)
+}
+
+func openChatStore(dbPath string) (*ChatStore, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
@@ -457,6 +473,9 @@ func (s *ChatStore) SaveWorkspaceState(projectPath, stateJSON string) error {
 }
 
 func (s *ChatStore) ListTunnelConfigs() ([]tunnel.ConfigRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("chat store not available")
+	}
 	rows, err := s.db.Query(
 		`SELECT id, name, local_port, engine, enabled, created_at, updated_at
 		 FROM tunnel_configs
@@ -481,6 +500,9 @@ func (s *ChatStore) ListTunnelConfigs() ([]tunnel.ConfigRecord, error) {
 }
 
 func (s *ChatStore) SaveTunnelConfig(cfg tunnel.ConfigRecord) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("chat store not available")
+	}
 	enabled := 0
 	if cfg.Enabled {
 		enabled = 1
@@ -500,6 +522,9 @@ func (s *ChatStore) SaveTunnelConfig(cfg tunnel.ConfigRecord) error {
 }
 
 func (s *ChatStore) DeleteTunnelConfig(id string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("chat store not available")
+	}
 	_, err := s.db.Exec("DELETE FROM tunnel_configs WHERE id = ?", id)
 	return err
 }
