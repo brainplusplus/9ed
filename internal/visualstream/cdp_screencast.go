@@ -85,7 +85,11 @@ func (s *CDPScreencastSource) Start(ctx context.Context) (<-chan Frame, error) {
 	return s.frames, nil
 }
 
-// Stop stops the screencast and closes the frame channel.
+// Stop stops the screencast and marks the source as stopped. The frames
+// channel is intentionally NOT closed here to avoid a data race between
+// close(frames) in Stop() and send(frames<-) in handleScreencastFrame().
+// Consumers detect shutdown via ctx cancellation (see frameLoop), and the
+// channel is garbage-collected once the source is unreachable.
 func (s *CDPScreencastSource) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,9 +110,8 @@ func (s *CDPScreencastSource) Stop() error {
 		s.cancel()
 	}
 
-	if s.frames != nil {
-		close(s.frames)
-	}
+	// Do NOT close(s.frames) — it would race with concurrent sends in
+	// handleScreencastFrame. The channel is GC'd when unreachable.
 
 	debug.Printf("[visualstream/cdp] screencast stopped")
 	return nil
@@ -162,6 +165,9 @@ func (s *CDPScreencastSource) handleScreencastFrame(params map[string]any) {
 		})
 	}
 
+	// Guard against send-on-closed-channel: since Stop() no longer closes
+	// the channel, there is no race. If the source is stopped, the buffered
+	// channel may fill up and frames are dropped via the default case.
 	select {
 	case frames <- frame:
 	default:
