@@ -13,6 +13,8 @@ func TestNormalizeURL(t *testing.T) {
 		raw  string
 		want string
 	}{
+		{name: "about:blank", raw: "about:blank", want: "about:blank"},
+		{name: "about:blank case insensitive", raw: "ABOUT:BLANK", want: "about:blank"},
 		{name: "localhost port", raw: "localhost:3000", want: "http://localhost:3000"},
 		{name: "loopback port", raw: "127.0.0.1:5173", want: "http://127.0.0.1:5173"},
 		{name: "host port", raw: "example.com:8080", want: "http://example.com:8080"},
@@ -36,6 +38,17 @@ func TestNormalizeURL(t *testing.T) {
 func TestNormalizeURLRejectsUnsupportedScheme(t *testing.T) {
 	if _, err := NormalizeURL("file:///tmp/secret.txt"); err == nil {
 		t.Fatal("NormalizeURL() expected unsupported scheme error")
+	}
+}
+
+func TestCreateTabAboutBlank(t *testing.T) {
+	manager := NewManager()
+	tab, err := manager.CreateTab("about:blank")
+	if err != nil {
+		t.Fatalf("CreateTab(about:blank) error = %v", err)
+	}
+	if tab.URL != "about:blank" {
+		t.Fatalf("CreateTab(about:blank) URL = %q, want %q", tab.URL, "about:blank")
 	}
 }
 

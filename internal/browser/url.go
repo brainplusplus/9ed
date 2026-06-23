@@ -11,6 +11,9 @@ func NormalizeURL(raw string) (*url.URL, error) {
 	if value == "" {
 		return nil, fmt.Errorf("url is required")
 	}
+	if strings.EqualFold(value, "about:blank") {
+		return &url.URL{Scheme: "about", Opaque: "blank"}, nil
+	}
 	lower := strings.ToLower(value)
 	if strings.HasPrefix(lower, "localhost:") ||
 		strings.HasPrefix(lower, "127.") ||

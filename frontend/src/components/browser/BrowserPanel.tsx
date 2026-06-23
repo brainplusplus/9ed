@@ -8,7 +8,7 @@ import { InspectOverlay, RemoteInspectOverlay, SelectedHighlight, InspectMiniPan
 import { useVisualStream } from '../../hooks/useVisualStream';
 import { useGestures } from '../../hooks/useGestures';
 
-const DEFAULT_URL = 'localhost:3000';
+const DEFAULT_URL = 'about:blank';
 const VIEWPORT_PRESETS = {
   responsive: { label: 'Auto', width: 0, height: 0 },
   desktop: { label: 'Desktop', width: 1440, height: 900 },
