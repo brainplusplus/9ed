@@ -522,11 +522,37 @@ export type TimelineEvent = {
   event: ChatEvent;
 };
 
+// ADR-0002: seq window metadata describing the event range for the session.
+export type SeqWindow = {
+  minSeq: number;
+  maxSeq: number;
+  nextSeq: number;
+};
+
+// ADR-0002: full timeline response shape. The client uses reset/staleCursor/gap
+// to decide whether to reset its cursor and re-fetch the timeline tail.
 export type TimelineResponse = {
   type: 'timeline';
   events: TimelineEvent[];
   epoch: string;
+  reset: boolean;
+  staleCursor: boolean;
+  gap: boolean;
+  window: SeqWindow;
+  hasOlder: boolean;
+  hasNewer: boolean;
+  endCursor: number;
+  // Legacy hint preserved for backward compatibility.
   hasMore: boolean;
+};
+
+// ADR-0002: replay-on-subscribe metadata envelope. Sent immediately after the
+// replay events so the client can initialize its cursor with the current
+// window and epoch.
+export type ReplayMeta = {
+  type: 'replay_meta';
+  epoch: string;
+  window: SeqWindow;
 };
 
 // ADR-0001: WebRTC visual signaling messages.

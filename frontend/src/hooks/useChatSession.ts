@@ -4,14 +4,13 @@ import { normalizeWorkDir, useChatStore } from '../stores/chat';
 import { useWorkspaceStore } from '../stores/workspace';
 import { getTerminalHandle } from '../terminalRegistry';
 import { terminalCommandDialect, terminalShellLabel } from '../terminalIntegration';
+import { reconnectDelay, MAX_RECONNECT_ATTEMPTS } from '../utils/reconnect';
 import type { Attachment } from '../components/chat/ChatInput';
 import type { BrowserElementSelection, BrowserInspectResult, BrowserSelectionMode, ChatEvent, ChatSessionKind, CodeContext, TerminalContext, TimelineResponse } from '../types';
 import type { QueuedMessage } from '../stores/chat';
 
 const CONNECT_TIMEOUT_MS = 10000;
 const INITIAL_CONNECT_DELAY_MS = 250;
-const MAX_RECONNECT_ATTEMPTS = 6;
-const RECONNECT_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
 const STREAM_STALL_MS = 15000;
 // ADR-0006: client-side app-level ping interval (server also sends RFC645 protocol pings).
 const LIVENESS_PING_INTERVAL_MS = 10000;
@@ -437,7 +436,7 @@ export function useChatSession(): UseChatSessionResult {
       if (conn.disposed) return;
       if (conn.connecting) return;
       if (isBackendTemporarilyUnavailable()) {
-        const delay = RECONNECT_DELAYS_MS[Math.min(conn.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+        const delay = reconnectDelay(conn.reconnectAttempts);
         conn.reconnectAttempts += 1;
         conn.reconnectTimer = window.setTimeout(() => {
           conn.reconnectTimer = undefined;
@@ -482,7 +481,7 @@ export function useChatSession(): UseChatSessionResult {
         if (seq !== conn.seq || conn.disposed) return;
         conn.connecting = false;
         if (isBackendTemporarilyUnavailable()) {
-          const delay = RECONNECT_DELAYS_MS[Math.min(conn.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+          const delay = reconnectDelay(conn.reconnectAttempts);
           conn.reconnectAttempts += 1;
           conn.reconnectTimer = window.setTimeout(() => {
             conn.reconnectTimer = undefined;
@@ -527,7 +526,7 @@ export function useChatSession(): UseChatSessionResult {
           return;
         }
 
-        const delay = RECONNECT_DELAYS_MS[Math.min(conn.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)];
+        const delay = reconnectDelay(conn.reconnectAttempts);
         conn.reconnectAttempts += 1;
         setConnecting();
         conn.reconnectTimer = window.setTimeout(() => {
@@ -569,9 +568,10 @@ export function useChatSession(): UseChatSessionResult {
         ws.send(JSON.stringify({ type: 'hello', clientId, ts: Date.now() }));
         // ADR-0002: on reconnect, fetch timeline events after last known cursor
         // to fill any gaps that occurred while the socket was disconnected.
+        // Include epoch so the server can detect stale cursors.
         const cursor = cursorRef.current.get(sessionId);
         if (cursor && cursor.seq > 0) {
-          ws.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: cursor.seq }));
+          ws.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: cursor.seq, epoch: cursor.epoch }));
         }
         // ADR-0006: start client-side app-level ping (server also sends RFC645 protocol pings).
         conn.livenessTimer = window.setInterval(() => {
@@ -590,9 +590,41 @@ export function useChatSession(): UseChatSessionResult {
           if (data.type === 'pong' || data.type === 'hello_ack') {
             return;
           }
-          // ADR-0002: timeline catch-up response — replay events and update cursor.
+          // ADR-0002: replay-on-subscribe metadata envelope — initialize cursor
+          // with the current window and epoch so subsequent fetch_timeline
+          // requests can detect stale cursors and gaps.
+          if (data.type === 'replay_meta') {
+            const meta = data as unknown as { type: string; epoch: string; window: { minSeq: number; maxSeq: number; nextSeq: number } };
+            if (meta.epoch && meta.window) {
+              // Initialize cursor to maxSeq of the replay window so the client
+              // only fetches events that arrived after the replay.
+              const cursorSeq = meta.window.maxSeq > 0 ? meta.window.maxSeq : 0;
+              cursorRef.current.set(sessionId, { seq: cursorSeq, epoch: meta.epoch });
+              appendSessionDebugRef.current(sessionId, {
+                source: 'ws',
+                level: 'info',
+                message: `replay_meta: cursor initialized seq=${cursorSeq} epoch=${meta.epoch.slice(0, 8)} window=${meta.window.minSeq}..${meta.window.maxSeq}`,
+              });
+            }
+            return;
+          }
+          // ADR-0002: timeline catch-up response — replay events, update cursor,
+          // and handle staleCursor/gap/reset flags by resetting cursor and
+          // re-fetching the timeline tail.
           if (data.type === 'timeline') {
             const timeline = data as unknown as TimelineResponse;
+            // ADR-0002: if the server signals reset (staleCursor, gap, or
+            // explicit reset), delete the cursor and re-fetch the tail.
+            if (timeline.reset || timeline.staleCursor || timeline.gap) {
+              cursorRef.current.delete(sessionId);
+              appendSessionDebugRef.current(sessionId, {
+                source: 'ws',
+                level: 'warn',
+                message: `timeline reset${timeline.staleCursor ? ' (staleCursor)' : ''}${timeline.gap ? ' (gap)' : ''}: re-fetching tail`,
+              });
+              conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: 0 }));
+              return;
+            }
             if (timeline.events && timeline.events.length > 0) {
               for (const tevt of timeline.events) {
                 const evt = { ...tevt.event, seq: tevt.seq, epoch: tevt.epoch };
@@ -600,9 +632,15 @@ export function useChatSession(): UseChatSessionResult {
               }
               const last = timeline.events[timeline.events.length - 1];
               cursorRef.current.set(sessionId, { seq: last.seq, epoch: last.epoch ?? timeline.epoch });
-              // If hasMore, fetch the next page.
-              if (timeline.hasMore) {
-                conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: last.seq }));
+              // If hasNewer (or legacy hasMore), fetch the next page.
+              if (timeline.hasNewer || timeline.hasMore) {
+                conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: last.seq, epoch: last.epoch ?? timeline.epoch }));
+              }
+            } else {
+              // No events returned — update epoch from the response.
+              if (timeline.epoch) {
+                const existing = cursorRef.current.get(sessionId);
+                cursorRef.current.set(sessionId, { seq: existing?.seq ?? 0, epoch: timeline.epoch });
               }
             }
             return;
@@ -631,6 +669,9 @@ export function useChatSession(): UseChatSessionResult {
               level: 'info',
               message: 'agent session resumed after crash',
             });
+            // ADR-0002: re-fetch the timeline tail to catch up on events that
+            // occurred during the epoch change (VAL-CATCHUP-005).
+            conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: 0 }));
             void refreshSessionStateRef.current(sessionId);
             return;
           }
@@ -681,12 +722,18 @@ export function useChatSession(): UseChatSessionResult {
             return;
           }
           // ADR-0003: client backpressure — agent cancelled due to overflow.
+          // The client may have missed events (seq gap), so re-fetch the
+          // timeline tail to fill any gaps.
           if (data.type === 'done' && data.stopReason === 'client_backpressure') {
             appendSessionDebugRef.current(sessionId, {
               source: 'ws',
               level: 'warn',
-              message: 'agent cancelled due to client backpressure',
+              message: 'agent cancelled due to client backpressure; re-fetching timeline for seq gap',
             });
+            const cursor = cursorRef.current.get(sessionId);
+            const afterSeq = cursor?.seq ?? 0;
+            const epoch = cursor?.epoch ?? '';
+            conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq, epoch }));
           }
           // ADR-0002: update cursor tracking (seq + epoch).
           if (data.seq !== undefined && data.seq > 0) {
@@ -1026,12 +1073,14 @@ export function useChatSession(): UseChatSessionResult {
   // ADR-0002: fetch timeline events after a cursor for catch-up on reconnect.
   // Called when a WS reconnects and the client needs to fill gaps in event
   // history. The server returns events after the given seq, grouped by epoch.
+  // Includes epoch so the server can detect stale cursors.
   const fetchTimeline = useCallback((sessionId: string, afterSeq?: number) => {
     const conn = connectionsRef.current.get(sessionId);
     if (!conn || !socketIsOpen(conn)) return;
     const cursor = cursorRef.current.get(sessionId);
     const seq = afterSeq ?? cursor?.seq ?? 0;
-    conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: seq }));
+    const epoch = cursor?.epoch ?? '';
+    conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: seq, epoch }));
   }, []);
 
   return { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected, fetchTimeline };
