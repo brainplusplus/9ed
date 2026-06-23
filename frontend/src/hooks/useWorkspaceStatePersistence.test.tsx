@@ -8,7 +8,7 @@ import { useChatStore } from '../stores/chat';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-const saveWorkspaceState = vi.fn();
+const saveWorkspaceState = vi.fn().mockResolvedValue(undefined);
 const getWorkspaceState = vi.fn();
 const getFileContent = vi.fn();
 
