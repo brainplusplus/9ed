@@ -2,6 +2,7 @@ package visualstream
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -229,5 +230,70 @@ func TestStreamingSessionInputRouting(t *testing.T) {
 	}
 	if events[0].X != 10 || events[0].Y != 20 {
 		t.Errorf("unexpected event: %+v", events[0])
+	}
+}
+
+// ── Vanilla ICE: HandleOffer answer SDP must contain candidates ──
+
+// TestHandleOfferAnswerContainsICECandidates verifies that the answer SDP
+// returned by HandleOffer includes gathered ICE candidates (vanilla ICE).
+// This is the fix for the WebRTC peer connection failure where the server's
+// OnICECandidate callback was empty and the answer was returned before ICE
+// gathering completed.
+func TestHandleOfferAnswerContainsICECandidates(t *testing.T) {
+	h := NewSignalingHandler()
+	source := &mockFrameSource{}
+	strategy := &mockStrategy{}
+	input := &mockInputHandler{}
+
+	ss := NewStreamingSession(source, strategy, input)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = ss.Start(ctx)
+	defer ss.Stop()
+
+	h.RegisterSession("tab-ice", ss)
+
+	// Create a real offer from a pion PeerConnection (simulating the browser).
+	offerer, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create offerer PC: %v", err)
+	}
+	defer func() { _ = offerer.Close() }()
+
+	// Add a DataChannel to the offerer so the offer has meaningful content.
+	_, err = offerer.CreateDataChannel("visual", &webrtc.DataChannelInit{
+		Ordered: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("create DataChannel on offerer: %v", err)
+	}
+
+	offer, err := offerer.CreateOffer(nil)
+	if err != nil {
+		t.Fatalf("create offer: %v", err)
+	}
+	if err := offerer.SetLocalDescription(offer); err != nil {
+		t.Fatalf("set local description (offer): %v", err)
+	}
+
+	// Call HandleOffer — should wait for ICE gathering and return SDP with candidates.
+	answerSDP, err := h.HandleOffer("tab-ice", offerer.LocalDescription().SDP)
+	if err != nil {
+		t.Fatalf("HandleOffer failed: %v", err)
+	}
+
+	if answerSDP == "" {
+		t.Fatal("answer SDP is empty")
+	}
+
+	// The answer SDP must contain at least one ICE candidate line.
+	// Vanilla ICE embeds all gathered candidates in the SDP.
+	if !strings.Contains(answerSDP, "a=candidate:") {
+		t.Error("answer SDP does not contain any ICE candidates (a=candidate: lines); vanilla ICE not working")
 	}
 }

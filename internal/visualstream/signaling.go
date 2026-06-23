@@ -113,11 +113,6 @@ func (h *SignalingHandler) HandleOffer(sessionID string, sdp string) (string, er
 	}
 	peer.DataChannel = dc
 
-	// Handle ICE candidates.
-	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
-		// Candidates gathered via full ICE; the answer SDP includes them.
-	})
-
 	// Set remote description (offer).
 	offer := webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer,
@@ -135,11 +130,22 @@ func (h *SignalingHandler) HandleOffer(sessionID string, sdp string) (string, er
 		return "", fmt.Errorf("create answer: %w", err)
 	}
 
-	// Set local description.
+	// Set local description — triggers ICE gathering.
 	if err := pc.SetLocalDescription(answer); err != nil {
 		_ = pc.Close()
 		return "", fmt.Errorf("set local description: %w", err)
 	}
+
+	// Wait for ICE gathering to complete so the answer SDP contains all
+	// local candidates (vanilla ICE). This avoids the need for trickle ICE
+	// — the client gets a complete answer with embedded candidates, which is
+	// sufficient for local connections and simpler than implementing a
+	// candidate trickle channel.
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	<-gatherComplete
+
+	// Read the updated local description with gathered candidates.
+	finalAnswer := pc.LocalDescription()
 
 	ss.PeerManager().AddPeer(peer)
 	// Wire DataChannel input messages to the session's InputHandler.
@@ -164,7 +170,7 @@ func (h *SignalingHandler) HandleOffer(sessionID string, sdp string) (string, er
 
 	debug.Printf("[visualstream/signaling] peer connected session=%s peer=%s", sessionID, peerID)
 
-	return answer.SDP, nil
+	return finalAnswer.SDP, nil
 }
 
 // HandleICECandidate processes a remote ICE candidate from a browser client.
