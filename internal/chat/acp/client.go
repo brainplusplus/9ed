@@ -268,6 +268,14 @@ func (c *Client) setErr(err error) {
 	c.errMu.Unlock()
 }
 
+// SetCrashError sets the error that Err() will report, without waiting for the
+// read loop to exit. It is used by SubprocessAdapter.Crash (dev-only crash
+// endpoint) to set a mode-specific error (panic, unclean-exit) before killing
+// the subprocess so that Err() classifies correctly for auto-restart testing.
+func (c *Client) SetCrashError(err error) {
+	c.setErr(err)
+}
+
 func (c *Client) getErr() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()

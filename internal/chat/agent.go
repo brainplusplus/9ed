@@ -120,6 +120,17 @@ type ChatSession interface {
 	IsResumed() bool
 }
 
+// CrashableSession is an optional interface implemented by ACP-backed chat
+// sessions (acpSession) that support deterministic subprocess crashing. It is
+// used exclusively by the dev-only POST /api/_debug/crash-agent endpoint
+// (gated by the debug build tag + DEBUG=true env var) to test auto-restart
+// logic (ADR-0004). PTY-backed sessions do not implement this interface.
+//
+// Callers should type-assert: `if cs, ok := session.(CrashableSession); ok { ... }`.
+type CrashableSession interface {
+	CrashAgent(mode string) error
+}
+
 // SessionMode distinguishes ACP from PTY sessions.
 type SessionMode string
 
@@ -208,7 +219,7 @@ func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
 //  3. Between retries, check again whether a background update is running.
 //
 // This handles all adapters (opencode, claude, codex, etc.) uniformly.
-func newAdapterWithHeal(ctx context.Context, agentID string, cfg acp.AdapterConfig) (*acp.Adapter, error) {
+func newAdapterWithHeal(ctx context.Context, agentID string, cfg acp.AdapterConfig) (acp.Adapter, error) {
 	// If a background update is in progress for this adapter, wait for it
 	// to finish before trying to spawn. This prevents the common case of
 	// "spawn fails because binary is being replaced".
@@ -220,7 +231,7 @@ func newAdapterWithHeal(ctx context.Context, agentID string, cfg acp.AdapterConf
 		debug.Printf("[acpinstall] %s update finished, proceeding with spawn", agentID)
 	}
 
-	adapter, err := acp.NewAdapter(ctx, cfg)
+	adapter, err := acp.NewSubprocessAdapter(ctx, cfg)
 	if err == nil {
 		return adapter, nil
 	}
@@ -247,7 +258,7 @@ func newAdapterWithHeal(ctx context.Context, agentID string, cfg acp.AdapterConf
 				return nil, fmt.Errorf("auto-repair %s cancelled while waiting for update: %w (original: %v)", agentID, ctx.Err(), originalErr)
 			}
 			// Update finished — try spawn directly without repair.
-			adapter, err = acp.NewAdapter(ctx, cfg)
+			adapter, err = acp.NewSubprocessAdapter(ctx, cfg)
 			if err == nil {
 				return adapter, nil
 			}
@@ -278,7 +289,7 @@ func newAdapterWithHeal(ctx context.Context, agentID string, cfg acp.AdapterConf
 		}
 
 		debug.Printf("[acpinstall] repaired corrupted install for %s, retrying spawn (attempt %d/%d)", agentID, attempt+1, maxRetries)
-		adapter, err = acp.NewAdapter(ctx, cfg)
+		adapter, err = acp.NewSubprocessAdapter(ctx, cfg)
 		if err == nil {
 			return adapter, nil
 		}
@@ -345,7 +356,7 @@ type acpSession struct {
 	id                 string
 	agentID            string
 	workDir            string
-	adapter            *acp.Adapter
+	adapter            acp.Adapter
 	sessionID          string
 	ctx                context.Context
 	events             chan ChatEvent
@@ -749,6 +760,22 @@ func (s *acpSession) Cancel() error {
 func (s *acpSession) Close() error {
 	s.cancelFn()
 	return s.adapter.Close()
+}
+
+// CrashAgent kills the underlying ACP subprocess deterministically using the
+// given crash mode string ("sigkill", "panic", "unclean-exit"). It is the
+// runtime-side hook for the dev-only POST /api/_debug/crash-agent endpoint
+// (gated by the debug build tag + DEBUG=true env var), used to test the
+// auto-restart logic (ADR-0004) without waiting for a natural crash.
+//
+// This method is intentionally NOT part of the ChatSession interface; callers
+// type-assert against the CrashableSession interface to access it.
+func (s *acpSession) CrashAgent(mode string) error {
+	m, ok := acp.ParseCrashMode(mode)
+	if !ok {
+		return fmt.Errorf("invalid crash mode %q (want sigkill, panic, or unclean-exit)", mode)
+	}
+	return s.adapter.Crash(m)
 }
 
 func (s *acpSession) processNotifications() {

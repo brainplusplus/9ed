@@ -20,8 +20,11 @@ type AdapterConfig struct {
 	MCPServers []MCPServer
 }
 
-// Adapter manages an ACP agent subprocess and provides high-level protocol methods.
-type Adapter struct {
+// SubprocessAdapter manages an ACP agent subprocess and provides high-level
+// protocol methods. It is the production implementation of the Adapter
+// interface (adapter_interface.go). The MockAdapter (mock_adapter.go) is the
+// test double.
+type SubprocessAdapter struct {
 	cfg    AdapterConfig
 	cmd    *exec.Cmd
 	client *Client
@@ -37,8 +40,9 @@ type Adapter struct {
 	closed bool
 }
 
-// NewAdapter spawns the ACP subprocess, initializes the connection, and returns a ready adapter.
-func NewAdapter(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
+// NewSubprocessAdapter spawns the ACP subprocess, initializes the connection,
+// and returns a ready adapter.
+func NewSubprocessAdapter(ctx context.Context, cfg AdapterConfig) (*SubprocessAdapter, error) {
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	cmd.Dir = cfg.WorkDir
 	cmd.Env = append(os.Environ(), cfg.Env...)
@@ -60,7 +64,7 @@ func NewAdapter(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 
 	client := NewClient(stdin, stdout)
 
-	a := &Adapter{
+	a := &SubprocessAdapter{
 		cfg:    cfg,
 		cmd:    cmd,
 		client: client,
@@ -75,7 +79,7 @@ func NewAdapter(ctx context.Context, cfg AdapterConfig) (*Adapter, error) {
 	return a, nil
 }
 
-func (a *Adapter) initialize(ctx context.Context) error {
+func (a *SubprocessAdapter) initialize(ctx context.Context) error {
 	params := InitializeParams{
 		ProtocolVersion: 1,
 		ClientCapabilities: ClientCapabilities{
@@ -110,7 +114,7 @@ func (a *Adapter) initialize(ctx context.Context) error {
 }
 
 // NewSession creates a new ACP session with the given working directory.
-func (a *Adapter) NewSession(ctx context.Context, cwd string) (*SessionNewResult, error) {
+func (a *SubprocessAdapter) NewSession(ctx context.Context, cwd string) (*SessionNewResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -140,7 +144,7 @@ func (a *Adapter) NewSession(ctx context.Context, cwd string) (*SessionNewResult
 
 // ResumeSession resumes an existing session via session/resume if the agent supports it.
 // Returns the session new result (with config options) or an error if resume is unsupported.
-func (a *Adapter) ResumeSession(ctx context.Context, sessionID, cwd string) (*SessionNewResult, error) {
+func (a *SubprocessAdapter) ResumeSession(ctx context.Context, sessionID, cwd string) (*SessionNewResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -174,12 +178,12 @@ func (a *Adapter) ResumeSession(ctx context.Context, sessionID, cwd string) (*Se
 }
 
 // SupportsResume returns whether the agent declared session/resume capability.
-func (a *Adapter) SupportsResume() bool {
+func (a *SubprocessAdapter) SupportsResume() bool {
 	return a.agentCaps.SessionCapabilities != nil && a.agentCaps.SessionCapabilities.Resume != nil
 }
 
 // SetConfigOption changes a config option (model, mode, etc) and returns updated state.
-func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, value string) ([]SessionConfigOption, error) {
+func (a *SubprocessAdapter) SetConfigOption(ctx context.Context, sessionID, configID, value string) ([]SessionConfigOption, error) {
 	params := SetConfigOptionParams{
 		SessionID: sessionID,
 		ConfigID:  configID,
@@ -204,7 +208,7 @@ func (a *Adapter) SetConfigOption(ctx context.Context, sessionID, configID, valu
 }
 
 // ConfigOptions returns the current config options from the last session/new or set_config_option.
-func (a *Adapter) ConfigOptions() []SessionConfigOption {
+func (a *SubprocessAdapter) ConfigOptions() []SessionConfigOption {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.configOptions
@@ -212,7 +216,7 @@ func (a *Adapter) ConfigOptions() []SessionConfigOption {
 
 // Prompt sends a user message and returns when the turn completes.
 // Streaming updates are delivered via the Notifications channel.
-func (a *Adapter) Prompt(ctx context.Context, sessionID string, content []ContentBlock) (*SessionPromptResult, error) {
+func (a *SubprocessAdapter) Prompt(ctx context.Context, sessionID string, content []ContentBlock) (*SessionPromptResult, error) {
 	params := SessionPromptParams{
 		SessionID: sessionID,
 		Prompt:    content,
@@ -231,14 +235,14 @@ func (a *Adapter) Prompt(ctx context.Context, sessionID string, content []Conten
 }
 
 // Cancel sends a cancellation notification for the current prompt turn.
-func (a *Adapter) Cancel(sessionID string) error {
+func (a *SubprocessAdapter) Cancel(sessionID string) error {
 	return a.client.Notify(MethodSessionCancel, SessionCancelParams{
 		SessionID: sessionID,
 	})
 }
 
 // CloseSession closes an active session if the agent supports it.
-func (a *Adapter) CloseSession(ctx context.Context, sessionID string) error {
+func (a *SubprocessAdapter) CloseSession(ctx context.Context, sessionID string) error {
 	if a.agentCaps.SessionCapabilities == nil || a.agentCaps.SessionCapabilities.Close == nil {
 		return nil
 	}
@@ -249,42 +253,42 @@ func (a *Adapter) CloseSession(ctx context.Context, sessionID string) error {
 }
 
 // Notifications returns the channel for streaming session/update notifications.
-func (a *Adapter) Notifications() <-chan *Notification {
+func (a *SubprocessAdapter) Notifications() <-chan *Notification {
 	return a.client.Notifications()
 }
 
 // Requests returns the channel for incoming agent requests (fs, terminal, permission).
-func (a *Adapter) Requests() <-chan *Request {
+func (a *SubprocessAdapter) Requests() <-chan *Request {
 	return a.client.Requests()
 }
 
 // Respond sends a response to an incoming agent request.
-func (a *Adapter) Respond(id int64, result any, rpcErr *RPCError) error {
+func (a *SubprocessAdapter) Respond(id int64, result any, rpcErr *RPCError) error {
 	return a.client.Respond(id, result, rpcErr)
 }
 
 // AgentInfo returns the agent's implementation info from initialization.
-func (a *Adapter) AgentInfo() ImplementationInfo {
+func (a *SubprocessAdapter) AgentInfo() ImplementationInfo {
 	return a.agentInfo
 }
 
 // AgentCapabilities returns the agent's capabilities from initialization.
-func (a *Adapter) AgentCapabilities() AgentCapabilities {
+func (a *SubprocessAdapter) AgentCapabilities() AgentCapabilities {
 	return a.agentCaps
 }
 
 // Done returns a channel that closes when the subprocess exits.
-func (a *Adapter) Done() <-chan struct{} {
+func (a *SubprocessAdapter) Done() <-chan struct{} {
 	return a.client.Done()
 }
 
 // Err returns the client/subprocess error that caused Done to close, if any.
-func (a *Adapter) Err() error {
+func (a *SubprocessAdapter) Err() error {
 	return a.client.Err()
 }
 
 // Close terminates the ACP subprocess gracefully.
-func (a *Adapter) Close() error {
+func (a *SubprocessAdapter) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -297,6 +301,52 @@ func (a *Adapter) Close() error {
 		_ = a.cmd.Process.Kill()
 		_ = a.cmd.Wait()
 	}
+	return nil
+}
+
+// Crash kills the agent subprocess deterministically using the given crash
+// mode. It is used exclusively by the dev-only POST /api/_debug/crash-agent
+// endpoint (gated by the debug build tag + DEBUG=true env) to test the
+// auto-restart logic (ADR-0004) without waiting for a natural crash.
+//
+// Modes:
+//   - CrashModeSigkill: immediately sends os.Kill to the subprocess (no
+//     shutdown handshake). Simulates the most common real-world crash.
+//   - CrashModePanic: same as sigkill for the subprocess, but Err() returns a
+//     panic-style error so restart classification can be tested.
+//   - CrashModeUncleanExit: kills the subprocess with an error simulating a
+//     non-zero exit code.
+//
+// Crash is idempotent: calling it on an already-closed/crashed adapter is a
+// no-op. It closes Done and sets Err via the client's subprocess-exit watcher.
+func (a *SubprocessAdapter) Crash(mode CrashMode) error {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return nil
+	}
+	a.closed = true
+	a.mu.Unlock()
+
+	if a.cmd == nil || a.cmd.Process == nil {
+		return fmt.Errorf("no subprocess to crash")
+	}
+
+	// All modes kill the process immediately. The mode determines the error
+	// text that Err() reports (via the client's exit watcher / our crashErrorFor
+	// helper). For panic and unclean-exit, we set the client error so Err()
+	// returns the expected classification even if the OS exit code is generic.
+	switch mode {
+	case CrashModePanic, CrashModeUncleanExit:
+		// Set the error on the client before killing so Err() classifies
+		// correctly even if the exit watcher hasn't fired yet.
+		if a.client != nil {
+			a.client.SetCrashError(crashErrorFor(mode))
+		}
+	}
+
+	_ = a.cmd.Process.Kill()
+	_ = a.cmd.Wait()
 	return nil
 }
 

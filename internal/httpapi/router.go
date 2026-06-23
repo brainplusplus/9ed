@@ -211,6 +211,11 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/git/file-at-head", a.handleGitFileAtHEAD)
 	mux.HandleFunc("/api/git/files", a.handleGitFiles)
 
+	// Dev-only: POST /api/_debug/crash-agent. Only registered when built with
+	// -tags debug (registerDebugCrashRoute is a no-op in non-debug builds) and
+	// additionally gated by DEBUG=true at runtime. Used to test auto-restart.
+	a.registerDebugCrashRoute(mux)
+
 	return mux
 }
 
