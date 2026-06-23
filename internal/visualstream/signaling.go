@@ -103,15 +103,31 @@ func (h *SignalingHandler) HandleOffer(sessionID string, sdp string) (string, er
 		PC: pc,
 	}
 
-	// Create DataChannel for input events + JPEG tiles (Strategy A).
-	dc, err := pc.CreateDataChannel("visual", &webrtc.DataChannelInit{
-		Ordered: boolPtr(false),
+	// The browser client creates the in-band DataChannel labeled "visual"
+	// (see useVisualStream.ts). The server must NOT create its own
+	// DataChannel — doing so would negotiate two separate SCTP streams and
+	// neither side's onopen/ondatachannel would fire. Instead, the server
+	// receives the client's DataChannel via OnDataChannel below, once the
+	// peer connection establishes.
+	pc.OnDataChannel(func(remoteDC *webrtc.DataChannel) {
+		if remoteDC.Label() != "visual" {
+			return
+		}
+		debug.Printf("[visualstream/signaling] DataChannel received from client session=%s peer=%s label=%s", sessionID, peerID, remoteDC.Label())
+		peer.DataChannel = remoteDC
+
+		// Wire DataChannel input messages to the session's InputHandler.
+		ss.AttachPeerInputHandler(peer)
+
+		// Handle DataChannel close/error to clean up peer resources.
+		remoteDC.OnClose(func() {
+			ss.PeerManager().RemovePeer(peer.ID)
+			debug.Printf("[visualstream/signaling] DataChannel closed, peer removed session=%s peer=%s", sessionID, peerID)
+		})
+		remoteDC.OnError(func(err error) {
+			debug.Printf("[visualstream/signaling] DataChannel error session=%s peer=%s: %v", sessionID, peerID, err)
+		})
 	})
-	if err != nil {
-		_ = pc.Close()
-		return "", fmt.Errorf("create DataChannel: %w", err)
-	}
-	peer.DataChannel = dc
 
 	// Set remote description (offer).
 	offer := webrtc.SessionDescription{
@@ -148,17 +164,6 @@ func (h *SignalingHandler) HandleOffer(sessionID string, sdp string) (string, er
 	finalAnswer := pc.LocalDescription()
 
 	ss.PeerManager().AddPeer(peer)
-	// Wire DataChannel input messages to the session's InputHandler.
-	ss.AttachPeerInputHandler(peer)
-
-	// Handle DataChannel close/error to clean up peer resources.
-	dc.OnClose(func() {
-		ss.PeerManager().RemovePeer(peer.ID)
-		debug.Printf("[visualstream/signaling] DataChannel closed, peer removed session=%s peer=%s", sessionID, peerID)
-	})
-	dc.OnError(func(err error) {
-		debug.Printf("[visualstream/signaling] DataChannel error session=%s peer=%s: %v", sessionID, peerID, err)
-	})
 
 	// Remove peer when the connection fails or closes to avoid leaks.
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {

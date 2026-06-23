@@ -157,12 +157,20 @@ func (s *CDPScreencastSource) handleScreencastFrame(params map[string]any) {
 		Height: height,
 	}
 
-	// Ack the frame.
+	// Ack the frame. Must be done asynchronously to avoid deadlock:
+	// Playwright's CDPSession.On event dispatcher holds an internal lock
+	// during callback execution, and cdpSess.Send also acquires that lock.
+	// Calling Send from within On callback would deadlock.
 	sessionID, _ := params["sessionId"].(float64)
 	if cdpSess != nil {
-		_, _ = cdpSess.Send("Page.screencastFrameAck", map[string]any{
-			"sessionId": int(sessionID),
-		})
+		go func(cdpSess playwright.CDPSession, sid int) {
+			_, err := cdpSess.Send("Page.screencastFrameAck", map[string]any{
+				"sessionId": sid,
+			})
+			if err != nil {
+				debug.Printf("[visualstream/cdp] screencastFrameAck error: %v", err)
+			}
+		}(cdpSess, int(sessionID))
 	}
 
 	// Guard against send-on-closed-channel: since Stop() no longer closes
@@ -171,6 +179,6 @@ func (s *CDPScreencastSource) handleScreencastFrame(params map[string]any) {
 	select {
 	case frames <- frame:
 	default:
-		// Channel full — drop frame (backpressure).
+		// Channel full, drop frame to avoid blocking the screencast event handler.
 	}
 }

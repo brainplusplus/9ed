@@ -119,7 +119,9 @@ func (s *JpegTileDiffStrategy) EncodeAndSend(frame Frame, peers []*PeerConnectio
 		msg := packTileMessage(tile)
 		for _, peer := range peers {
 			if peer.DataChannel != nil {
-				_ = peer.DataChannel.Send(msg)
+				if err := peer.DataChannel.Send(msg); err != nil {
+					debug.Printf("[visualstream/jpeg] DataChannel send error: %v", err)
+				}
 			}
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -295,5 +296,97 @@ func TestHandleOfferAnswerContainsICECandidates(t *testing.T) {
 	// Vanilla ICE embeds all gathered candidates in the SDP.
 	if !strings.Contains(answerSDP, "a=candidate:") {
 		t.Error("answer SDP does not contain any ICE candidates (a=candidate: lines); vanilla ICE not working")
+	}
+}
+
+// TestHandleOfferReceivesClientDataChannel verifies that the server does NOT
+// create its own DataChannel. Instead, it receives the browser client's
+// DataChannel via OnDataChannel. This is the fix for the WebRTC DataChannel
+// never connecting: both sides were calling createDataChannel("visual"),
+// negotiating two separate SCTP streams. Now the server uses OnDataChannel to
+// receive the client's channel, and the peer's DataChannel field is populated
+// once the channel arrives.
+func TestHandleOfferReceivesClientDataChannel(t *testing.T) {
+	h := NewSignalingHandler()
+	source := &mockFrameSource{}
+	strategy := &mockStrategy{}
+	input := &mockInputHandler{}
+
+	ss := NewStreamingSession(source, strategy, input)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = ss.Start(ctx)
+	defer ss.Stop()
+
+	h.RegisterSession("tab-dc", ss)
+
+	// Create a real offerer (simulating the browser client).
+	offerer, err := webrtc.NewPeerConnection(webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{URLs: []string{"stun:stun.l.google.com:19302"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create offerer PC: %v", err)
+	}
+	defer func() { _ = offerer.Close() }()
+
+	// The browser creates the DataChannel (as useVisualStream.ts does).
+	clientDC, err := offerer.CreateDataChannel("visual", &webrtc.DataChannelInit{
+		Ordered: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("create client DataChannel: %v", err)
+	}
+
+	// Track the client-side DataChannel open event.
+	clientDCOpened := make(chan struct{}, 1)
+	clientDC.OnOpen(func() {
+		select {
+		case clientDCOpened <- struct{}{}:
+		default:
+		}
+	})
+
+	offer, err := offerer.CreateOffer(nil)
+	if err != nil {
+		t.Fatalf("create offer: %v", err)
+	}
+	if err := offerer.SetLocalDescription(offer); err != nil {
+		t.Fatalf("set local description (offer): %v", err)
+	}
+
+	// Call HandleOffer — server creates answer and registers the peer.
+	answerSDP, err := h.HandleOffer("tab-dc", offerer.LocalDescription().SDP)
+	if err != nil {
+		t.Fatalf("HandleOffer failed: %v", err)
+	}
+
+	// Apply the answer on the client side to complete the handshake.
+	if err := offerer.SetRemoteDescription(webrtc.SessionDescription{
+		Type: webrtc.SDPTypeAnswer,
+		SDP:  answerSDP,
+	}); err != nil {
+		t.Fatalf("set remote description (answer): %v", err)
+	}
+
+	// Wait for the client's DataChannel to open. This only fires if the
+	// server correctly receives the client's DataChannel via OnDataChannel
+	// (in-band negotiation). If the server created its own DataChannel, the
+	// client's channel would never open.
+	select {
+	case <-clientDCOpened:
+		// Success — DataChannel is open.
+	case <-time.After(5 * time.Second):
+		t.Fatal("client DataChannel never opened; server may be creating its own DataChannel instead of receiving the client's via OnDataChannel")
+	}
+
+	// Verify the server-side peer's DataChannel was populated via OnDataChannel.
+	peers := ss.PeerManager().Peers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].DataChannel == nil {
+		t.Error("server peer DataChannel is nil; expected it to be populated via OnDataChannel")
 	}
 }
