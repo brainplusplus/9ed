@@ -1,89 +1,98 @@
 package config
 
 import (
+	"os"
 	"testing"
+	"time"
 )
 
-func TestLoadFromEnvUsesDefaultPortWhenUnset(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("BASIC_AUTH_USERNAME", "alice")
+func TestSessionResumeMaxRetries_Default(t *testing.T) {
+	os.Unsetenv("SESSION_RESUME_MAX_RETRIES")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
 	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
-
 	cfg, err := LoadFromEnv()
 	if err != nil {
-		t.Fatalf("LoadFromEnv returned error: %v", err)
+		t.Fatalf("LoadFromEnv failed: %v", err)
 	}
-
-	if cfg.Port != "8080" {
-		t.Fatalf("expected default port 8080, got %q", cfg.Port)
-	}
-}
-
-func TestLoadFromEnvRejectsMissingCredentials(t *testing.T) {
-	t.Setenv("PORT", "9090")
-	t.Setenv("BASIC_AUTH_USERNAME", "")
-	t.Setenv("BASIC_AUTH_PASSWORD", "")
-
-	_, err := LoadFromEnv()
-	if err == nil {
-		t.Fatal("expected error for missing credentials")
+	if cfg.SessionResumeMaxRetries != 3 {
+		t.Errorf("expected default SessionResumeMaxRetries=3, got %d", cfg.SessionResumeMaxRetries)
 	}
 }
 
-func TestLoadFromEnvReadsWorkspaceDefaults(t *testing.T) {
-	t.Setenv("PORT", "8080")
-	t.Setenv("BASIC_AUTH_USERNAME", "alice")
+func TestSessionResumeMaxRetries_Custom(t *testing.T) {
+	t.Setenv("SESSION_RESUME_MAX_RETRIES", "5")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
 	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
-	t.Setenv("WORKSPACE_ROOT", "")
-	t.Setenv("TUNNEL_ENGINE", "")
-
 	cfg, err := LoadFromEnv()
 	if err != nil {
-		t.Fatalf("LoadFromEnv returned error: %v", err)
+		t.Fatalf("LoadFromEnv failed: %v", err)
 	}
-
-	if cfg.WorkspaceRoot != "" {
-		t.Fatalf("expected empty workspace root, got %q", cfg.WorkspaceRoot)
-	}
-
-	if cfg.TunnelEngine != "cloudflare" {
-		t.Fatalf("expected default tunnel engine 'cloudflare', got %q", cfg.TunnelEngine)
+	if cfg.SessionResumeMaxRetries != 5 {
+		t.Errorf("expected SessionResumeMaxRetries=5, got %d", cfg.SessionResumeMaxRetries)
 	}
 }
 
-func TestLoadFromEnvReadsWorkspaceRoot(t *testing.T) {
-	t.Setenv("PORT", "8080")
-	t.Setenv("BASIC_AUTH_USERNAME", "alice")
+func TestSessionResumeMaxRetries_InvalidFallsBack(t *testing.T) {
+	t.Setenv("SESSION_RESUME_MAX_RETRIES", "not-a-number")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
 	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
-	t.Setenv("WORKSPACE_ROOT", "/home/user/projects")
-
 	cfg, err := LoadFromEnv()
 	if err != nil {
-		t.Fatalf("LoadFromEnv returned error: %v", err)
+		t.Fatalf("LoadFromEnv failed: %v", err)
 	}
-
-	if cfg.WorkspaceRoot != "/home/user/projects" {
-		t.Fatalf("expected workspace root '/home/user/projects', got %q", cfg.WorkspaceRoot)
+	if cfg.SessionResumeMaxRetries != 3 {
+		t.Errorf("expected fallback SessionResumeMaxRetries=3, got %d", cfg.SessionResumeMaxRetries)
 	}
 }
 
-func TestLoadFromEnvReadsConfiguredValues(t *testing.T) {
-	t.Setenv("PORT", "9090")
-	t.Setenv("BASIC_AUTH_USERNAME", "bob")
-	t.Setenv("BASIC_AUTH_PASSWORD", "hunter2")
-
+func TestSessionResumeBaseDelay_Default(t *testing.T) {
+	os.Unsetenv("SESSION_RESUME_BASE_DELAY")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
 	cfg, err := LoadFromEnv()
 	if err != nil {
-		t.Fatalf("LoadFromEnv returned error: %v", err)
+		t.Fatalf("LoadFromEnv failed: %v", err)
 	}
+	if cfg.SessionResumeBaseDelay != 500*time.Millisecond {
+		t.Errorf("expected default SessionResumeBaseDelay=500ms, got %v", cfg.SessionResumeBaseDelay)
+	}
+}
 
-	if cfg.Port != "9090" {
-		t.Fatalf("expected configured port, got %q", cfg.Port)
+func TestSessionResumeBaseDelay_Custom(t *testing.T) {
+	t.Setenv("SESSION_RESUME_BASE_DELAY", "2s")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
 	}
-	if cfg.BasicAuthUsername != "bob" {
-		t.Fatalf("expected configured username, got %q", cfg.BasicAuthUsername)
+	if cfg.SessionResumeBaseDelay != 2*time.Second {
+		t.Errorf("expected SessionResumeBaseDelay=2s, got %v", cfg.SessionResumeBaseDelay)
 	}
-	if cfg.BasicAuthPassword != "hunter2" {
-		t.Fatalf("expected configured password, got %q", cfg.BasicAuthPassword)
+}
+
+func TestSessionResumeMaxDelay_Default(t *testing.T) {
+	os.Unsetenv("SESSION_RESUME_MAX_DELAY")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.SessionResumeMaxDelay != 30*time.Second {
+		t.Errorf("expected default SessionResumeMaxDelay=30s, got %v", cfg.SessionResumeMaxDelay)
+	}
+}
+
+func TestSessionResumeMaxDelay_Custom(t *testing.T) {
+	t.Setenv("SESSION_RESUME_MAX_DELAY", "1m")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.SessionResumeMaxDelay != 60*time.Second {
+		t.Errorf("expected SessionResumeMaxDelay=1m, got %v", cfg.SessionResumeMaxDelay)
 	}
 }

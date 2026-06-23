@@ -7,12 +7,36 @@ import (
 	"time"
 )
 
+// RestartConfig carries ADR-0004 auto-restart tuning values, threaded from
+// the server's config.Config into every SessionOptions produced by the
+// SessionManager. Zero values are replaced with ADR-0004 defaults inside
+// applyRestartConfig, but SetRestartConfig lets the server honor custom
+// SESSION_RESUME_* env var values.
+type RestartConfig struct {
+	MaxRetries       int
+	RestartBaseDelay time.Duration
+	RestartMaxDelay  time.Duration
+}
+
+// newChatSessionCtor and newACPResumedSessionCtor are indirection points over
+// NewChatSession / newACPResumedSession so tests can substitute a fake
+// constructor (e.g., to capture the SessionOptions handed to the session
+// without spawning a real subprocess). They default to the real constructors.
+var (
+	newChatSessionCtor        = NewChatSession
+	newACPResumedSessionCtor  = newACPResumedSession
+)
+
 type SessionManager struct {
 	sessions    map[string]ChatSession
 	recordIDs   map[string]string
 	graceTimers map[string]*time.Timer
 	graceWindow time.Duration
-	mu          sync.Mutex
+	// ADR-0004: restart tuning threaded from config.Config (set via
+	// SetRestartConfig). Zero-valued until configured; enrichOpts falls back
+	// to defaultRestart* constants in that case.
+	restartCfg RestartConfig
+	mu         sync.Mutex
 }
 
 func NewSessionManager() *SessionManager {
@@ -33,17 +57,71 @@ func (m *SessionManager) SetGraceWindow(d time.Duration) {
 	m.mu.Unlock()
 }
 
+// SetRestartConfig stores ADR-0004 auto-restart tuning values so Create and
+// Resume can thread them into every SessionOptions. Call this once at server
+// startup with values parsed from config.Config (which itself reads
+// SESSION_RESUME_MAX_RETRIES / SESSION_RESUME_BASE_DELAY /
+// SESSION_RESUME_MAX_DELAY env vars).
+func (m *SessionManager) SetRestartConfig(cfg RestartConfig) {
+	m.mu.Lock()
+	m.restartCfg = cfg
+	m.mu.Unlock()
+}
+
+// restartConfig returns a copy of the stored RestartConfig with zero values
+// replaced by ADR-0004 defaults. This keeps the default-fallback logic in one
+// place so callers (enrichOpts) always see usable values.
+func (m *SessionManager) restartConfig() RestartConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg := m.restartCfg
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = defaultRestartMaxRetries
+	}
+	if cfg.RestartBaseDelay <= 0 {
+		cfg.RestartBaseDelay = defaultRestartBaseDelay
+	}
+	if cfg.RestartMaxDelay <= 0 {
+		cfg.RestartMaxDelay = defaultRestartMaxDelay
+	}
+	return cfg
+}
+
+// enrichOpts returns a copy of opts with the ADR-0004 restart tuning fields
+// (MaxRetries, RestartBaseDelay, RestartMaxDelay) populated from the manager's
+// RestartConfig when the caller did not supply them. Caller-supplied non-zero
+// values are preserved (allowing per-session overrides). This is the wiring
+// point that ensures freshly created ACP sessions honor the
+// SESSION_RESUME_* env vars (VAL-RESUME-001).
+func (m *SessionManager) enrichOpts(opts SessionOptions) SessionOptions {
+	cfg := m.restartConfig()
+	if opts.MaxRetries <= 0 {
+		opts.MaxRetries = cfg.MaxRetries
+	}
+	if opts.RestartBaseDelay <= 0 {
+		opts.RestartBaseDelay = cfg.RestartBaseDelay
+	}
+	if opts.RestartMaxDelay <= 0 {
+		opts.RestartMaxDelay = cfg.RestartMaxDelay
+	}
+	return opts
+}
+
 func (m *SessionManager) Create(ctx context.Context, agent AgentDescriptor, workDir string, opts SessionOptions) (ChatSession, error) {
 	if !agent.Available {
 		return nil, fmt.Errorf("agent %q is not available", agent.ID)
 	}
 
-	// ADR-0004: enable auto-restart for ACP sessions by default.
+	// ADR-0004: enable auto-restart for ACP sessions by default and thread
+	// the config-derived restart tuning (max retries, base/max delay) into
+	// SessionOptions so freshly created sessions honor the SESSION_RESUME_*
+	// env vars (VAL-RESUME-001).
 	if agent.SupportsACP {
 		opts.AutoRestart = true
 	}
+	opts = m.enrichOpts(opts)
 
-	session, err := NewChatSession(ctx, agent, workDir, opts)
+	session, err := newChatSessionCtor(ctx, agent, workDir, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -65,10 +143,13 @@ func (m *SessionManager) Resume(ctx context.Context, agent AgentDescriptor, work
 		return nil, fmt.Errorf("agent %q does not support ACP, cannot resume", agent.ID)
 	}
 
-	// ADR-0004: enable auto-restart for resumed ACP sessions by default.
+	// ADR-0004: enable auto-restart for resumed ACP sessions by default and
+	// thread the config-derived restart tuning into SessionOptions so a
+	// crashed resumed session can be re-resumed with the configured backoff.
 	opts.AutoRestart = true
+	opts = m.enrichOpts(opts)
 
-	session, err := newACPResumedSession(ctx, agent, workDir, acpSessionID, opts)
+	session, err := newACPResumedSessionCtor(ctx, agent, workDir, acpSessionID, opts)
 	if err != nil {
 		return nil, err
 	}

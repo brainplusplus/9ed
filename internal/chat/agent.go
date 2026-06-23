@@ -36,6 +36,15 @@ type ChatEvent struct {
 	StopReason    string             `json:"stopReason,omitempty"`
 	Error         string             `json:"error,omitempty"`
 
+	// ADR-0002 / ADR-0004: Epoch carries the timeline epoch UUID. The
+	// session_resumed event carries a freshly generated epoch so clients can
+	// detect a timeline reset and re-fetch the tail.
+	Epoch string `json:"epoch,omitempty"`
+	// ADR-0004: CanResume is set on the crash done event to indicate whether
+	// the agent supports session/resume (so the client can show a resume
+	// button vs. a "start new session" prompt).
+	CanResume bool `json:"canResume,omitempty"`
+
 	ContextWindow int     `json:"contextWindow,omitempty"`
 	ContextUsed   int     `json:"contextUsed,omitempty"`
 	CostAmount    float64 `json:"costAmount,omitempty"`
@@ -169,6 +178,11 @@ type SessionOptions struct {
 	UseActiveBrowser   bool
 	ActiveBrowserTabID string
 	AutoRestart        bool // ADR-0004: auto-restart subprocess on crash via session/resume
+	// ADR-0004: restart tuning (threaded from config). Zero values fall back
+	// to defaults via applyRestartConfig.
+	MaxRetries       int
+	RestartBaseDelay time.Duration
+	RestartMaxDelay  time.Duration
 }
 
 func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
@@ -437,6 +451,11 @@ func newACPSession(ctx context.Context, agent AgentDescriptor, workDir string, o
 		toolMeta:           make(map[string]acpToolMeta),
 	}
 
+	// ADR-0004: wire auto-restart config (same 6-field block as
+	// newACPResumedSession) so freshly created ACP sessions auto-restart on
+	// subprocess crash. Config-derived values come via SessionOptions.
+	applyRestartConfig(s, agent, opts)
+
 	if len(result.ConfigOptions) > 0 {
 		s.events <- ChatEvent{Type: "config_options", ConfigOptions: convertConfigOptions(result.ConfigOptions)}
 	}
@@ -500,14 +519,11 @@ func newACPResumedSession(ctx context.Context, agent AgentDescriptor, workDir, a
 		terminals:          make(map[string]*acpTerminal),
 		routedToolCalls:    make(map[string]bool),
 		toolMeta:           make(map[string]acpToolMeta),
-		// ADR-0004: auto-restart config
-		agentDesc:        agent,
-		sessionOpts:      opts,
-		autoRestart:      opts.AutoRestart,
-		maxRetries:       3,
-		restartBaseDelay: 500 * time.Millisecond,
-		restartMaxDelay:  30 * time.Second,
 	}
+
+	// ADR-0004: wire auto-restart config (same 6-field block as
+	// newACPSession). Config-derived values come via SessionOptions.
+	applyRestartConfig(s, agent, opts)
 
 	if len(result.ConfigOptions) > 0 {
 		s.events <- ChatEvent{Type: "config_options", ConfigOptions: convertConfigOptions(result.ConfigOptions)}
@@ -804,8 +820,10 @@ func (s *acpSession) processNotifications() {
 				continue
 			}
 
-			// Restart failed or disabled — emit done with crash reason.
-			s.events <- ChatEvent{Type: "done", StopReason: "agent_crash_unrecoverable"}
+			// Restart failed or disabled — emit done with crash reason and
+			// CanResume so the client can show an actionable recovery prompt
+			// (ADR-0004 / VAL-RESUME-005).
+			s.events <- crashDoneEvent(s.adapter.SupportsResume())
 			return
 		}
 	}
@@ -831,17 +849,11 @@ func (s *acpSession) tryRestart() bool {
 	adapterErr := s.adapter.Err()
 	debug.Printf("[chat/restart] subprocess exited, attempting restart session=%s err=%v", s.sessionID, adapterErr)
 
-	// Error classification: persistent errors don't retry.
-	if isPersistentError(adapterErr) {
-		debug.Printf("[chat/restart] persistent error, no retry: %v", adapterErr)
+	// Error classification + capability check (ADR-0004): persistent errors
+	// and missing resume support mean no retry.
+	if !shouldAttemptRestart(adapterErr, s.adapter.SupportsResume(), s.autoRestart) {
+		debug.Printf("[chat/restart] not retrying (persistent error or no resume support): %v", adapterErr)
 		s.events <- ChatEvent{Type: "error", Error: fmt.Sprintf("agent crashed: %v", adapterErr)}
-		return false
-	}
-
-	// Capability check: agent must support session/resume.
-	if !s.adapter.SupportsResume() {
-		debug.Printf("[chat/restart] agent does not support session/resume")
-		s.events <- ChatEvent{Type: "error", Error: "agent does not support session/resume"}
 		return false
 	}
 
@@ -901,7 +913,9 @@ func (s *acpSession) tryRestart() bool {
 		debug.Printf("[chat/restart] resumed successfully on attempt %d session=%s", attempt+1, s.sessionID)
 
 		// Emit session_resumed event (ADR-0004 + ADR-0002 epoch regeneration).
-		s.events <- ChatEvent{Type: "session_resumed", Text: s.sessionID}
+		// The fresh Epoch UUID lets clients detect a timeline reset and
+		// re-fetch the tail.
+		s.events <- sessionResumedEvent(s.sessionID)
 
 		// Do NOT spawn a new processNotifications goroutine — the existing
 		// goroutine (which called tryRestart) will `continue` its select loop

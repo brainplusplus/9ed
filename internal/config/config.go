@@ -25,6 +25,10 @@ type Config struct {
 	LivenessTimeout      time.Duration
 	StreamCoalesceWindow time.Duration
 	SessionGraceWindow   time.Duration
+	// ADR-0004: auto-restart configuration for ACP sessions.
+	SessionResumeMaxRetries int
+	SessionResumeBaseDelay  time.Duration
+	SessionResumeMaxDelay   time.Duration
 }
 
 func LoadFromEnv() (Config, error) {
@@ -59,6 +63,10 @@ func LoadFromEnv() (Config, error) {
 		LivenessTimeout:      parseDurationEnv("LIVENESS_TIMEOUT", 15*time.Second),
 		StreamCoalesceWindow: parseDurationEnv("STREAM_COALESCE_WINDOW", 60*time.Millisecond),
 		SessionGraceWindow:   parseDurationEnv("SESSION_GRACE_WINDOW", 10*time.Minute),
+		// ADR-0004: auto-restart tuning. Defaults: 3 retries, 500ms base, 30s max.
+		SessionResumeMaxRetries: parseIntEnv("SESSION_RESUME_MAX_RETRIES", 3),
+		SessionResumeBaseDelay:  parseDurationEnv("SESSION_RESUME_BASE_DELAY", 500*time.Millisecond),
+		SessionResumeMaxDelay:   parseDurationEnv("SESSION_RESUME_MAX_DELAY", 30*time.Second),
 	}
 
 	if cfg.Port == "" {
@@ -87,6 +95,18 @@ func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	}
 	if d, err := time.ParseDuration(v); err == nil {
 		return d
+	}
+	return fallback
+}
+
+// parseIntEnv reads an integer env var, returning fallback on missing/invalid.
+func parseIntEnv(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return n
 	}
 	return fallback
 }

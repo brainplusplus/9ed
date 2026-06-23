@@ -53,6 +53,15 @@ func New(cfg config.Config) *Server {
 	if cfg.SessionGraceWindow > 0 {
 		chatSessionMgr.SetGraceWindow(cfg.SessionGraceWindow)
 	}
+	// ADR-0004: thread the config-derived auto-restart tuning (max retries,
+	// base/max delay) into every SessionOptions produced by the manager so
+	// freshly created and resumed ACP sessions honor the SESSION_RESUME_*
+	// env vars (VAL-RESUME-001).
+	chatSessionMgr.SetRestartConfig(chat.RestartConfig{
+		MaxRetries:       cfg.SessionResumeMaxRetries,
+		RestartBaseDelay: cfg.SessionResumeBaseDelay,
+		RestartMaxDelay:  cfg.SessionResumeMaxDelay,
+	})
 	terminalMCPToken := randomToken()
 	browserMCPToken := randomToken()
 	cwd, _ := os.Getwd()
