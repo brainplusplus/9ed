@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -418,6 +419,134 @@ func TestAppendAndLoadRichTranscript(t *testing.T) {
 	}
 	if got[1].PayloadJSON == "" {
 		t.Fatal("expected tool_call payload json to be persisted")
+	}
+}
+
+func TestGetEventWindow_EmptySession(t *testing.T) {
+	store := tempStore(t)
+	store.CreateSession("s1", "opencode", "Empty window")
+
+	minSeq, maxSeq, nextSeq, err := store.GetEventWindow("s1")
+	if err != nil {
+		t.Fatalf("GetEventWindow empty: %v", err)
+	}
+	if minSeq != 0 || maxSeq != 0 || nextSeq != 1 {
+		t.Errorf("expected (0, 0, 1) for empty session, got (%d, %d, %d)", minSeq, maxSeq, nextSeq)
+	}
+}
+
+func TestGetEventWindow_ReturnsMinAndMax(t *testing.T) {
+	store := tempStore(t)
+	store.CreateSession("s1", "opencode", "Window")
+
+	now := time.Now().UnixMilli()
+	events := []EventRecord{
+		{ID: "e1", SessionID: "s1", Kind: "text", PayloadJSON: `{}`, Seq: 5, Timestamp: now, Epoch: "ep-1"},
+		{ID: "e2", SessionID: "s1", Kind: "text", PayloadJSON: `{}`, Seq: 9, Timestamp: now + 1, Epoch: "ep-1"},
+		{ID: "e3", SessionID: "s1", Kind: "text", PayloadJSON: `{}`, Seq: 12, Timestamp: now + 2, Epoch: "ep-1"},
+	}
+	for _, e := range events {
+		if err := store.AppendEvent(e); err != nil {
+			t.Fatalf("AppendEvent %s: %v", e.ID, err)
+		}
+	}
+
+	minSeq, maxSeq, nextSeq, err := store.GetEventWindow("s1")
+	if err != nil {
+		t.Fatalf("GetEventWindow: %v", err)
+	}
+	if minSeq != 5 {
+		t.Errorf("expected minSeq 5, got %d", minSeq)
+	}
+	if maxSeq != 12 {
+		t.Errorf("expected maxSeq 12, got %d", maxSeq)
+	}
+	if nextSeq != 13 {
+		t.Errorf("expected nextSeq 13, got %d", nextSeq)
+	}
+}
+
+func TestGetCurrentEpoch_ReturnsLatestEventEpoch(t *testing.T) {
+	store := tempStore(t)
+	store.CreateSession("s1", "opencode", "Epoch")
+
+	now := time.Now().UnixMilli()
+	store.AppendEvent(EventRecord{ID: "e1", SessionID: "s1", Kind: "text", PayloadJSON: `{}`, Seq: 1, Timestamp: now, Epoch: "old-epoch"})
+	store.AppendEvent(EventRecord{ID: "e2", SessionID: "s1", Kind: "text", PayloadJSON: `{}`, Seq: 2, Timestamp: now + 1, Epoch: "new-epoch"})
+
+	epoch, err := store.GetCurrentEpoch("s1")
+	if err != nil {
+		t.Fatalf("GetCurrentEpoch: %v", err)
+	}
+	if epoch != "new-epoch" {
+		t.Errorf("expected 'new-epoch', got %q", epoch)
+	}
+}
+
+func TestGetCurrentEpoch_EmptySessionReturnsEmpty(t *testing.T) {
+	store := tempStore(t)
+	store.CreateSession("s1", "opencode", "No events")
+
+	epoch, err := store.GetCurrentEpoch("s1")
+	if err != nil {
+		t.Fatalf("GetCurrentEpoch empty: %v", err)
+	}
+	if epoch != "" {
+		t.Errorf("expected empty epoch, got %q", epoch)
+	}
+}
+
+func TestGetEventsAfterSeq_FiltersAndLimits(t *testing.T) {
+	store := tempStore(t)
+	store.CreateSession("s1", "opencode", "After")
+
+	now := time.Now().UnixMilli()
+	for i := int64(1); i <= 10; i++ {
+		store.AppendEvent(EventRecord{
+			ID: fmt.Sprintf("e%d", i), SessionID: "s1", Kind: "text",
+			PayloadJSON: `{}`, Seq: i, Timestamp: now + i, Epoch: "ep-1",
+		})
+	}
+
+	events, err := store.GetEventsAfterSeq("s1", 3, 5)
+	if err != nil {
+		t.Fatalf("GetEventsAfterSeq: %v", err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(events))
+	}
+	if events[0].Seq != 4 {
+		t.Errorf("expected first seq 4, got %d", events[0].Seq)
+	}
+	if events[4].Seq != 8 {
+		t.Errorf("expected last seq 8, got %d", events[4].Seq)
+	}
+}
+
+func TestGetEventsTail_ReturnsLastNOrderedBySeq(t *testing.T) {
+	store := tempStore(t)
+	store.CreateSession("s1", "opencode", "Tail")
+
+	now := time.Now().UnixMilli()
+	for i := int64(1); i <= 10; i++ {
+		store.AppendEvent(EventRecord{
+			ID: fmt.Sprintf("e%d", i), SessionID: "s1", Kind: "text",
+			PayloadJSON: `{}`, Seq: i, Timestamp: now + i, Epoch: "ep-1",
+		})
+	}
+
+	events, err := store.GetEventsTail("s1", 3)
+	if err != nil {
+		t.Fatalf("GetEventsTail: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+	if events[0].Seq != 8 {
+		t.Errorf("expected first seq 8 (ascending), got %d", events[0].Seq)
+	}
+	if events[2].Seq != 10 {
+		t.Errorf("expected last seq 10, got %d", events[2].Seq)
 	}
 }
 

@@ -673,6 +673,32 @@ func (s *ChatStore) GetEventsTail(sessionID string, limit int) ([]EventRecord, e
 	return events, rows.Err()
 }
 
+// GetEventWindow returns the minimum and maximum sequence numbers for a
+// session's event timeline plus the next sequence number to use (ADR-0002).
+// For a session with no events, minSeq=0, maxSeq=0, nextSeq=1.
+func (s *ChatStore) GetEventWindow(sessionID string) (minSeq, maxSeq, nextSeq int64, err error) {
+	var nullableMin, nullableMax sql.NullInt64
+	err = s.db.QueryRow(
+		`SELECT MIN(seq), MAX(seq) FROM chat_events WHERE session_id = ?`,
+		sessionID,
+	).Scan(&nullableMin, &nullableMax)
+	if err != nil {
+		return 0, 0, 1, err
+	}
+	if nullableMin.Valid {
+		minSeq = nullableMin.Int64
+	}
+	if nullableMax.Valid {
+		maxSeq = nullableMax.Int64
+	}
+	if maxSeq > 0 {
+		nextSeq = maxSeq + 1
+	} else {
+		nextSeq = 1
+	}
+	return minSeq, maxSeq, nextSeq, nil
+}
+
 func (s *ChatStore) ResolveRecordID(liveSessionID string) string {
 	record, err := s.GetSession(liveSessionID)
 	if err == nil && record != nil {

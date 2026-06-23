@@ -104,6 +104,11 @@ type chatWSInbound struct {
 	AfterSeq int64 `json:"afterSeq,omitempty"`
 	// ADR-0002: limit for fetch_timeline RPC.
 	Limit int `json:"limit,omitempty"`
+	// ADR-0002: client-supplied epoch for stale cursor detection. If the
+	// client's epoch differs from the current session epoch, the timeline
+	// response carries staleCursor:true, reset:true so the client discards
+	// its cursor and re-fetches the tail.
+	Epoch string `json:"epoch,omitempty"`
 	// ADR-0005: cursor position for collaborative overlay (row, col).
 	CursorRow int `json:"cursorRow,omitempty"`
 	CursorCol int `json:"cursorCol,omitempty"`
@@ -1395,6 +1400,28 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 				if len(recent) > 0 {
 					debug.Printf("[chat/replay] sent %d recent events to new subscriber session=%s", len(recent), sessionID)
 				}
+				// ADR-0002: send replay_meta envelope after replay events so
+				// the client can initialize its cursor with the current window
+				// and epoch. This tells the client the range of events that
+				// exist (minSeq..maxSeq) and the next seq to expect, plus the
+				// current epoch for stale cursor detection on subsequent
+				// fetch_timeline requests.
+				minSeq, maxSeq, nextSeq, winErr := a.chatStore.GetEventWindow(persistRecordID)
+				if winErr != nil {
+					minSeq, maxSeq, nextSeq = 0, 0, 1
+				}
+				replayEpoch := ""
+				if len(recent) > 0 {
+					replayEpoch = recent[len(recent)-1].Epoch
+				}
+				if replayEpoch == "" {
+					replayEpoch, _ = a.chatStore.GetCurrentEpoch(persistRecordID)
+				}
+				_ = conn.WriteJSON(replayMetaEnvelope{
+					Type:   "replay_meta",
+					Epoch:  replayEpoch,
+					Window: seqWindow{MinSeq: minSeq, MaxSeq: maxSeq, NextSeq: nextSeq},
+				})
 			}
 		}
 	}
@@ -1598,9 +1625,143 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// seqWindow describes the event sequence range for a session timeline
+// (ADR-0002). MinSeq/MaxSeq are the smallest and largest seq values present
+// in the store; NextSeq is the seq that will be assigned to the next appended
+// event (MaxSeq+1, or 1 when the timeline is empty).
+type seqWindow struct {
+	MinSeq  int64 `json:"minSeq"`
+	MaxSeq  int64 `json:"maxSeq"`
+	NextSeq int64 `json:"nextSeq"`
+}
+
+// timelineRequest is the client-side input to computeTimelineState. It mirrors
+// the cursor-relevant fields of chatWSInbound without coupling the computation
+// to the WS message type (so it is unit-testable in isolation).
+type timelineRequest struct {
+	// AfterSeq is the client's last-known seq. 0 means tail fetch.
+	AfterSeq int64
+	// ClientEpoch is the client's last-known epoch (empty if not supplied).
+	ClientEpoch string
+}
+
+// timelineResponse is the full ADR-0002 fetch_timeline response shape.
+type timelineResponse struct {
+	Type        string          `json:"type"`        // "timeline"
+	Epoch       string          `json:"epoch"`       // current session epoch
+	Reset       bool            `json:"reset"`       // client should reset cursor + re-fetch
+	StaleCursor bool            `json:"staleCursor"` // client epoch != current epoch
+	Gap         bool            `json:"gap"`         // afterSeq < minSeq-1 (missing events)
+	Window      seqWindow       `json:"window"`      // {minSeq, maxSeq, nextSeq}
+	HasOlder    bool            `json:"hasOlder"`    // events exist before returned range
+	HasNewer    bool            `json:"hasNewer"`    // events exist after returned range
+	EndCursor   int64           `json:"endCursor"`   // max seq of returned events (0 if none)
+	Events      []timelineEvent `json:"events"`
+}
+
+// timelineEvent wraps a persisted ChatEvent with its sequence + epoch metadata
+// so the client can update its cursor.
+type timelineEvent struct {
+	Type  string         `json:"type"` // "timeline_event"
+	Seq   int64          `json:"seq"`
+	Epoch string         `json:"epoch,omitempty"`
+	Event chat.ChatEvent `json:"event"`
+}
+
+// replayMetaEnvelope is sent immediately after replay-on-subscribe (ADR-0002)
+// so the client can initialize its cursor with the current window + epoch.
+type replayMetaEnvelope struct {
+	Type   string    `json:"type"` // "replay_meta"
+	Epoch  string    `json:"epoch"`
+	Window seqWindow `json:"window"`
+}
+
+// computeTimelineState derives the full ADR-0002 timeline response fields from
+// the returned event records, the session's event window, the current epoch,
+// and the client-supplied cursor (afterSeq + epoch).
+//
+// Stale cursor: client supplied an epoch (non-empty) that differs from the
+// current epoch -> staleCursor:true, reset:true.
+// Gap: afterSeq > 0 and afterSeq < minSeq-1 -> the client is missing events
+// that have been pruned or that it never fetched -> gap:true, reset:true.
+// HasOlder: true when events exist before the returned range (minSeq < first
+// returned seq, or afterSeq > 0 and minSeq <= afterSeq with returned events
+// starting above minSeq).
+// HasNewer: true when events exist after the returned range (maxSeq > last
+// returned seq).
+// EndCursor: the max seq of the returned events (0 if none returned).
+func computeTimelineState(events []chat.EventRecord, win seqWindow, currentEpoch string, req timelineRequest) timelineResponse {
+	resp := timelineResponse{
+		Type:   "timeline",
+		Epoch:  currentEpoch,
+		Window: win,
+	}
+
+	// Stale cursor detection (ADR-0002). An empty client epoch means the client
+	// did not supply one (e.g. first fetch) -> not stale.
+	if req.ClientEpoch != "" && req.ClientEpoch != currentEpoch {
+		resp.StaleCursor = true
+		resp.Reset = true
+	}
+
+	// Gap detection (ADR-0002). Only applies when the client supplied a cursor
+	// (afterSeq > 0) and the session has events (minSeq > 0). A gap exists when
+	// the client's cursor is more than one below the earliest event, i.e. there
+	// are missing events between afterSeq+1 and minSeq-1.
+	if req.AfterSeq > 0 && win.MinSeq > 0 && req.AfterSeq < win.MinSeq-1 {
+		resp.Gap = true
+		resp.Reset = true
+	}
+
+	// Build the timeline event list and compute cursor-derived flags.
+	var firstSeq, lastSeq int64
+	resp.Events = make([]timelineEvent, 0, len(events))
+	for _, rec := range events {
+		var evt chat.ChatEvent
+		if json.Unmarshal([]byte(rec.PayloadJSON), &evt) != nil {
+			continue
+		}
+		resp.Events = append(resp.Events, timelineEvent{
+			Type:  "timeline_event",
+			Seq:   rec.Seq,
+			Epoch: rec.Epoch,
+			Event: evt,
+		})
+		if firstSeq == 0 || rec.Seq < firstSeq {
+			firstSeq = rec.Seq
+		}
+		if rec.Seq > lastSeq {
+			lastSeq = rec.Seq
+		}
+	}
+
+	resp.EndCursor = lastSeq
+
+	// HasOlder: events exist before the returned range. This is true when the
+	// session has events with seq below the first returned seq. When no events
+	// are returned (e.g. gap/stale reset with empty range), fall back to
+	// comparing the client cursor against minSeq.
+	if firstSeq > 0 {
+		resp.HasOlder = win.MinSeq > 0 && win.MinSeq < firstSeq
+	} else if req.AfterSeq > 0 {
+		resp.HasOlder = win.MinSeq > 0 && win.MinSeq <= req.AfterSeq
+	}
+
+	// HasNewer: events exist after the returned range.
+	if lastSeq > 0 {
+		resp.HasNewer = win.MaxSeq > lastSeq
+	} else if req.AfterSeq > 0 {
+		// No events returned but the window extends beyond the cursor.
+		resp.HasNewer = win.MaxSeq > req.AfterSeq
+	}
+
+	return resp
+}
+
 // handleFetchTimeline handles the fetch_timeline WS RPC for cursor-based
-// catch-up (ADR-0002). Client sends {type:"fetch_timeline", afterSeq: N} and
-// receives {type:"timeline", events: [...], epoch: "...", hasMore: bool}.
+// catch-up (ADR-0002). Client sends {type:"fetch_timeline", afterSeq: N,
+// epoch: "..."} and receives the full timelineResponse shape with reset,
+// staleCursor, gap, window, hasOlder, hasNewer, endCursor, events.
 func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg chatWSInbound) {
 	if a.chatStore == nil {
 		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: "chat store unavailable"})
@@ -1621,23 +1782,53 @@ func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg ch
 		limit = msg.Limit
 	}
 	afterSeq := msg.AfterSeq // ADR-0002: proper cursor field
+
+	var events []chat.EventRecord
 	if afterSeq <= 0 {
 		// No cursor — return tail (last N events).
-		events, err := a.chatStore.GetEventsTail(persistRecordID, limit)
+		fetched, err := a.chatStore.GetEventsTail(persistRecordID, limit)
 		if err != nil {
 			_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
 			return
 		}
-		a.sendTimelineResponse(conn, events, persistRecordID, len(events) >= limit)
-		return
+		events = fetched
+	} else {
+		fetched, err := a.chatStore.GetEventsAfterSeq(persistRecordID, afterSeq, limit)
+		if err != nil {
+			_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+			return
+		}
+		events = fetched
 	}
 
-	events, err := a.chatStore.GetEventsAfterSeq(persistRecordID, afterSeq, limit)
+	minSeq, maxSeq, nextSeq, err := a.chatStore.GetEventWindow(persistRecordID)
 	if err != nil {
 		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
 		return
 	}
-	a.sendTimelineResponse(conn, events, persistRecordID, len(events) >= limit)
+	win := seqWindow{MinSeq: minSeq, MaxSeq: maxSeq, NextSeq: nextSeq}
+
+	currentEpoch, err := a.chatStore.GetCurrentEpoch(persistRecordID)
+	if err != nil {
+		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+		return
+	}
+	if currentEpoch == "" && len(events) > 0 {
+		currentEpoch = events[len(events)-1].Epoch
+	}
+
+	resp := computeTimelineState(events, win, currentEpoch, timelineRequest{
+		AfterSeq:    afterSeq,
+		ClientEpoch: msg.Epoch,
+	})
+	// Preserve the legacy hasMore hint by reflecting it in HasNewer when the
+	// store cannot prove otherwise: if we hit the limit and there are no
+	// window-derived newer events, keep HasNewer from the limit heuristic.
+	if len(events) >= limit && !resp.HasNewer {
+		resp.HasNewer = true
+	}
+
+	_ = conn.WriteJSON(resp)
 }
 
 func (a *API) sendTimelineResponse(conn *websocket.Conn, events []chat.EventRecord, recordID string, hasMore bool) {
@@ -1647,19 +1838,6 @@ func (a *API) sendTimelineResponse(conn *websocket.Conn, events []chat.EventReco
 	}
 	if epoch == "" {
 		epoch, _ = a.chatStore.GetCurrentEpoch(recordID)
-	}
-
-	type timelineEvent struct {
-		Type  string          `json:"type"`
-		Seq   int64           `json:"seq"`
-		Epoch string          `json:"epoch,omitempty"`
-		Event chat.ChatEvent  `json:"event"`
-	}
-	type timelineResponse struct {
-		Type    string          `json:"type"`
-		Events  []timelineEvent `json:"events"`
-		Epoch   string          `json:"epoch"`
-		HasMore bool            `json:"hasMore"`
 	}
 
 	var tevents []timelineEvent
@@ -1675,12 +1853,17 @@ func (a *API) sendTimelineResponse(conn *websocket.Conn, events []chat.EventReco
 		}
 	}
 
-	_ = conn.WriteJSON(timelineResponse{
-		Type:    "timeline",
-		Events:  tevents,
-		Epoch:   epoch,
-		HasMore: hasMore,
-	})
+	// ADR-0002: send the full response shape. sendTimelineResponse is the
+	// legacy helper path (kept for callers that don't go through
+	// handleFetchTimeline); compute the window + flags from the store so the
+	// response is consistent. The legacy hasMore hint is reflected in HasNewer.
+	minSeq, maxSeq, nextSeq, _ := a.chatStore.GetEventWindow(recordID)
+	win := seqWindow{MinSeq: minSeq, MaxSeq: maxSeq, NextSeq: nextSeq}
+	resp := computeTimelineState(events, win, epoch, timelineRequest{})
+	if hasMore {
+		resp.HasNewer = true
+	}
+	_ = conn.WriteJSON(resp)
 }
 
 func (a *API) handleChatRestore(w http.ResponseWriter, r *http.Request) {
