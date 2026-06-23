@@ -320,6 +320,288 @@ func TestInputEventOmitEmpty(t *testing.T) {
 	}
 }
 
+// ── Pixel-based MAD diff (VAL-VISUAL-001) ──
+
+func TestPixelDiffStoresPrevFrameAsRGBA(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	img := makeSolidImage(256, 256, color.RGBA{R: 100, G: 100, B: 100, A: 255})
+	_ = strategy.computeChangedTiles(img)
+
+	strategy.mu.Lock()
+	prev := strategy.prevFrameRGBA
+	strategy.mu.Unlock()
+
+	if prev == nil {
+		t.Fatal("expected prevFrameRGBA to be set after first frame")
+	}
+	if prev.Bounds().Dx() != 256 || prev.Bounds().Dy() != 256 {
+		t.Errorf("expected prevFrameRGBA 256x256, got %dx%d", prev.Bounds().Dx(), prev.Bounds().Dy())
+	}
+}
+
+func TestPixelDiffBelowThresholdNotChanged(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// First frame: solid color -> 1 tile sent
+	img1 := makeSolidImage(256, 256, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	tiles1 := strategy.computeChangedTiles(img1)
+	if len(tiles1) != 1 {
+		t.Fatalf("expected 1 tile on first frame, got %d", len(tiles1))
+	}
+
+	// Second frame: very slight change (MAD well below default threshold of ~3)
+	// Each channel changes by 1 -> per-pixel channel diff = 1, MAD ~ 1
+	img2 := makeSolidImage(256, 256, color.RGBA{R: 129, G: 128, B: 128, A: 255})
+	tiles2 := strategy.computeChangedTiles(img2)
+	if len(tiles2) != 0 {
+		t.Errorf("expected 0 changed tiles for sub-threshold change (MAD below threshold), got %d", len(tiles2))
+	}
+}
+
+func TestPixelDiffAboveThresholdChanged(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// First frame
+	img1 := makeSolidImage(256, 256, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	_ = strategy.computeChangedTiles(img1)
+
+	// Second frame: large change (MAD >> threshold) -> tile should be re-sent
+	img2 := makeSolidImage(256, 256, color.RGBA{R: 200, G: 200, B: 200, A: 255})
+	tiles2 := strategy.computeChangedTiles(img2)
+	if len(tiles2) != 1 {
+		t.Errorf("expected 1 changed tile for large change (MAD above threshold), got %d", len(tiles2))
+	}
+}
+
+func TestPixelDiffOnlyChangedTilesSent(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// 512x256 -> 2 tiles (2x1)
+	img1 := makeSolidImage(512, 256, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	_ = strategy.computeChangedTiles(img1)
+
+	// Change only the right tile dramatically, leave left tile barely changed
+	img2 := makeSplitImage(512, 256,
+		color.RGBA{R: 128, G: 128, B: 128, A: 255},   // left: unchanged (MAD ~0)
+		color.RGBA{R: 255, G: 255, B: 255, A: 255},   // right: big change
+	)
+	tiles2 := strategy.computeChangedTiles(img2)
+	if len(tiles2) != 1 {
+		t.Errorf("expected 1 changed tile (right only), got %d", len(tiles2))
+	}
+	if len(tiles2) > 0 && tiles2[0].X != 256 {
+		t.Errorf("expected changed tile at X=256 (right tile), got X=%d", tiles2[0].X)
+	}
+}
+
+func TestPixelDiffByteEqualFastPath(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// Identical image -> byte-equal fast path should skip entirely
+	img := makeSolidImage(256, 256, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	tiles1 := strategy.computeChangedTiles(img)
+	if len(tiles1) != 1 {
+		t.Fatalf("expected 1 tile on first frame, got %d", len(tiles1))
+	}
+
+	// Same exact image -> fast-path byte equal, 0 tiles
+	tiles2 := strategy.computeChangedTiles(img)
+	if len(tiles2) != 0 {
+		t.Errorf("expected 0 changed tiles for byte-equal frame, got %d", len(tiles2))
+	}
+}
+
+// ── Per-tile MAD computation (VAL-VISUAL-001) ──
+
+func TestComputeTileMADZeroForIdentical(t *testing.T) {
+	a := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	b := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			a.SetRGBA(x, y, color.RGBA{R: 100, G: 50, B: 200, A: 255})
+			b.SetRGBA(x, y, color.RGBA{R: 100, G: 50, B: 200, A: 255})
+		}
+	}
+
+	mad := computeTileMAD(a, a.Bounds(), b, b.Bounds())
+	if mad != 0 {
+		t.Errorf("expected MAD=0 for identical tiles, got %f", mad)
+	}
+}
+
+func TestComputeTileMADForChangedTile(t *testing.T) {
+	a := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	b := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			a.SetRGBA(x, y, color.RGBA{R: 100, G: 100, B: 100, A: 255})
+			b.SetRGBA(x, y, color.RGBA{R: 110, G: 100, B: 100, A: 255})
+		}
+	}
+
+	mad := computeTileMAD(a, a.Bounds(), b, b.Bounds())
+	// R differs by 10 on every pixel -> MAD should be 10 (R) + 0 (G) + 0 (B) averaged over 3 channels
+	// = 10/3 per pixel, but mean absolute diff = sum(|di|)/n over all pixels*channels
+	if mad <= 0 {
+		t.Errorf("expected MAD > 0 for changed tile, got %f", mad)
+	}
+}
+
+func TestComputeTileMADNoPrevReturnsMax(t *testing.T) {
+	a := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	mad := computeTileMAD(a, a.Bounds(), nil, image.Rect(0, 0, 10, 10))
+	if mad != madInf {
+		t.Errorf("expected MAD=madInf when prev is nil, got %f", mad)
+	}
+}
+
+// ── Adaptive quality tiers (VAL-VISUAL-002) ──
+
+func TestSelectQualityTierHighEffectiveness(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// effectiveness 1.0 -> highest tier (outputScale 1.0, jpegQuality 72)
+	tier := strategy.selectQualityTier(1.0)
+	if tier.outputScale != 1.0 || tier.jpegQuality != 72 {
+		t.Errorf("high effectiveness (1.0): expected scale=1.0 quality=72, got scale=%v quality=%d", tier.outputScale, tier.jpegQuality)
+	}
+}
+
+func TestSelectQualityTierMidEffectiveness(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// effectiveness 0.7-0.99 -> second tier (outputScale 0.95, jpegQuality 62)
+	tier := strategy.selectQualityTier(0.8)
+	if tier.outputScale != 0.95 || tier.jpegQuality != 62 {
+		t.Errorf("mid effectiveness (0.8): expected scale=0.95 quality=62, got scale=%v quality=%d", tier.outputScale, tier.jpegQuality)
+	}
+}
+
+func TestSelectQualityTierLowEffectiveness(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// effectiveness 0.4-0.69 -> third tier (outputScale 0.8, jpegQuality 52)
+	tier := strategy.selectQualityTier(0.5)
+	if tier.outputScale != 0.8 || tier.jpegQuality != 52 {
+		t.Errorf("low effectiveness (0.5): expected scale=0.8 quality=52, got scale=%v quality=%d", tier.outputScale, tier.jpegQuality)
+	}
+}
+
+func TestSelectQualityTierVeryLowEffectiveness(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// effectiveness < 0.4 -> lowest tier (outputScale 0.65, jpegQuality 45)
+	tier := strategy.selectQualityTier(0.1)
+	if tier.outputScale != 0.65 || tier.jpegQuality != 45 {
+		t.Errorf("very low effectiveness (0.1): expected scale=0.65 quality=45, got scale=%v quality=%d", tier.outputScale, tier.jpegQuality)
+	}
+}
+
+func TestSelectQualityTierZeroEffectiveness(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// effectiveness 0.0 -> lowest tier
+	tier := strategy.selectQualityTier(0.0)
+	if tier.outputScale != 0.65 || tier.jpegQuality != 45 {
+		t.Errorf("zero effectiveness: expected scale=0.65 quality=45, got scale=%v quality=%d", tier.outputScale, tier.jpegQuality)
+	}
+}
+
+func TestQualityTierOutputScaleRange(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// Verify all tiers are within the specified ranges
+	for _, tier := range strategy.tiers {
+		if tier.outputScale < 0.65 || tier.outputScale > 1.0 {
+			t.Errorf("outputScale %v out of range [0.65, 1.0]", tier.outputScale)
+		}
+		if tier.jpegQuality < 45 || tier.jpegQuality > 72 {
+			t.Errorf("jpegQuality %d out of range [45, 72]", tier.jpegQuality)
+		}
+	}
+}
+
+// ── Dimension change clears prevTiles (VAL-VISUAL-010) ──
+
+func TestDimensionChangeClearsPrevTiles(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// First frame 256x256 -> 1 tile
+	img1 := makeSolidImage(256, 256, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	tiles1 := strategy.computeChangedTiles(img1)
+	if len(tiles1) != 1 {
+		t.Fatalf("expected 1 tile on first frame, got %d", len(tiles1))
+	}
+
+	// Frame with different dimensions -> should clear prev and send ALL tiles
+	img2 := makeSolidImage(512, 512, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	tiles2 := strategy.computeChangedTiles(img2)
+	if len(tiles2) != 4 {
+		t.Errorf("expected 4 tiles (all re-sent) after dimension change to 512x512, got %d", len(tiles2))
+	}
+}
+
+func TestDimensionChangeClearsPrevFrameRGBA(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	img1 := makeSolidImage(256, 256, color.RGBA{R: 100, G: 100, B: 100, A: 255})
+	_ = strategy.computeChangedTiles(img1)
+
+	strategy.mu.Lock()
+	oldFrame := strategy.prevFrameRGBA
+	strategy.mu.Unlock()
+
+	if oldFrame == nil {
+		t.Fatal("expected prevFrameRGBA set after first frame")
+	}
+
+	// Process a frame with different dimensions
+	img2 := makeSolidImage(128, 128, color.RGBA{R: 100, G: 100, B: 100, A: 255})
+	_ = strategy.computeChangedTiles(img2)
+
+	strategy.mu.Lock()
+	newFrame := strategy.prevFrameRGBA
+	strategy.mu.Unlock()
+
+	if newFrame == nil {
+		t.Fatal("expected prevFrameRGBA set after dimension change")
+	}
+	if newFrame.Bounds().Dx() != 128 || newFrame.Bounds().Dy() != 128 {
+		t.Errorf("expected prevFrameRGBA updated to 128x128 after dimension change, got %dx%d",
+			newFrame.Bounds().Dx(), newFrame.Bounds().Dy())
+	}
+}
+
+func TestSameDimensionsDoesNotClear(t *testing.T) {
+	strategy := NewJpegTileDiffStrategy()
+	defer strategy.Close()
+
+	// First frame
+	img1 := makeSolidImage(256, 256, color.RGBA{R: 128, G: 128, B: 128, A: 255})
+	_ = strategy.computeChangedTiles(img1)
+
+	// Second frame, same dimensions, barely changed -> 0 tiles (not cleared)
+	img2 := makeSolidImage(256, 256, color.RGBA{R: 129, G: 128, B: 128, A: 255})
+	tiles2 := strategy.computeChangedTiles(img2)
+	if len(tiles2) != 0 {
+		t.Errorf("expected 0 tiles for sub-threshold change at same dims, got %d", len(tiles2))
+	}
+}
+
 // ── Helpers ──
 
 func makeSolidImage(w, h int, c color.RGBA) image.Image {
