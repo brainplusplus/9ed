@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -12,6 +13,28 @@ import (
 
 	ptylib "github.com/aymanbagabas/go-pty"
 )
+
+// maxPendingBytes caps the carryover buffer used by detectTUIMode so a
+// runaway stream of partial escape bytes can't grow it unboundedly. 16 bytes
+// is more than enough for any CSI sequence we care about (longest is
+// "\x1b[?1049h" = 7 bytes).
+const maxPendingBytes = 16
+
+// defaultInputLockTTL is the ADR-0005 default TTL for the per-pane input soft
+// lock (2s). config.Config.PTYInputLockTTL overrides this at runtime.
+const defaultInputLockTTL = 2 * time.Second
+
+// tuiModeRegex matches DEC Private Mode Set/Reset sequences for the
+// alternate-screen modes ADR-0005 cares about:
+//   - 1049 (save cursor + enter/exit alternate screen)
+//   - 1047 (enter/exit alternate screen, no cursor save)
+//
+// The trailing mode byte ([hl]) determines enter ('h') vs exit ('l'). The
+// regex is anchored on the CSI private-marker prefix "\x1b[?" so it does not
+// match unrelated CSI sequences like cursor movement (\x1b[A) or SGR
+// (\x1b[31m). VAL-PTY-002: the legacy 47h/47l byte-matching dead code was
+// removed entirely — only 1049 and 1047 are matched.
+var tuiModeRegex = regexp.MustCompile(`\x1b\[\?(?:1049|1047)([hl])`)
 
 // ptyRingBuffer is a fixed-size circular buffer for PTY output bytes
 // (ADR-0005). Used for replay-on-subscribe so client B connecting mid-session
@@ -92,12 +115,19 @@ type ptySession struct {
 	// ADR-0005: ring buffer for scrollback replay.
 	ringBuffer *ptyRingBuffer
 	// ADR-0005: TUI mode detection (alternate screen buffer).
-	tuiMode    bool
-	// ADR-0005: collaborative soft lock for PTY input.
-	inputLock  *inputLock
+	tuiMode bool
+	// ADR-0005: carryover buffer for TUI detection across read boundaries.
+	// Holds trailing bytes from the previous read that did not form a
+	// complete escape sequence (e.g. "\x1b[?1049" waiting for the final
+	// "h"/"l"). Always accessed under s.mu. Capped at maxPendingBytes.
+	pending []byte
+	// ADR-0005: collaborative soft lock for PTY input. Per-pane (keyed by
+	// paneID) so the API is forward-compatible with multi-pane terminals.
+	// Today paneID == sessionID, so there is at most one entry.
+	inputLock *inputLock
 }
 
-func newPTYSession(agent AgentDescriptor, workDir string) (*ptySession, error) {
+func newPTYSession(agent AgentDescriptor, workDir string, ringBufferSize int, inputLockTTL time.Duration) (*ptySession, error) {
 	pseudo, err := ptylib.New()
 	if err != nil {
 		return nil, fmt.Errorf("pty create: %w", err)
@@ -116,6 +146,15 @@ func newPTYSession(agent AgentDescriptor, workDir string) (*ptySession, error) {
 		return nil, fmt.Errorf("spawn %s: %w", agent.Command, err)
 	}
 
+	// ADR-0005: honor config-derived sizing. Fall back to ADR defaults
+	// (1MB ring buffer, 2s lock TTL) when the caller passed zero values.
+	if ringBufferSize <= 0 {
+		ringBufferSize = 1048576 // 1MB default
+	}
+	if inputLockTTL <= 0 {
+		inputLockTTL = 2 * time.Second
+	}
+
 	s := &ptySession{
 		id:         uuid.NewString(),
 		agentID:    agent.ID,
@@ -123,8 +162,8 @@ func newPTYSession(agent AgentDescriptor, workDir string) (*ptySession, error) {
 		cmd:        cmd,
 		events:     make(chan ChatEvent, 256),
 		done:       make(chan struct{}),
-		ringBuffer: newPtyRingBuffer(256 * 1024), // ADR-0005: 256KB ring buffer
-		inputLock:  newInputLock(2 * time.Second), // ADR-0005: 2s soft lock TTL
+		ringBuffer: newPtyRingBuffer(ringBufferSize),
+		inputLock:  newInputLock(inputLockTTL),
 	}
 
 	if cmds := ptyAgentCommands(agent.ID); len(cmds) > 0 {
@@ -206,25 +245,34 @@ func (s *ptySession) Cancel() error {
 }
 
 // inputLock tracks the soft lock state for collaborative PTY input (ADR-0005).
+// The lock is per-pane (keyed by paneID) so the API is forward-compatible with
+// multi-pane terminals. Today paneID == sessionID, so there is at most one
+// entry in the map.
 type inputLock struct {
-	mu        sync.Mutex
+	mu  sync.Mutex
+	ttl time.Duration
+	// panes maps paneID → the per-pane lock entry.
+	panes map[string]*inputLockEntry
+}
+
+// inputLockEntry is the per-pane lock state.
+type inputLockEntry struct {
 	holderID  string // clientId of the lock holder, empty = no lock
 	expiresAt time.Time
-	ttl       time.Duration
 }
 
 func newInputLock(ttl time.Duration) *inputLock {
 	if ttl <= 0 {
 		ttl = 2 * time.Second
 	}
-	return &inputLock{ttl: ttl}
+	return &inputLock{ttl: ttl, panes: make(map[string]*inputLockEntry)}
 }
 
-// acquireInputLock attempts to acquire or renew the soft lock.
-// If holderID matches the current holder, the lock is renewed.
-// If no lock is held or the lock has expired, it is acquired.
-// Returns true if the caller now holds the lock.
-func (s *ptySession) acquireInputLock(holderID string) bool {
+// acquireInputLock attempts to acquire or renew the soft lock for a specific
+// pane (ADR-0005). If holderID matches the current holder for paneID, the lock
+// is renewed. If no lock is held or the lock has expired, it is acquired.
+// Returns true if the caller now holds the lock for that pane.
+func (s *ptySession) acquireInputLock(paneID, holderID string) bool {
 	if s.inputLock == nil {
 		return true // lock disabled
 	}
@@ -232,45 +280,58 @@ func (s *ptySession) acquireInputLock(holderID string) bool {
 	defer s.inputLock.mu.Unlock()
 
 	now := time.Now()
-	if s.inputLock.holderID == "" || now.After(s.inputLock.expiresAt) {
+	entry, ok := s.inputLock.panes[paneID]
+	if !ok {
+		entry = &inputLockEntry{}
+		s.inputLock.panes[paneID] = entry
+	}
+	if entry.holderID == "" || now.After(entry.expiresAt) {
 		// No active lock — acquire.
-		s.inputLock.holderID = holderID
-		s.inputLock.expiresAt = now.Add(s.inputLock.ttl)
+		entry.holderID = holderID
+		entry.expiresAt = now.Add(s.inputLock.ttl)
 		return true
 	}
-	if s.inputLock.holderID == holderID {
+	if entry.holderID == holderID {
 		// Same holder — renew.
-		s.inputLock.expiresAt = now.Add(s.inputLock.ttl)
+		entry.expiresAt = now.Add(s.inputLock.ttl)
 		return true
 	}
 	// Locked by someone else.
 	return false
 }
 
-// InputLockHolder returns the clientId of the current lock holder, or empty
-// if no lock is active (ADR-0005).
-func (s *ptySession) InputLockHolder() string {
+// InputLockHolder returns the clientId of the current lock holder for the
+// given pane, or empty if no lock is active (ADR-0005).
+func (s *ptySession) InputLockHolder(paneID string) string {
 	if s.inputLock == nil {
 		return ""
 	}
 	s.inputLock.mu.Lock()
 	defer s.inputLock.mu.Unlock()
-	if time.Now().After(s.inputLock.expiresAt) {
+	entry, ok := s.inputLock.panes[paneID]
+	if !ok {
 		return ""
 	}
-	return s.inputLock.holderID
+	if time.Now().After(entry.expiresAt) {
+		return ""
+	}
+	return entry.holderID
 }
 
-// ReleaseInputLock releases the soft lock if the caller is the holder.
-func (s *ptySession) ReleaseInputLock(holderID string) {
+// ReleaseInputLock releases the soft lock for a pane if the caller is the
+// holder (ADR-0005).
+func (s *ptySession) ReleaseInputLock(paneID, holderID string) {
 	if s.inputLock == nil {
 		return
 	}
 	s.inputLock.mu.Lock()
 	defer s.inputLock.mu.Unlock()
-	if s.inputLock.holderID == holderID {
-		s.inputLock.holderID = ""
-		s.inputLock.expiresAt = time.Time{}
+	entry, ok := s.inputLock.panes[paneID]
+	if !ok {
+		return
+	}
+	if entry.holderID == holderID {
+		delete(s.inputLock.panes, paneID)
 	}
 }
 
@@ -326,18 +387,18 @@ func (s *ptySession) readLoop() {
 type PtySession = ptySession
 
 // AcquireInputLockPublic is the exported version of acquireInputLock.
-func (s *ptySession) AcquireInputLockPublic(holderID string) bool {
-	return s.acquireInputLock(holderID)
+func (s *ptySession) AcquireInputLockPublic(paneID, holderID string) bool {
+	return s.acquireInputLock(paneID, holderID)
 }
 
 // InputLockHolderPublic is the exported version of InputLockHolder.
-func (s *ptySession) InputLockHolderPublic() string {
-	return s.InputLockHolder()
+func (s *ptySession) InputLockHolderPublic(paneID string) string {
+	return s.InputLockHolder(paneID)
 }
 
 // ReleaseInputLockPublic is the exported version of ReleaseInputLock.
-func (s *ptySession) ReleaseInputLockPublic(holderID string) {
-	s.ReleaseInputLock(holderID)
+func (s *ptySession) ReleaseInputLockPublic(paneID, holderID string) {
+	s.ReleaseInputLock(paneID, holderID)
 }
 
 // RingBufferSnapshotPublic is the exported version of RingBufferSnapshot.
@@ -349,26 +410,86 @@ func (s *ptySession) RingBufferSnapshotPublic() []byte {
 func (s *ptySession) IsTUIModePublic() bool {
 	return s.IsTUIMode()
 }
-// (ADR-0005). \033[?1049h = enter TUI, \033[?1049l = exit TUI.
+
+// inputLockedEvent builds a dedicated input_locked ChatEvent (ADR-0005,
+// VAL-PTY-004). Unlike the old piggyback on the generic error event, this is
+// a first-class event type so clients can branch on data.type ===
+// 'input_locked' without sniffing error text. TTL is expressed in
+// milliseconds for JSON transport.
+func inputLockedEvent(holderID string, ttl time.Duration) ChatEvent {
+	return ChatEvent{
+		Type:   "input_locked",
+		Holder: holderID,
+		TTL:    int(ttl / time.Millisecond),
+	}
+}
+
+// InputLockedEventPublic is the exported version of inputLockedEvent, used by
+// httpapi to emit the dedicated input_locked event when a client is rejected
+// by the per-pane soft lock (VAL-PTY-004).
+func InputLockedEventPublic(paneID, holderID string) ChatEvent {
+	_ = paneID // paneID reserved for future multi-pane support; today unused in the event body
+	return inputLockedEvent(holderID, defaultInputLockTTL)
+}
+
+// detectTUIMode scans PTY output for alternate-screen enter/exit escape
+// sequences and updates s.tuiMode accordingly (ADR-0005, VAL-PTY-001,
+// VAL-PTY-002).
+//
+// It uses a regex-based scan instead of the old fixed-offset byte matching so
+// sequences embedded anywhere in the output are detected. A carryover buffer
+// (s.pending, under s.mu) handles sequences that arrive split across read
+// boundaries: the previous read's trailing partial bytes are prepended to the
+// current read, and any new trailing partial (from the last ESC to end of
+// data) is stored back into s.pending for the next read. The buffer is capped
+// at maxPendingBytes.
 func (s *ptySession) detectTUIMode(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := 0; i < len(data)-6; i++ {
-		if data[i] == 0x1b && data[i+1] == '[' {
-			// Look for ?1049h or ?1049l
-			if i+6 < len(data) && data[i+2] == '?' {
-				seq := string(data[i+3 : i+7])
-				if seq == "1049" || seq == "1047" || seq == "47h" || seq == "47l" {
-					if i+7 < len(data) {
-						mode := data[i+7]
-						if mode == 'h' {
-							s.tuiMode = true
-						} else if mode == 'l' {
-							s.tuiMode = false
-						}
-					}
-				}
-			}
+
+	// Prepend any carryover from the previous read.
+	combined := data
+	if len(s.pending) > 0 {
+		combined = make([]byte, len(s.pending)+len(data))
+		copy(combined, s.pending)
+		copy(combined[len(s.pending):], data)
+		s.pending = nil
+	}
+
+	// Find all escape-sequence matches. The trailing mode byte ([hl])
+	// determines enter (h) vs exit (l).
+	matches := tuiModeRegex.FindAllSubmatchIndex(combined, -1)
+	for _, m := range matches {
+		// m[2]:m[3] is the capture group index range for ([hl]).
+		modeByte := combined[m[2]]
+		if modeByte == 'h' {
+			s.tuiMode = true
+		} else if modeByte == 'l' {
+			s.tuiMode = false
+		}
+	}
+
+	// Store any trailing partial sequence back into s.pending for the next
+	// read. We look for the last ESC (0x1b) in the combined buffer: any bytes
+	// from there to the end might be the start of a sequence that continues
+	// in the next read.
+	lastESC := -1
+	for i := len(combined) - 1; i >= 0; i-- {
+		if combined[i] == 0x1b {
+			lastESC = i
+			break
+		}
+	}
+	if lastESC >= 0 {
+		tail := combined[lastESC:]
+		// Only keep it if it doesn't already contain a complete sequence
+		// (i.e. the regex didn't match it). If the regex matched, the tail
+		// is a complete sequence and we don't need to carry it over.
+		if len(tail) <= maxPendingBytes && !tuiModeRegex.Match(tail) {
+			s.pending = append(s.pending, tail...)
+		} else if len(tail) > maxPendingBytes {
+			// Cap the carryover: keep only the last maxPendingBytes bytes.
+			s.pending = append(s.pending, tail[len(tail)-maxPendingBytes:]...)
 		}
 	}
 }

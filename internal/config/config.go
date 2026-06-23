@@ -39,6 +39,15 @@ type Config struct {
 	// Defaults: 150ms base, 30s max.
 	ReconnectBaseDelay time.Duration
 	ReconnectMaxDelay  time.Duration
+	// ADR-0005: PTY (chat fallback) tuning.
+	// PTYRingBufferSize is the byte capacity of the per-PTY ring buffer used
+	// for replay-on-subscribe (default 1MB = 1048576 bytes). Holds recent
+	// terminal output so a client joining mid-session sees recent context.
+	PTYRingBufferSize int
+	// PTYInputLockTTL is the time-to-live of the per-pane input soft lock
+	// (default 2s). Prevents two clients from typing concurrently into the
+	// same PTY pane; the lock auto-expires if the holder goes silent.
+	PTYInputLockTTL time.Duration
 }
 
 func LoadFromEnv() (Config, error) {
@@ -83,6 +92,11 @@ func LoadFromEnv() (Config, error) {
 		LivenessFailureThreshold: parseIntEnv("LIVENESS_FAILURE_THRESHOLD", 2),
 		ReconnectBaseDelay:       parseDurationEnv("RECONNECT_BASE_DELAY", 150*time.Millisecond),
 		ReconnectMaxDelay:        parseDurationEnv("RECONNECT_MAX_DELAY", 30*time.Second),
+		// ADR-0005: PTY ring buffer (default 1MB) and per-pane input soft
+		// lock TTL (default 2s). Read from env so operators can tune replay
+		// depth and lock duration without rebuilding.
+		PTYRingBufferSize: parseIntEnv("PTY_RING_BUFFER_SIZE", 1048576),
+		PTYInputLockTTL:   parseDurationEnv("PTY_INPUT_LOCK_TTL", 2*time.Second),
 	}
 
 	if cfg.Port == "" {

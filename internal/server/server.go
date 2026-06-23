@@ -57,10 +57,15 @@ func New(cfg config.Config) *Server {
 	// base/max delay) into every SessionOptions produced by the manager so
 	// freshly created and resumed ACP sessions honor the SESSION_RESUME_*
 	// env vars (VAL-RESUME-001).
+	// ADR-0005: also thread PTY fallback tuning (ring buffer size, input
+	// lock TTL) so PTY sessions honor PTY_RING_BUFFER_SIZE /
+	// PTY_INPUT_LOCK_TTL env vars.
 	chatSessionMgr.SetRestartConfig(chat.RestartConfig{
 		MaxRetries:       cfg.SessionResumeMaxRetries,
 		RestartBaseDelay: cfg.SessionResumeBaseDelay,
 		RestartMaxDelay:  cfg.SessionResumeMaxDelay,
+		PTYRingBufferSize: cfg.PTYRingBufferSize,
+		PTYInputLockTTL:   cfg.PTYInputLockTTL,
 	})
 	terminalMCPToken := randomToken()
 	browserMCPToken := randomToken()

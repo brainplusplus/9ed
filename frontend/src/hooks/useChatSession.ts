@@ -713,6 +713,17 @@ export function useChatSession(): UseChatSessionResult {
             return;
           }
           // ADR-0005: input locked — another client is typing.
+          // Dedicated event type (VAL-PTY-004) with Holder and TTL fields,
+          // not a piggyback on the generic error event.
+          if (data.type === 'input_locked') {
+            appendSessionDebugRef.current(sessionId, {
+              source: 'ws',
+              level: 'warn',
+              message: `input locked by ${data.holder ?? 'another client'} (ttl ${data.ttl ?? 0}ms)`,
+            });
+            return;
+          }
+          // Legacy fallback: some older servers piggyback on error events.
           if (data.type === 'error' && data.error === 'input_locked') {
             appendSessionDebugRef.current(sessionId, {
               source: 'ws',

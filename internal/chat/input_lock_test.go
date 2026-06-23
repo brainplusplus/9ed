@@ -8,25 +8,58 @@ import (
 func TestInputLockAcquire(t *testing.T) {
 	lock := newInputLock(2 * time.Second)
 
-	// No one holds the lock initially.
-	if lock.holderID != "" {
+	// No one holds the lock initially for pane1.
+	s := &ptySession{inputLock: lock}
+	if s.InputLockHolder("pane1") != "" {
 		t.Fatal("Lock should start unheld")
 	}
 
-	// Client A acquires the lock.
-	s := &ptySession{inputLock: lock}
-	if !s.acquireInputLock("clientA") {
+	// Client A acquires the lock for pane "pane1".
+	if !s.acquireInputLock("pane1", "clientA") {
 		t.Error("Client A should acquire the lock")
 	}
 
-	// Client B cannot acquire while A holds it.
-	if s.acquireInputLock("clientB") {
-		t.Error("Client B should not acquire while A holds")
+	// Client B cannot acquire while A holds it for the same pane.
+	if s.acquireInputLock("pane1", "clientB") {
+		t.Error("Client B should not acquire while A holds it for the same pane")
 	}
 
 	// Client A can renew.
-	if !s.acquireInputLock("clientA") {
+	if !s.acquireInputLock("pane1", "clientA") {
 		t.Error("Client A should be able to renew")
+	}
+}
+
+// TestInputLock_PerPane (VAL-PTY-003): input lock is tracked per-pane. Two
+// different pane IDs can be held concurrently by different clients.
+func TestInputLock_PerPane(t *testing.T) {
+	lock := newInputLock(2 * time.Second)
+	s := &ptySession{inputLock: lock}
+
+	// Client A acquires the lock for pane1.
+	if !s.acquireInputLock("pane1", "clientA") {
+		t.Fatal("Client A should acquire lock for pane1")
+	}
+
+	// Client B can acquire the lock for a DIFFERENT pane (pane2) concurrently.
+	if !s.acquireInputLock("pane2", "clientB") {
+		t.Error("Client B should acquire lock for pane2 concurrently with pane1")
+	}
+
+	// Client C cannot acquire pane1 (held by A).
+	if s.acquireInputLock("pane1", "clientC") {
+		t.Error("Client C should not acquire pane1 while A holds it")
+	}
+
+	// Client C cannot acquire pane2 (held by B).
+	if s.acquireInputLock("pane2", "clientC") {
+		t.Error("Client C should not acquire pane2 while B holds it")
+	}
+
+	// Releasing pane1 lets client C acquire it.
+	s.ReleaseInputLock("pane1", "clientA")
+	if !s.acquireInputLock("pane1", "clientC") {
+		t.Error("Client C should acquire pane1 after A releases it")
 	}
 }
 
@@ -36,7 +69,7 @@ func TestInputLockExpire(t *testing.T) {
 	s := &ptySession{inputLock: lock}
 
 	// Client A acquires.
-	if !s.acquireInputLock("clientA") {
+	if !s.acquireInputLock("pane1", "clientA") {
 		t.Fatal("Client A should acquire")
 	}
 
@@ -44,7 +77,7 @@ func TestInputLockExpire(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Client B can now acquire after expiry.
-	if !s.acquireInputLock("clientB") {
+	if !s.acquireInputLock("pane1", "clientB") {
 		t.Error("Client B should acquire after expiry")
 	}
 }
@@ -55,13 +88,13 @@ func TestInputLockRelease(t *testing.T) {
 	s := &ptySession{inputLock: lock}
 
 	// Client A acquires.
-	s.acquireInputLock("clientA")
+	s.acquireInputLock("pane1", "clientA")
 
 	// Client A releases.
-	s.ReleaseInputLock("clientA")
+	s.ReleaseInputLock("pane1", "clientA")
 
 	// Client B can now acquire.
-	if !s.acquireInputLock("clientB") {
+	if !s.acquireInputLock("pane1", "clientB") {
 		t.Error("Client B should acquire after release")
 	}
 }
@@ -72,13 +105,13 @@ func TestInputLockReleaseWrongHolder(t *testing.T) {
 	s := &ptySession{inputLock: lock}
 
 	// Client A acquires.
-	s.acquireInputLock("clientA")
+	s.acquireInputLock("pane1", "clientA")
 
 	// Client B tries to release (should not work).
-	s.ReleaseInputLock("clientB")
+	s.ReleaseInputLock("pane1", "clientB")
 
 	// Client A still holds.
-	if s.InputLockHolder() != "clientA" {
+	if s.InputLockHolder("pane1") != "clientA" {
 		t.Error("Client A should still hold the lock")
 	}
 }
@@ -89,15 +122,20 @@ func TestInputLockHolder(t *testing.T) {
 	s := &ptySession{inputLock: lock}
 
 	// No holder initially.
-	if s.InputLockHolder() != "" {
+	if s.InputLockHolder("pane1") != "" {
 		t.Error("No holder expected initially")
 	}
 
 	// Client A acquires.
-	s.acquireInputLock("clientA")
+	s.acquireInputLock("pane1", "clientA")
 
-	if s.InputLockHolder() != "clientA" {
-		t.Errorf("Expected 'clientA', got %q", s.InputLockHolder())
+	if s.InputLockHolder("pane1") != "clientA" {
+		t.Errorf("Expected 'clientA', got %q", s.InputLockHolder("pane1"))
+	}
+
+	// Different pane has no holder.
+	if s.InputLockHolder("pane2") != "" {
+		t.Errorf("Expected empty holder for pane2, got %q", s.InputLockHolder("pane2"))
 	}
 }
 
@@ -105,10 +143,10 @@ func TestInputLockNilDisabled(t *testing.T) {
 	// When inputLock is nil, lock is disabled (always succeeds).
 	s := &ptySession{inputLock: nil}
 
-	if !s.acquireInputLock("clientA") {
+	if !s.acquireInputLock("pane1", "clientA") {
 		t.Error("Lock should be disabled (always succeed)")
 	}
-	if s.InputLockHolder() != "" {
+	if s.InputLockHolder("pane1") != "" {
 		t.Error("No holder expected when lock disabled")
 	}
 }

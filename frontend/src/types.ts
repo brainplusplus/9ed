@@ -421,6 +421,11 @@ export type ChatEvent = {
   // ADR-0002: cursor tracking for gap/stale detection.
   seq?: number;
   epoch?: string;
+  // ADR-0005: input_locked dedicated event fields (VAL-PTY-004).
+  // Holder is the clientId of the client holding the per-pane input soft
+  // lock. TTL is the remaining lock duration in milliseconds.
+  holder?: string;
+  ttl?: number;
 };
 
 export type PendingPermission = {

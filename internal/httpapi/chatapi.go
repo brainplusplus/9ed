@@ -1583,13 +1583,16 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 					Name: attachment.Name,
 				})
 			}
-			// ADR-0005: soft lock check for PTY mode.
+			// ADR-0005: soft lock check for PTY mode. paneID is the session
+			// ID (forward-compatible with multi-pane terminals). On rejection,
+			// emit a dedicated input_locked event (VAL-PTY-004) instead of
+			// piggybacking on the generic error event.
 			if ptySess, ok := session.(*chat.PtySession); ok && msg.ClientID != "" {
-				if !ptySess.AcquireInputLockPublic(msg.ClientID) {
-					stream.publish(chat.ChatEvent{Type: "error", Error: "input_locked", ToolTitle: ptySess.InputLockHolderPublic()})
+				if !ptySess.AcquireInputLockPublic(sessionID, msg.ClientID) {
+					stream.publish(chat.InputLockedEventPublic(sessionID, ptySess.InputLockHolderPublic(sessionID)))
 					return
 				}
-				defer ptySess.ReleaseInputLockPublic(msg.ClientID)
+				defer ptySess.ReleaseInputLockPublic(sessionID, msg.ClientID)
 			}
 			if err := session.Send(ctx, content, attachments); err != nil {
 				stream.publish(chat.ChatEvent{Type: "error", Error: err.Error()})
@@ -1598,8 +1601,8 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "cancel":
 			// ADR-0005: soft lock check for PTY mode.
 			if ptySess, ok := session.(*chat.PtySession); ok && msg.ClientID != "" {
-				if !ptySess.AcquireInputLockPublic(msg.ClientID) {
-					stream.publish(chat.ChatEvent{Type: "error", Error: "input_locked", ToolTitle: ptySess.InputLockHolderPublic()})
+				if !ptySess.AcquireInputLockPublic(sessionID, msg.ClientID) {
+					stream.publish(chat.InputLockedEventPublic(sessionID, ptySess.InputLockHolderPublic(sessionID)))
 					return
 				}
 			}

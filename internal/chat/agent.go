@@ -55,6 +55,13 @@ type ChatEvent struct {
 	PermissionOptions []PermissionOption `json:"permissionOptions,omitempty"`
 
 	TerminalCommand string `json:"terminalCommand,omitempty"`
+
+	// ADR-0005: input_locked dedicated event fields. Holder is the clientId
+	// of the client currently holding the per-pane input soft lock. TTL is
+	// the remaining lock duration in milliseconds. These are only populated
+	// for the dedicated "input_locked" event type (VAL-PTY-004).
+	Holder string `json:"holder,omitempty"`
+	TTL    int    `json:"ttl,omitempty"`
 }
 
 type PermissionOption struct {
@@ -194,6 +201,10 @@ type SessionOptions struct {
 	MaxRetries       int
 	RestartBaseDelay time.Duration
 	RestartMaxDelay  time.Duration
+	// ADR-0005: PTY fallback tuning (threaded from config). Zero values fall
+	// back to ADR defaults (1MB ring buffer, 2s lock TTL) inside newPTYSession.
+	PTYRingBufferSize int
+	PTYInputLockTTL   time.Duration
 }
 
 func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
@@ -327,7 +338,7 @@ func NewChatSession(ctx context.Context, agent AgentDescriptor, workDir string, 
 		}
 	}
 
-	return newPTYSession(agent, workDir)
+	return newPTYSession(agent, workDir, opts.PTYRingBufferSize, opts.PTYInputLockTTL)
 }
 
 type PermissionResponse struct {

@@ -189,3 +189,91 @@ func TestReconnectMaxDelay_Custom(t *testing.T) {
 		t.Errorf("expected ReconnectMaxDelay=2m, got %v", cfg.ReconnectMaxDelay)
 	}
 }
+
+// --- ADR-0005: PTY ring buffer size + input lock TTL ---
+
+// TestPTYRingBufferSize_Default verifies the default ring buffer size is 1MB
+// (1048576 bytes) per ADR-0005.
+func TestPTYRingBufferSize_Default(t *testing.T) {
+	os.Unsetenv("PTY_RING_BUFFER_SIZE")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.PTYRingBufferSize != 1048576 {
+		t.Errorf("expected default PTYRingBufferSize=1048576 (1MB), got %d", cfg.PTYRingBufferSize)
+	}
+}
+
+// TestPTYRingBufferSize_Custom verifies a custom ring buffer size is honored.
+func TestPTYRingBufferSize_Custom(t *testing.T) {
+	t.Setenv("PTY_RING_BUFFER_SIZE", "5242880")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.PTYRingBufferSize != 5242880 {
+		t.Errorf("expected PTYRingBufferSize=5242880 (5MB), got %d", cfg.PTYRingBufferSize)
+	}
+}
+
+// TestPTYRingBufferSize_InvalidFallsBack verifies an invalid value falls back
+// to the default 1MB.
+func TestPTYRingBufferSize_InvalidFallsBack(t *testing.T) {
+	t.Setenv("PTY_RING_BUFFER_SIZE", "not-a-number")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.PTYRingBufferSize != 1048576 {
+		t.Errorf("expected fallback PTYRingBufferSize=1048576, got %d", cfg.PTYRingBufferSize)
+	}
+}
+
+// TestPTYInputLockTTL_Default verifies the default input lock TTL is 2s.
+func TestPTYInputLockTTL_Default(t *testing.T) {
+	os.Unsetenv("PTY_INPUT_LOCK_TTL")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.PTYInputLockTTL != 2*time.Second {
+		t.Errorf("expected default PTYInputLockTTL=2s, got %v", cfg.PTYInputLockTTL)
+	}
+}
+
+// TestPTYInputLockTTL_Custom verifies a custom TTL is honored.
+func TestPTYInputLockTTL_Custom(t *testing.T) {
+	t.Setenv("PTY_INPUT_LOCK_TTL", "500ms")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.PTYInputLockTTL != 500*time.Millisecond {
+		t.Errorf("expected PTYInputLockTTL=500ms, got %v", cfg.PTYInputLockTTL)
+	}
+}
+
+// TestPTYInputLockTTL_InvalidFallsBack verifies an invalid value falls back.
+func TestPTYInputLockTTL_InvalidFallsBack(t *testing.T) {
+	t.Setenv("PTY_INPUT_LOCK_TTL", "not-a-duration")
+	t.Setenv("BASIC_AUTH_USERNAME", "admin")
+	t.Setenv("BASIC_AUTH_PASSWORD", "secret")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv failed: %v", err)
+	}
+	if cfg.PTYInputLockTTL != 2*time.Second {
+		t.Errorf("expected fallback PTYInputLockTTL=2s, got %v", cfg.PTYInputLockTTL)
+	}
+}

@@ -12,10 +12,17 @@ import (
 // SessionManager. Zero values are replaced with ADR-0004 defaults inside
 // applyRestartConfig, but SetRestartConfig lets the server honor custom
 // SESSION_RESUME_* env var values.
+//
+// It also carries ADR-0005 PTY tuning (PTYRingBufferSize, PTYInputLockTTL)
+// so PTY fallback sessions honor the PTY_RING_BUFFER_SIZE / PTY_INPUT_LOCK_TTL
+// env vars.
 type RestartConfig struct {
 	MaxRetries       int
 	RestartBaseDelay time.Duration
 	RestartMaxDelay  time.Duration
+	// ADR-0005: PTY fallback tuning (threaded from config.Config).
+	PTYRingBufferSize int
+	PTYInputLockTTL   time.Duration
 }
 
 // newChatSessionCtor and newACPResumedSessionCtor are indirection points over
@@ -93,6 +100,10 @@ func (m *SessionManager) restartConfig() RestartConfig {
 // values are preserved (allowing per-session overrides). This is the wiring
 // point that ensures freshly created ACP sessions honor the
 // SESSION_RESUME_* env vars (VAL-RESUME-001).
+//
+// It also threads the ADR-0005 PTY tuning (PTYRingBufferSize, PTYInputLockTTL)
+// so PTY fallback sessions honor the PTY_RING_BUFFER_SIZE /
+// PTY_INPUT_LOCK_TTL env vars.
 func (m *SessionManager) enrichOpts(opts SessionOptions) SessionOptions {
 	cfg := m.restartConfig()
 	if opts.MaxRetries <= 0 {
@@ -103,6 +114,12 @@ func (m *SessionManager) enrichOpts(opts SessionOptions) SessionOptions {
 	}
 	if opts.RestartMaxDelay <= 0 {
 		opts.RestartMaxDelay = cfg.RestartMaxDelay
+	}
+	if opts.PTYRingBufferSize <= 0 {
+		opts.PTYRingBufferSize = cfg.PTYRingBufferSize
+	}
+	if opts.PTYInputLockTTL <= 0 {
+		opts.PTYInputLockTTL = cfg.PTYInputLockTTL
 	}
 	return opts
 }
