@@ -125,6 +125,11 @@ type ptySession struct {
 	// paneID) so the API is forward-compatible with multi-pane terminals.
 	// Today paneID == sessionID, so there is at most one entry.
 	inputLock *inputLock
+	// ADR-0005: primaryClientID is the clientId of the first subscriber to a
+	// TUI-mode PTY session (VAL-PTY-006). The server routes tui_snapshot_request
+	// only to this client. First subscriber wins; subsequent callers do not
+	// replace it. Accessed under s.mu.
+	primaryClientID string
 }
 
 func newPTYSession(agent AgentDescriptor, workDir string, ringBufferSize int, inputLockTTL time.Duration) (*ptySession, error) {
@@ -409,6 +414,40 @@ func (s *ptySession) RingBufferSnapshotPublic() []byte {
 // IsTUIModePublic is the exported version of IsTUIMode.
 func (s *ptySession) IsTUIModePublic() bool {
 	return s.IsTUIMode()
+}
+
+// SetPrimaryClientID records the primary client for TUI snapshot routing
+// (VAL-PTY-006). The first non-empty caller wins; subsequent calls are
+// ignored and return false. Returns true only when the primary was set by
+// this call.
+func (s *ptySession) SetPrimaryClientID(clientID string) bool {
+	if clientID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.primaryClientID != "" {
+		return false
+	}
+	s.primaryClientID = clientID
+	return true
+}
+
+// PrimaryClientID returns the clientId of the primary subscriber, or empty if
+// none has been set (VAL-PTY-006).
+func (s *ptySession) PrimaryClientID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.primaryClientID
+}
+
+// ClearPrimaryClientID resets the primary client. Used when the primary
+// disconnects and no subscribers remain, allowing a future subscriber to
+// become primary (VAL-PTY-006).
+func (s *ptySession) ClearPrimaryClientID() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.primaryClientID = ""
 }
 
 // inputLockedEvent builds a dedicated input_locked ChatEvent (ADR-0005,

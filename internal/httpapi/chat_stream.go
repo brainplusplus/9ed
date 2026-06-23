@@ -115,6 +115,9 @@ func (r *chatStreamRegistry) LatestID() (string, bool) {
 type chatSubscriber struct {
 	C        chan chat.ChatEvent // primary channel (backward compat, used as bulk)
 	priority chan chat.ChatEvent // critical events (never drop) — ADR-0003
+	// ADR-0005: clientID associates this subscriber with a logical client
+	// (VAL-PTY-006) for routing tui_snapshot_request to the primary client.
+	clientID string
 }
 
 // criticalEventTypes are event types that must never be dropped (ADR-0003).
@@ -142,6 +145,7 @@ type chatStream struct {
 	persist          chatEventPersister
 	onDone           func()
 	subscribers      map[*chatSubscriber]struct{}
+	subscribersByClient map[string]*chatSubscriber // ADR-0005: clientID -> subscriber (VAL-PTY-006)
 	turnDoneEmitted  bool
 	turnObservations []chat.ChatEvent
 	toolFallbackSeq  int
@@ -156,6 +160,10 @@ type chatStream struct {
 	mu               sync.Mutex
 	done             chan struct{}
 	closeOnce        sync.Once
+	// ADR-0005: TUI snapshot coordinator (VAL-PTY-006). Tracks the
+	// in-flight tui_snapshot_request so responses can be de-duplicated
+	// and a timeout can fall back to ring buffer replay.
+	snapshot *tuiSnapshotState
 }
 
 var interactiveToolDoneTimeout = 3500 * time.Millisecond
@@ -169,6 +177,7 @@ func newChatStream(sessionID string, session chat.ChatSession, persist chatEvent
 		persist:     persist,
 		onDone:      onDone,
 		subscribers: make(map[*chatSubscriber]struct{}),
+		subscribersByClient: make(map[string]*chatSubscriber),
 		done:        make(chan struct{}),
 	}
 	if coalesceWindow > 0 {
@@ -208,6 +217,7 @@ func (s *chatStream) invalidate() {
 	})
 	for sub := range s.subscribers {
 		delete(s.subscribers, sub)
+		if sub.clientID != "" { delete(s.subscribersByClient, sub.clientID) }
 		close(sub.C)
 		close(sub.priority)
 	}
@@ -244,6 +254,9 @@ func (s *chatStream) Unsubscribe(sub *chatSubscriber) {
 	s.mu.Lock()
 	if _, ok := s.subscribers[sub]; ok {
 		delete(s.subscribers, sub)
+		if sub.clientID != "" {
+			delete(s.subscribersByClient, sub.clientID)
+		}
 		close(sub.C)
 		close(sub.priority)
 		debug.Printf("[chat/stream] unsubscribe session=%s subscribers=%d", s.sessionID, len(s.subscribers))

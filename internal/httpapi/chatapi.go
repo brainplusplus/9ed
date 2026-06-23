@@ -1432,10 +1432,13 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	// request a serialized snapshot from existing subscribers instead.
 	if ptySess, ok := session.(*chat.PtySession); ok {
 		if ptySess.IsTUIModePublic() {
-			// TUI mode: request snapshot from existing subscribers.
-			// The client with the terminal state will serialize and send back.
-			stream.publishDirect(chat.ChatEvent{Type: "tui_snapshot_request"})
-			debug.Printf("[chat/replay] requested TUI snapshot from existing subscribers session=%s", sessionID)
+			// TUI mode (VAL-PTY-006): request a serialized snapshot from
+			// the primary client (first subscriber) only. A 3s timeout
+			// falls back to ring buffer replay if no response arrives.
+			primaryClientID := ptySess.PrimaryClientID()
+			fallbackSnapshot := ptySess.RingBufferSnapshotPublic()
+			stream.RequestTUISnapshot(primaryClientID, sub, fallbackSnapshot, tuiSnapshotTimeout)
+			debug.Printf("[chat/replay] requested TUI snapshot from primary=%s session=%s", primaryClientID, sessionID)
 		} else if snapshot := ptySess.RingBufferSnapshotPublic(); len(snapshot) > 0 {
 			_ = conn.WriteJSON(chat.ChatEvent{Type: "pty_replay", Text: string(snapshot)})
 			debug.Printf("[chat/replay] sent %d bytes PTY ring buffer to new subscriber session=%s", len(snapshot), sessionID)
@@ -1555,6 +1558,15 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		// ADR-0006: register clientId on first message (hello or any message).
 		if cc == nil && msg.ClientID != "" {
 			cc, cs = a.chatConnections.registerSocket(msg.ClientID, sessionID, conn)
+			// ADR-0005: register this client as the primary for TUI snapshot
+			// routing (VAL-PTY-006). First subscriber wins; subsequent
+			// callers do not replace the primary.
+			if ptySess, ok := session.(*chat.PtySession); ok {
+				ptySess.SetPrimaryClientID(msg.ClientID)
+			}
+			// ADR-0005: associate this subscriber with its clientID so the
+			// stream can route tui_snapshot_request to the primary (VAL-PTY-006).
+			stream.SetSubscriberClientID(sub, msg.ClientID)
 		} else if cc != nil {
 			cc.mu.Lock()
 			cc.lastSeen = time.Now()
@@ -1636,9 +1648,10 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			a.handleFetchTimeline(conn, sessionID, msg)
 
 		case "tui_snapshot":
-			// ADR-0005: client sends serialized terminal state for TUI mode.
-			// Broadcast to all subscribers so new joiners get the snapshot.
-			stream.publishDirect(chat.ChatEvent{Type: "tui_snapshot", Text: msg.Content})
+			// ADR-0005: client sends serialized terminal state for TUI mode
+			// (VAL-PTY-006). AcceptTUISnapshot de-duplicates: only the first
+			// response per request is accepted and broadcast to subscribers.
+			stream.AcceptTUISnapshot(msg.Content)
 
 		case "cursor_position":
 			// ADR-0005: collaborative cursor overlay — broadcast cursor position
