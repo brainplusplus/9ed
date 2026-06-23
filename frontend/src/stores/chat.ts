@@ -91,6 +91,7 @@ type ChatState = {
   setSessionStalled: (sessionId: string, stalled: boolean) => void;
   appendSessionDebug: (sessionId: string, entry: Omit<ChatDebugEntry, 'timestamp'> & { timestamp?: number }) => void;
   setSessionKind: (sessionId: string, kind: ChatSessionKind) => void;
+  setInputLocked: (sessionId: string, locked: boolean, holder?: string) => void;
   toggleChat: () => void;
   deleteSession: (id: string) => void;
   loadHistory: (workDir?: string) => Promise<void>;
@@ -645,6 +646,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined, lastEventAt: eventAt, stalled: false };
           }
 
+          case 'input_locked': {
+            // ADR-0005 VAL-PTY-007: dedicated input_locked event sets
+            // per-pane soft lock state so the UI can disable ChatInput.
+            const lockHolder = event.holder || 'unknown';
+            return { ...s, inputLocked: true, lockedBy: lockHolder, lastEventAt: eventAt };
+          }
+
+          case 'input_unlocked': {
+            // ADR-0005 VAL-PTY-007: clear the input soft lock.
+            return { ...s, inputLocked: false, lockedBy: undefined, lastEventAt: eventAt };
+          }
+
           case 'error': {
             if (last && last.role === 'assistant') {
               msgs[msgs.length - 1] = { ...last, content: last.content + `\n\n⚠️ ${event.error ?? 'Unknown error'}` };
@@ -690,6 +703,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, kind })),
       };
     }),
+
+  setInputLocked: (sessionId, locked, holder) =>
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, (s) => ({
+        ...s,
+        inputLocked: locked,
+        lockedBy: locked ? holder : undefined,
+      })),
+    })),
 
   toggleChat: () => set((state) => ({ chatVisible: !state.chatVisible })),
 

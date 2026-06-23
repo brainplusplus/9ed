@@ -98,6 +98,8 @@ export function ChatPanel() {
   const isConnecting = activeSession?.status === 'connecting' || creating;
   const isArchived = activeSession?.kind === 'archived';
   const canResumeArchived = Boolean(activeSession?.kind === 'archived' && activeSession.agentId && activeSession.workDir);
+  // ADR-0005 VAL-PTY-007: pass the lock holder so ChatInput disables + shows banner.
+  const lockedBy = activeSession?.inputLocked ? activeSession.lockedBy : undefined;
   const showConfigBar = !isArchived || isConnecting || restoring;
   const lastLiveToolCall = activeSession
     ? [...activeSession.messages].reverse().find((message) => message.role === 'tool_call' && message.toolCall)
@@ -440,6 +442,7 @@ export function ChatPanel() {
           streaming={isStreaming}
           disabled={(isArchived && !canResumeArchived) || isConnecting}
           canSend={connected}
+          lockedBy={lockedBy}
         />
       </div>
     </div>

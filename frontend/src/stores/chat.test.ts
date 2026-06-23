@@ -571,6 +571,77 @@ describe('refreshSessionState', () => {
   });
 });
 
+describe('input_locked / input_unlocked (ADR-0005 VAL-PTY-007)', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-lock',
+        recordId: 'record-lock',
+        agentId: 'opencode',
+        title: 'Lock test',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+      }],
+      activeSessionId: 'live-lock',
+    });
+  });
+
+  it('setInputLocked sets inputLocked=true and lockedBy=holder', () => {
+    useChatStore.getState().setInputLocked('live-lock', true, 'client-A');
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-lock');
+    expect(session?.inputLocked).toBe(true);
+    expect(session?.lockedBy).toBe('client-A');
+  });
+
+  it('setInputLocked(false) clears inputLocked and lockedBy', () => {
+    useChatStore.getState().setInputLocked('live-lock', true, 'client-A');
+    useChatStore.getState().setInputLocked('live-lock', false);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-lock');
+    expect(session?.inputLocked).toBe(false);
+    expect(session?.lockedBy).toBeUndefined();
+  });
+
+  it('handleChatEvent with input_locked sets inputLocked=true and lockedBy from holder', () => {
+    useChatStore.getState().handleChatEvent('live-lock', {
+      type: 'input_locked',
+      holder: 'client-B',
+      ttl: 2000,
+    });
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-lock');
+    expect(session?.inputLocked).toBe(true);
+    expect(session?.lockedBy).toBe('client-B');
+  });
+
+  it('handleChatEvent with input_unlocked clears inputLocked and lockedBy', () => {
+    useChatStore.getState().handleChatEvent('live-lock', {
+      type: 'input_locked',
+      holder: 'client-B',
+      ttl: 2000,
+    });
+    useChatStore.getState().handleChatEvent('live-lock', {
+      type: 'input_unlocked',
+    });
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-lock');
+    expect(session?.inputLocked).toBe(false);
+    expect(session?.lockedBy).toBeUndefined();
+  });
+
+  it('handleChatEvent with input_locked uses fallback holder when holder field missing', () => {
+    useChatStore.getState().handleChatEvent('live-lock', {
+      type: 'input_locked',
+    });
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-lock');
+    expect(session?.inputLocked).toBe(true);
+    expect(typeof session?.lockedBy).toBe('string');
+    expect(session?.lockedBy).not.toBe('');
+  });
+});
+
 describe('parseSnapshotJson', () => {
   it('parses valid JSON array', () => {
     const result = parseSnapshotJson<Array<{ name: string }>>('[{"name":"test"}]');

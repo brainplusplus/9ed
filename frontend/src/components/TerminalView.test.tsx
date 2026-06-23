@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TerminalView } from './TerminalView';
 import { disposeTerminalConnection } from '../terminalConnection';
+import { getTerminalHandle } from '../terminalRegistry';
 import type { SessionTab } from '../types';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -16,6 +17,7 @@ const terminalLoadAddon = vi.fn();
 const terminalOnDataDispose = vi.fn();
 const terminalClear = vi.fn();
 const fitAddonFit = vi.fn();
+const serializeAddonSerialize = vi.fn();
 
 vi.mock('../api', () => ({
   createSessionWebSocket: (sessionId: string) => createSessionWebSocket(sessionId),
@@ -77,6 +79,17 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }));
 
+vi.mock('@xterm/addon-serialize', () => ({
+  SerializeAddon: class {
+    activate() {}
+    dispose() {}
+    serialize(options?: { excludeAltBuffer?: boolean; excludeModes?: boolean }) {
+      serializeAddonSerialize(options);
+      return 'serialized-snapshot';
+    }
+  },
+}));
+
 class FakeWebSocket {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -110,6 +123,7 @@ describe('TerminalView', () => {
     terminalOnDataDispose.mockReset();
     terminalClear.mockReset();
     fitAddonFit.mockReset();
+    serializeAddonSerialize.mockReset();
   });
 
   afterEach(() => {
@@ -207,5 +221,39 @@ describe('TerminalView', () => {
     });
 
     expect(terminalWrite).not.toHaveBeenCalledWith(tab.scrollback);
+  });
+
+  it('uses SerializeAddon.serialize with excludeAltBuffer:false and excludeModes:false for TUI snapshot (ADR-0005 VAL-PTY-008)', () => {
+    createSessionWebSocket.mockReturnValue(new FakeWebSocket());
+
+    const tab: SessionTab = {
+      id: 'session-serialize',
+      profile: {
+        id: 'pwsh',
+        label: 'PowerShell 7',
+        command: 'pwsh.exe',
+        args: [],
+      },
+      status: 'ready',
+    };
+
+    act(() => {
+      root.render(<TerminalView tab={tab} active onStatusChange={() => undefined} />);
+    });
+    act(() => {
+      vi.advanceTimersByTime(450);
+    });
+
+    const handle = getTerminalHandle('session-serialize');
+    expect(handle).not.toBeNull();
+
+    const snapshot = handle!.serialize();
+
+    expect(serializeAddonSerialize).toHaveBeenCalledTimes(1);
+    expect(serializeAddonSerialize).toHaveBeenCalledWith({
+      excludeAltBuffer: false,
+      excludeModes: false,
+    });
+    expect(snapshot).toBe('serialized-snapshot');
   });
 });

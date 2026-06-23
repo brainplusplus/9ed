@@ -455,6 +455,11 @@ export type ChatSessionInfo = {
   createdAt: number;
   lastEventAt?: number;
   stalled?: boolean;
+  // ADR-0005: per-pane input soft lock state (VAL-PTY-007).
+  // inputLocked is true when another client holds the input lock.
+  // lockedBy is the clientId of the lock holder.
+  inputLocked?: boolean;
+  lockedBy?: string;
   kind: ChatSessionKind;
   workDir?: string;
   acpSessionId?: string;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 
 import { getTerminalConnection } from '../terminalConnection';
@@ -24,6 +25,7 @@ export function TerminalView(props: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const serializeAddonRef = useRef<SerializeAddon | null>(null);
   const connectionRef = useRef<ReturnType<typeof getTerminalConnection> | null>(null);
   const onStatusChangeRef = useRef(onStatusChange);
   const onScrollbackSnapshotRef = useRef(onScrollbackSnapshot);
@@ -83,11 +85,14 @@ export function TerminalView(props: TerminalViewProps) {
       },
     });
     const fitAddon = new FitAddon();
+    const serializeAddon = new SerializeAddon();
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(serializeAddon);
     terminal.open(hostRef.current);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    serializeAddonRef.current = serializeAddon;
     fitAddon.fit();
 
     const connection = getTerminalConnection(tab.id);
@@ -149,18 +154,11 @@ export function TerminalView(props: TerminalViewProps) {
       },
       serialize: () => {
         // ADR-0005: serialize the terminal's visual state (TUI snapshot).
-        // Iterates over the buffer lines to produce a text representation.
-        const term = terminalRef.current;
-        if (!term) return '';
-        const buffer = term.buffer.active;
-        const lines: string[] = [];
-        for (let i = 0; i < buffer.length; i++) {
-          const line = buffer.getLine(i);
-          if (line) {
-            lines.push(line.translateToString(true));
-          }
-        }
-        return lines.join('\n');
+        // Uses @xterm/addon-serialize SerializeAddon for lossless snapshot
+        // including alternate buffer (TUI apps like vim) and terminal modes.
+        const addon = serializeAddonRef.current;
+        if (!addon) return '';
+        return addon.serialize({ excludeAltBuffer: false, excludeModes: false });
       },
       write: (data: string) => {
         // ADR-0005: write raw bytes to the terminal (PTY replay).
@@ -187,6 +185,7 @@ export function TerminalView(props: TerminalViewProps) {
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      serializeAddonRef.current = null;
       connectionRef.current = null;
     };
   }, [tab.id, cwd, tab.profile.command]);

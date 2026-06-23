@@ -12,6 +12,8 @@ type ChatInputProps = {
   streaming: boolean;
   disabled: boolean;
   canSend?: boolean;
+  /** ADR-0005: when set, chat input is locked by another client. */
+  lockedBy?: string;
 };
 
 export type Attachment = {
@@ -81,7 +83,7 @@ async function requestMicrophoneAccess(): Promise<{ ok: boolean; blocked: boolea
   }
 }
 
-export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = true }: ChatInputProps) {
+export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = true, lockedBy }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -98,6 +100,10 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
   const voiceSessionRef = useRef(0);
   const voiceStartingRef = useRef(false);
   const valueRef = useRef('');
+
+  // ADR-0005 VAL-PTY-007: input soft lock disables the chat input.
+  const inputLocked = !!lockedBy;
+  const effectiveDisabled = disabled || inputLocked;
 
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const commands = useChatStore((s) => {
@@ -247,7 +253,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled || !canSend) return;
+    if ((!trimmed && attachments.length === 0) || effectiveDisabled || !canSend) return;
 
     if (voiceActive) {
       stopVoiceInput(null);
@@ -272,11 +278,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [activeSessionId, attachments, canSend, disabled, enqueueMessage, onSend, stopVoiceInput, streaming, value, voiceActive]);
+  }, [activeSessionId, attachments, canSend, effectiveDisabled, enqueueMessage, onSend, stopVoiceInput, streaming, value, voiceActive]);
 
   const toggleVoiceInput = useCallback(async () => {
     const SpeechCtor = getSpeechRecognitionCtor();
-    if (!SpeechCtor || disabled) {
+    if (!SpeechCtor || effectiveDisabled) {
       setVoiceStatus('Voice input is unavailable in this browser.');
       return;
     }
@@ -297,7 +303,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
     const permission = await requestMicrophoneAccess();
     voiceStartingRef.current = false;
 
-    if (voiceSessionRef.current !== requestId || disabled) {
+    if (voiceSessionRef.current !== requestId || effectiveDisabled) {
       return;
     }
 
@@ -379,7 +385,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
       setVoiceActive(false);
       setVoiceStatus('Voice input could not start.');
     }
-  }, [adjustHeight, disabled, stopVoiceInput, voiceActive]);
+  }, [adjustHeight, effectiveDisabled, stopVoiceInput, voiceActive]);
 
   const selectCommand = useCallback((name: string) => {
     setValue(`/${name} `);
@@ -523,6 +529,11 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
           {voiceStatus}
         </div>
       )}
+      {inputLocked && lockedBy && (
+        <div className="chat-input-locked-banner" role="status">
+          Input locked by {lockedBy}
+        </div>
+      )}
       <div className="chat-composer-shell">
         <div className="chat-textarea-wrap">
           <textarea
@@ -539,7 +550,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
             onPaste={handlePaste}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={disabled}
+            disabled={effectiveDisabled}
           />
         </div>
         <div className="chat-composer-actions">
@@ -548,7 +559,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
             onClick={() => fileInputRef.current?.click()}
             type="button"
             title="Attach file (or type @ to mention)"
-            disabled={disabled}
+            disabled={effectiveDisabled}
           >
             <span aria-hidden="true">+</span>
           </button>
@@ -558,7 +569,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
               onClick={toggleVoiceInput}
               type="button"
               title={voiceActive ? 'Stop voice input' : 'Start voice input'}
-              disabled={disabled}
+              disabled={effectiveDisabled}
             >
               <MicIcon />
             </button>
@@ -571,7 +582,7 @@ export function ChatInput({ onSend, onCancel, streaming, disabled, canSend = tru
             <button
               className="chat-send-btn"
               onClick={handleSend}
-              disabled={(!value.trim() && attachments.length === 0) || disabled || !canSend}
+              disabled={(!value.trim() && attachments.length === 0) || effectiveDisabled || !canSend}
               type="button"
               title="Send message"
             >
