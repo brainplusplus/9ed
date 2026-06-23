@@ -6,6 +6,7 @@ import type { BrowserAutomationStatus, BrowserElementSelection, BrowserMCPDebugE
 import { useInspectMode } from './useInspectMode';
 import { InspectOverlay, RemoteInspectOverlay, SelectedHighlight, InspectMiniPanel } from './InspectOverlay';
 import { useVisualStream } from '../../hooks/useVisualStream';
+import { useGestures } from '../../hooks/useGestures';
 
 const DEFAULT_URL = 'localhost:3000';
 const VIEWPORT_PRESETS = {
@@ -497,6 +498,15 @@ export function BrowserPanel() {
     }
     return VIEWPORT_PRESETS[viewportMode];
   }, [customHeight, customWidth, viewportMode]);
+
+  // Touch gesture mapping for mobile/tablet: long press→right-click,
+  // two-finger tap→right-click, two-finger drag→scroll, pinch→zoom.
+  const gestures = useGestures({
+    sendInput: visualStream.sendInput,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+  });
+
   const viewportScale = useMemo(() => {
     if (stageSize.width === 0 || stageSize.height === 0) {
       return 1;
@@ -1342,6 +1352,15 @@ export function BrowserPanel() {
     }
     webrtcDragMovePointRef.current = null;
     webrtcDragMoveInFlightRef.current = true;
+    // Prefer DataChannel input when WebRTC stream is connected.
+    if (webrtcStreamConnected) {
+      visualStream.sendInput({ type: 'mouse_move', x: point.x, y: point.y });
+      webrtcDragMoveInFlightRef.current = false;
+      if (webrtcPointerDownRef.current && webrtcDragMovePointRef.current) {
+        flushWebRTCDragMove();
+      }
+      return;
+    }
     void mouseMoveBrowserTab(activeTabId, point.x, point.y)
       .then(() => {
         requestWebRTCFrameRefresh();
@@ -1355,7 +1374,7 @@ export function BrowserPanel() {
           flushWebRTCDragMove();
         }
       });
-  }, [activeTabId, requestWebRTCFrameRefresh]);
+  }, [activeTabId, requestWebRTCFrameRefresh, visualStream, webrtcStreamConnected]);
 
   const handleWebRTCPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const point = clientPointToViewport(event.clientX, event.clientY);
@@ -1391,6 +1410,11 @@ export function BrowserPanel() {
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
     event.stopPropagation();
+    // Prefer DataChannel input when WebRTC stream is connected.
+    if (webrtcStreamConnected) {
+      visualStream.sendInput({ type: 'mouse_down', x: point.x, y: point.y, button: 0 });
+      return;
+    }
     void mouseDownBrowserTab(activeTabId, point.x, point.y)
       .then(() => {
         requestWebRTCFrameRefresh();
@@ -1400,7 +1424,7 @@ export function BrowserPanel() {
         webrtcPointerIdRef.current = null;
         setError(err instanceof Error ? err.message : 'Failed to press mouse in WebRTC browser');
       });
-  }, [activeTabId, clientPointToViewport, inspectMode, requestWebRTCFrameRefresh]);
+  }, [activeTabId, clientPointToViewport, inspectMode, requestWebRTCFrameRefresh, visualStream, webrtcStreamConnected]);
 
   const handleWebRTCClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const point = clientPointToViewport(event.clientX, event.clientY);
@@ -1427,6 +1451,11 @@ export function BrowserPanel() {
     }
     event.preventDefault();
     event.stopPropagation();
+    // Prefer DataChannel input when WebRTC stream is connected.
+    if (webrtcStreamConnected) {
+      visualStream.sendInput({ type: 'mouse_up', x: point.x, y: point.y, button: 0 });
+      return;
+    }
     void mouseUpBrowserTab(activeTabId, point.x, point.y)
       .then(() => {
         bumpWebRTCFrame([0, 80, 220]);
@@ -1435,7 +1464,7 @@ export function BrowserPanel() {
       .catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to release mouse in WebRTC browser');
       });
-  }, [activeTabId, bumpWebRTCFrame, clientPointToViewport, inspectMode, refreshBrowserState]);
+  }, [activeTabId, bumpWebRTCFrame, clientPointToViewport, inspectMode, refreshBrowserState, visualStream, webrtcStreamConnected]);
 
   const handleWebRTCPointerCancel = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -1454,8 +1483,13 @@ export function BrowserPanel() {
     if (!point) {
       return;
     }
+    // Prefer DataChannel input when WebRTC stream is connected.
+    if (webrtcStreamConnected) {
+      visualStream.sendInput({ type: 'mouse_up', x: point.x, y: point.y, button: 0 });
+      return;
+    }
     void mouseUpBrowserTab(activeTabId, point.x, point.y).catch(() => {});
-  }, [activeTabId, clientPointToViewport]);
+  }, [activeTabId, clientPointToViewport, visualStream, webrtcStreamConnected]);
 
   const runRemoteNavigate = useCallback(async (direction: 'up' | 'down' | 'left' | 'right') => {
     if (!activeTabId) return;
@@ -1478,6 +1512,11 @@ export function BrowserPanel() {
       if (!activeTabId) return;
       if (isPrintableKey(event)) {
         event.preventDefault();
+        // Prefer DataChannel input when WebRTC stream is connected.
+        if (webrtcStreamConnected) {
+          visualStream.sendInput({ type: 'text', text: event.key });
+          return;
+        }
         void typeBrowserTabText(activeTabId, event.key)
           .then(() => {
             bumpWebRTCFrame();
@@ -1491,6 +1530,12 @@ export function BrowserPanel() {
       const key = toPlaywrightKey(event);
       if (!key) return;
       event.preventDefault();
+      // Prefer DataChannel input when WebRTC stream is connected.
+      if (webrtcStreamConnected) {
+        visualStream.sendInput({ type: 'key_down', key });
+        visualStream.sendInput({ type: 'key_up', key });
+        return;
+      }
       void pressBrowserTabKey(activeTabId, key)
         .then(() => {
           bumpWebRTCFrame();
@@ -1565,6 +1610,11 @@ export function BrowserPanel() {
     wheelDeltaRef.current = { x: 0, y: 0 };
     wheelFlushTimerRef.current = null;
     if (x === 0 && y === 0) return;
+    // Prefer DataChannel input when WebRTC stream is connected.
+    if (webrtcStreamConnected) {
+      visualStream.sendInput({ type: 'scroll', deltaX: x, deltaY: y });
+      return;
+    }
     void scrollBrowserTab(activeTabId, x, y)
       .then(() => {
         bumpWebRTCFrame();
@@ -1573,7 +1623,7 @@ export function BrowserPanel() {
       .catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to scroll WebRTC browser');
       });
-  }, [activeTabId, bumpWebRTCFrame]);
+  }, [activeTabId, bumpWebRTCFrame, visualStream, webrtcStreamConnected]);
 
   const handleWebRTCWheel = useCallback((event: WheelEvent) => {
     if (inspectMode || !activeTabId) return;
@@ -1876,6 +1926,9 @@ export function BrowserPanel() {
                   onPointerDown={handleWebRTCPointerDown}
                   onPointerUp={handleWebRTCPointerUp}
                   onPointerCancel={handleWebRTCPointerCancel}
+                  onTouchStart={gestures.onTouchStart}
+                  onTouchMove={gestures.onTouchMove}
+                  onTouchEnd={gestures.onTouchEnd}
                   onMouseLeave={() => {
                     if (inspectMode) {
                       setRemoteHoverSelection(null);

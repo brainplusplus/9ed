@@ -257,6 +257,72 @@ func TestStreamingSessionStopIdempotent(t *testing.T) {
 	session.Stop() // second stop should be a no-op
 }
 
+func TestStreamingSessionConcurrentStop(t *testing.T) {
+	source := &mockFrameSource{}
+	strategy := &mockStrategy{}
+	input := &mockInputHandler{}
+
+	session := NewStreamingSession(source, strategy, input)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Concurrent Stop calls should not panic (sync.Once protects close(done)).
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			session.Stop()
+		}()
+	}
+	wg.Wait()
+
+	// The Done channel should be closed.
+	select {
+	case <-session.Done():
+		// OK
+	default:
+		t.Error("Done channel should be closed after Stop")
+	}
+}
+
+func TestStreamingSessionDoneSignalsOnStop(t *testing.T) {
+	source := &mockFrameSource{}
+	session := NewStreamingSession(source, &mockStrategy{}, &mockInputHandler{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	done := session.Done()
+	// Should not be closed yet.
+	select {
+	case <-done:
+		t.Fatal("Done should not be closed before Stop")
+	default:
+		// OK
+	}
+
+	session.Stop()
+
+	// Should be closed after Stop.
+	select {
+	case <-done:
+		// OK
+	case <-time.After(time.Second):
+		t.Fatal("Done channel not closed after Stop")
+	}
+}
+
 func TestPeerManagerAddRemove(t *testing.T) {
 	pm := NewPeerManager()
 

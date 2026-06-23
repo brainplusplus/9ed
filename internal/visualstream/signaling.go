@@ -145,6 +145,15 @@ func (h *SignalingHandler) HandleOffer(sessionID string, sdp string) (string, er
 	// Wire DataChannel input messages to the session's InputHandler.
 	ss.AttachPeerInputHandler(peer)
 
+	// Handle DataChannel close/error to clean up peer resources.
+	dc.OnClose(func() {
+		ss.PeerManager().RemovePeer(peer.ID)
+		debug.Printf("[visualstream/signaling] DataChannel closed, peer removed session=%s peer=%s", sessionID, peerID)
+	})
+	dc.OnError(func(err error) {
+		debug.Printf("[visualstream/signaling] DataChannel error session=%s peer=%s: %v", sessionID, peerID, err)
+	})
+
 	// Remove peer when the connection fails or closes to avoid leaks.
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {

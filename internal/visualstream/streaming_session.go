@@ -53,6 +53,7 @@ type StreamingSession struct {
 	cancel      context.CancelFunc
 	running     bool
 	done        chan struct{}
+	closeOnce   sync.Once
 }
 
 // NewStreamingSession creates a new streaming session with the given
@@ -93,6 +94,7 @@ func (ss *StreamingSession) Start(ctx context.Context) error {
 }
 
 // Stop stops the streaming session, closes all peers, and releases resources.
+// Safe to call from multiple goroutines; cleanup runs exactly once.
 func (ss *StreamingSession) Stop() {
 	ss.mu.Lock()
 	if !ss.running {
@@ -113,7 +115,9 @@ func (ss *StreamingSession) Stop() {
 	if ss.strategy != nil {
 		_ = ss.strategy.Close()
 	}
-	close(ss.done)
+	ss.closeOnce.Do(func() {
+		close(ss.done)
+	})
 }
 
 // Done returns a channel that is closed when the session stops.
