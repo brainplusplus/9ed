@@ -10,13 +10,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/brainplusplus/9ed/internal/bininstall"
 )
 
 var boreURLPattern = regexp.MustCompile(`bore\.pub:\d+`)
 
 // startBoreProc starts a single bore subprocess, trying multiple ports if needed.
 func startBoreProc(port string) (*tunnelProc, error) {
-	bin, err := findBinary("bore")
+	bin, err := bininstall.FindBinary("bore")
 	if err != nil {
 		return nil, err
 	}

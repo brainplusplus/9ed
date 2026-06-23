@@ -3,11 +3,9 @@ package tunnel
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +22,6 @@ import (
 )
 
 var cloudflaredURLPattern = regexp.MustCompile(`https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com`)
-var binaryResolveMu sync.Mutex
 
 // Tunnel manages a tunnel subprocess with automatic restart on failure.
 type Tunnel struct {
@@ -382,45 +379,6 @@ func killOrphanByPIDFile(path string) {
 	os.Remove(path)
 }
 
-func findBinary(name string) (string, error) {
-	binaryResolveMu.Lock()
-	defer binaryResolveMu.Unlock()
-
-	if runtime.GOOS == "windows" {
-		name = name + ".exe"
-	}
-
-	if exe, err := os.Executable(); err == nil {
-		if real, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = real
-		}
-		candidate := filepath.Join(filepath.Dir(exe), name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-
-	if path, err := exec.LookPath(name); err == nil {
-		return path, nil
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("%s not found and cannot determine home dir: %w", name, err)
-	}
-	localBin := filepath.Join(home, ".9ed", name)
-	if info, err := os.Stat(localBin); err == nil && !info.IsDir() {
-		return localBin, nil
-	}
-
-	log.Printf("%s not found, auto-installing to %s ...", name, localBin)
-	if err := installBinary(localBin, name); err != nil {
-		return "", fmt.Errorf("%s auto-install failed: %w", name, err)
-	}
-	log.Printf("%s installed to %s", name, localBin)
-	return localBin, nil
-}
-
 func tunnelLogPrefix(engine, port string) string {
 	engine = strings.TrimSpace(engine)
 	port = strings.TrimSpace(port)
@@ -431,175 +389,4 @@ func tunnelLogPrefix(engine, port string) string {
 		return engine
 	}
 	return fmt.Sprintf("%s:%s", engine, port)
-}
-
-func installBinary(dest, toolName string) error {
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	var repo, filename string
-	var tag string
-	switch toolName {
-	case "cloudflared", "cloudflared.exe":
-		repo = "cloudflare/cloudflared"
-		switch goos {
-		case "windows":
-			filename = fmt.Sprintf("cloudflared-%s-%s.exe", goos, goarch)
-		case "darwin":
-			filename = fmt.Sprintf("cloudflared-%s-%s.tgz", goos, goarch)
-		default:
-			filename = fmt.Sprintf("cloudflared-%s-%s", goos, goarch)
-		}
-	case "bore", "bore.exe":
-		repo = "ekzhang/bore"
-		var err error
-		tag, err = resolveLatestTag("ekzhang/bore")
-		if err != nil {
-			return fmt.Errorf("resolve bore version: %w", err)
-		}
-		var target string
-		switch {
-		case goos == "windows" && goarch == "amd64":
-			target = "x86_64-pc-windows-msvc"
-		case goos == "windows" && goarch == "386":
-			target = "i686-pc-windows-msvc"
-		case goos == "darwin" && goarch == "arm64":
-			target = "aarch64-apple-darwin"
-		case goos == "darwin" && goarch == "amd64":
-			target = "x86_64-apple-darwin"
-		case goos == "linux" && goarch == "amd64":
-			target = "x86_64-unknown-linux-musl"
-		case goos == "linux" && goarch == "arm64":
-			target = "aarch64-unknown-linux-musl"
-		case goos == "linux" && goarch == "arm":
-			target = "arm-unknown-linux-musleabi"
-		case goos == "linux" && goarch == "386":
-			target = "i686-unknown-linux-musl"
-		default:
-			return fmt.Errorf("unsupported platform %s/%s for bore", goos, goarch)
-		}
-		ext := ".tar.gz"
-		if goos == "windows" {
-			ext = ".zip"
-		}
-		filename = fmt.Sprintf("bore-%s-%s%s", tag, target, ext)
-	default:
-		return fmt.Errorf("unknown tool: %s", toolName)
-	}
-
-	url := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, filename)
-	if repo == "ekzhang/bore" {
-		url = fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, filename)
-	}
-
-	log.Printf("downloading %s ...", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("download %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return fmt.Errorf("create dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(dest), toolName+"-*")
-	if err != nil {
-		return fmt.Errorf("temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		tmp.Close()
-		return fmt.Errorf("download write: %w", err)
-	}
-	tmp.Close()
-
-	switch {
-	case strings.HasSuffix(filename, ".zip"):
-		if err := extractZip(tmpPath, dest, toolName); err != nil {
-			return fmt.Errorf("extract zip: %w", err)
-		}
-	case strings.HasSuffix(filename, ".tar.gz"), strings.HasSuffix(filename, ".tgz"):
-		if err := extractTarGz(tmpPath, dest, toolName); err != nil {
-			return fmt.Errorf("extract tar.gz: %w", err)
-		}
-	default:
-		// Raw binary (e.g., cloudflared on Windows/macOS, cloudflared on Linux)
-		if err := os.Rename(tmpPath, dest); err != nil {
-			return fmt.Errorf("rename: %w", err)
-		}
-	}
-
-	if err := os.Chmod(dest, 0o755); err != nil {
-		return err
-	}
-
-	// Clear macOS quarantine so downloaded binary can run without Gatekeeper block.
-	if runtime.GOOS == "darwin" {
-		_ = exec.Command("xattr", "-d", "com.apple.quarantine", dest).Run()
-	}
-
-	return nil
-}
-
-func resolveLatestTag(repo string) (string, error) {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	resp, err := http.Get(apiURL)
-	if err != nil {
-		return "", fmt.Errorf("github api %s: %w", repo, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github api %s: HTTP %d", repo, resp.StatusCode)
-	}
-
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", fmt.Errorf("decode github release: %w", err)
-	}
-	if release.TagName == "" {
-		return "", fmt.Errorf("empty tag_name for %s", repo)
-	}
-	log.Printf("resolved %s latest tag: %s", repo, release.TagName)
-	return release.TagName, nil
-}
-
-func extractTarGz(archive, dest, toolName string) error {
-	cmd := exec.Command("tar", "-xzf", archive, "-C", filepath.Dir(dest))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-	extracted := filepath.Join(filepath.Dir(dest), toolName)
-	if _, err := os.Stat(extracted); err != nil {
-		return fmt.Errorf("%s binary not found after extraction", toolName)
-	}
-	return os.Rename(extracted, dest)
-}
-
-func extractZip(archive, dest, toolName string) error {
-	cmd := exec.Command("tar", "-xf", archive, "-C", filepath.Dir(dest))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-	if runtime.GOOS == "windows" && !strings.Contains(toolName, ".exe") {
-		toolName += ".exe"
-	}
-	extracted := filepath.Join(filepath.Dir(dest), toolName)
-	if _, err := os.Stat(extracted); err != nil {
-		return fmt.Errorf("%s not found after extraction", toolName)
-	}
-	return os.Rename(extracted, dest)
 }

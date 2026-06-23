@@ -6,10 +6,14 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/brainplusplus/9ed/internal/bininstall"
 	"github.com/brainplusplus/9ed/internal/debug"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
+
+// errClosed is returned when an operation is attempted on a closed strategy.
+var errClosed = fmt.Errorf("h264 strategy closed")
 
 // H264FullFrameStrategy implements Strategy B from ADR-0001: H264 full frame
 // streaming via an ffmpeg subprocess that encodes raw RGBA/JPEG frames into
@@ -111,10 +115,16 @@ func (s *H264FullFrameStrategy) EncodeAndSend(frame Frame, peers []*PeerConnecti
 }
 
 // ensureEncoder starts the ffmpeg subprocess on first call and adapts to the
-// frame dimensions.
+// frame dimensions. If the ffmpeg binary is not found on the system, it is
+// auto-downloaded via bininstall.FindBinary (platform-aware: Windows GyanD,
+// Linux/macOS BtbN) per ADR-0001.
 func (s *H264FullFrameStrategy) ensureEncoder(frame Frame) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.closed {
+		return errClosed
+	}
 
 	if s.cmd != nil && s.width == frame.Width && s.height == frame.Height {
 		return nil
@@ -131,6 +141,12 @@ func (s *H264FullFrameStrategy) ensureEncoder(frame Frame) error {
 		s.height = frame.Height
 	}
 
+	// Locate ffmpeg binary — auto-downloads if missing (VAL-VISUAL-004).
+	ffmpegPath, err := bininstall.FindBinary("ffmpeg")
+	if err != nil {
+		return fmt.Errorf("ffmpeg not available: %w", err)
+	}
+
 	// ffmpeg reads JPEG frames from stdin and outputs raw H264 NAL units.
 	args := []string{
 		"-f", "image2pipe", "-vcodec", "mjpeg", "-i", "pipe:0",
@@ -143,7 +159,7 @@ func (s *H264FullFrameStrategy) ensureEncoder(frame Frame) error {
 		"pipe:1",
 	}
 
-	cmd := exec.Command("ffmpeg", args...)
+	cmd := exec.Command(ffmpegPath, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("ffmpeg stdin: %w", err)
@@ -171,9 +187,14 @@ func (s *H264FullFrameStrategy) ensureEncoder(frame Frame) error {
 	return nil
 }
 
-// readSamples reads H264 NAL units from ffmpeg stdout and writes them to the
-// pion video track.
+// readSamples reads H264 Annex B data from ffmpeg stdout, parses NAL unit
+// boundaries via start codes (00 00 00 01 / 00 00 01), and writes one
+// WriteSample per NAL unit to the pion video track (VAL-VISUAL-003).
+//
+// A carryover buffer is maintained across reads so that NAL units and start
+// codes split across read boundaries are handled correctly.
 func (s *H264FullFrameStrategy) readSamples() {
+	parser := newNALParser()
 	buf := make([]byte, 65536)
 	for {
 		s.mu.Lock()
@@ -186,14 +207,30 @@ func (s *H264FullFrameStrategy) readSamples() {
 		}
 
 		n, err := stdout.Read(buf)
-		if n > 0 && track != nil {
-			sample := make([]byte, n)
-			copy(sample, buf[:n])
-			if writeErr := track.WriteSample(media.Sample{Data: sample}); writeErr != nil {
-				debug.Printf("[visualstream/h264] track write failed: %v", writeErr)
+
+		if n > 0 {
+			// Feed the new data into the Annex B parser, which splits at start
+			// code boundaries and returns complete NAL payloads (without start
+			// codes, as pion's H264Payloader expects).
+			nals := parser.feed(buf[:n])
+			if track != nil {
+				for _, nal := range nals {
+					if writeErr := track.WriteSample(media.Sample{Data: nal}); writeErr != nil {
+						debug.Printf("[visualstream/h264] track write failed: %v", writeErr)
+					}
+				}
 			}
 		}
+
 		if err != nil {
+			// On EOF or error, flush any remaining NAL data in the carryover buffer.
+			if track != nil {
+				for _, nal := range parser.flush() {
+					if writeErr := track.WriteSample(media.Sample{Data: nal}); writeErr != nil {
+						debug.Printf("[visualstream/h264] track write failed (flush): %v", writeErr)
+					}
+				}
+			}
 			return
 		}
 	}

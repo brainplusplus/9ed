@@ -6,11 +6,13 @@ import (
 	"io"
 	"os/exec"
 	"time"
+
+	"github.com/brainplusplus/9ed/internal/bininstall"
 )
 
 // startCloudflareProc starts a single cloudflared quick tunnel subprocess.
 func startCloudflareProc(port string) (*tunnelProc, error) {
-	bin, err := findBinary("cloudflared")
+	bin, err := bininstall.FindBinary("cloudflared")
 	if err != nil {
 		return nil, err
 	}
