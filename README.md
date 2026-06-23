@@ -13,6 +13,8 @@
   |
   <a href="#features">Features</a>
   |
+  <a href="#recent-changes-adr-compliance">Recent Changes</a>
+  |
   <a href="#release-binaries">Release Binaries</a>
   |
   <a href="#development">Development</a>
@@ -211,6 +213,16 @@ For a deployed release, keep the generated binary next to a `.env` file with `BA
 | `TERMINAL_AI_MAX_LINES` | Max terminal lines sent to AI as context | `100` |
 | `DEBUG` | Enable verbose debug logging | `false` |
 | `DEBUG_WATCHER` | Enable watcher-specific debug logs (requires `DEBUG=true`) | `false` |
+| `SESSION_RESUME_MAX_RETRIES` | Max ACP session auto-restart attempts | `3` |
+| `SESSION_RESUME_BASE_DELAY` | Base delay for exponential backoff on session restart | `500ms` |
+| `SESSION_RESUME_MAX_DELAY` | Max delay cap for session restart backoff | `30s` |
+| `LIVENESS_FAILURE_THRESHOLD` | Consecutive liveness failures before session restart | `2` |
+| `RECONNECT_BASE_DELAY` | Base delay for reconnect backoff | `150ms` |
+| `RECONNECT_MAX_DELAY` | Max delay cap for reconnect backoff | `30s` |
+| `PTY_RING_BUFFER_SIZE` | PTY output ring buffer size | `1MB` |
+| `PTY_INPUT_LOCK_TTL` | TTL for per-pane input soft lock during TUI operations | `2s` |
+| `STREAM_COALESCE_WINDOW` | Coalesce window for visual stream batching | — |
+| `SESSION_GRACE_WINDOW` | Grace window for session reconnect | — |
 
 ## AI Agent Support
 
@@ -266,6 +278,8 @@ internal/
   httpapi/             - REST API + WebSocket handlers
   server/              - HTTP assembly and static serving
   tunnel/              - Tunnel subprocess lifecycle (bore, cloudflare)
+  bininstall/          - Binary auto-download (ffmpeg, cloudflared, bore)
+  browser/             - Browser tab management with about:blank support
 frontend/src/
   apps/ide/            - Web IDE entry (workspace, project picker)
   config/              - Monaco editor setup (TS/JS diagnostics, Vue/Svelte languages)
@@ -279,11 +293,64 @@ frontend/src/
     terminal/          - Terminal panel (xterm.js), tabs per project
     shared/            - Bottom nav, shortcuts help, context menu
   stores/              - Zustand state (workspace, git, chat)
-  hooks/               - Custom hooks (git status, gutter, chat, layout, workspace persistence)
+  hooks/               - Custom hooks (git status, gutter, chat, layout, workspace persistence, visual stream, gestures)
   terminalConnection.ts - WebSocket lifecycle for terminal sessions
   terminalRegistry.ts  - Terminal handle registry (write/paste for chat-to-terminal routing)
   terminalIntegration.ts - Shell language detection and command sanitization
 ```
+
+## Recent Changes (ADR Compliance)
+
+A major stability and robustness mission was completed across 18 commits, addressing session resilience, streaming backpressure, PTY robustness, visual streaming, and race safety. All 58 validation assertions pass.
+
+### Session Resume & Liveness (ADR-0004, ADR-0006)
+- ACP sessions auto-restart with configurable exponential backoff (`SESSION_RESUME_MAX_RETRIES`, `SESSION_RESUME_BASE_DELAY`, `SESSION_RESUME_MAX_DELAY`)
+- Liveness failure threshold triggers restart after consecutive failures (`LIVENESS_FAILURE_THRESHOLD`, default 2)
+- Reconnect delay configuration (`RECONNECT_BASE_DELAY`, `RECONNECT_MAX_DELAY`)
+- Dev-only crash endpoint for testing (`POST /api/_debug/crash-agent`, requires `-tags debug` build)
+- Mock ACP echo adapter for automated testing
+
+### Catch-up & Backpressure (ADR-0002, ADR-0003)
+- Full `fetch_timeline` response shape per ADR-0002 (epoch, reset, staleCursor, gap, window, hasOlder, hasNewer, endCursor)
+- Stale cursor detection and gap detection with frontend epoch change handling
+- Replay-on-subscribe for new subscribers
+- Prioritized backpressure — subscribers are not dropped on overflow
+- Reconnect with exponential backoff
+
+### PTY Robustness (ADR-0005)
+- TUI detection with regex and carryover buffer (handles split-across-reads)
+- Per-pane input soft lock with dedicated `input_locked` event (`PTY_INPUT_LOCK_TTL`)
+- Primary client for TUI snapshot (first subscriber wins)
+- `@xterm/addon-serialize` for TUI snapshots
+- Input locked/disabled UI in ChatInput
+
+### Visual Streaming (ADR-0001)
+- Pixel-based JPEG tile diff (MAD, not byte equality)
+- Adaptive quality tiers (4 tiers: scale 0.65–1.0, quality 45–72)
+- H264 NAL unit boundary parsing (Annex B start codes)
+- ffmpeg auto-download via `internal/bininstall/`
+- DataChannel input wiring in BrowserPanel (HTTP fallback)
+- Gesture mapping: tap, long press, two-finger scroll, pinch zoom
+- Input throttling (mouse 8ms, key 25ms, text 100ms)
+- Resource cleanup with `sync.Once` and send-on-closed-channel guard
+- `DEFAULT_URL` changed to `about:blank`
+- Vanilla ICE gathering: `GatheringCompletePromise` ensures all ICE candidates are embedded in the answer SDP before sending
+- DataChannel role fix: server receives client's DataChannel via `OnDataChannel()` instead of creating a conflicting one
+- CDP screencast deadlock fix: frame acknowledgment made asynchronous to avoid Playwright CDPSession lock contention
+
+### Race Safety & E2E Validation
+- Zero data races across all packages (`CGO_ENABLED=1 go test -race`)
+- WebSocket concurrent write protection via per-connection mutex in chat handler
+- Full E2E chat lifecycle validated
+- Multi-client sync, reconnect-with-grace, backpressure recovery validated
+- PTY collaborative typing and TUI snapshot validated
+- WebRTC visual streaming E2E validated (frames render, input works, navigation updates tiles)
+
+### New Frontend Hooks
+- `useVisualStream` — WebRTC DataChannel visual streaming
+- `useGestures` — touch gesture recognition
+- `SerializeAddon` — TUI snapshot serialization
+- Input locked/disabled UI states
 
 ## Development
 
