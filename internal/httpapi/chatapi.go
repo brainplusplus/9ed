@@ -1382,6 +1382,15 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	sub := stream.Subscribe()
 	defer stream.Unsubscribe(sub)
 
+	// wsWriteMu serializes all writes to conn. gorilla/websocket supports only
+	// one concurrent writer per connection; without this mutex the outbound
+	// goroutine (chat events + pings) races against the main read loop
+	// (pong/hello_ack/timeline), which can panic with
+	// "concurrent write to websocket connection". Every conn.WriteJSON and
+	// conn.WriteMessage call below goes through writeJSONSafe / writeMessageSafe
+	// so all writes are serialized.
+	var wsWriteMu sync.Mutex
+
 	// ADR-0002: replay-on-subscribe — send last N events to new subscriber
 	// so client B connecting mid-turn sees recent history immediately.
 	if a.chatStore != nil {
@@ -1394,7 +1403,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 				for _, rec := range recent {
 					var evt chat.ChatEvent
 					if json.Unmarshal([]byte(rec.PayloadJSON), &evt) == nil {
-						_ = conn.WriteJSON(evt)
+						_ = writeJSONSafe(&wsWriteMu, conn, evt)
 					}
 				}
 				if len(recent) > 0 {
@@ -1417,7 +1426,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 				if replayEpoch == "" {
 					replayEpoch, _ = a.chatStore.GetCurrentEpoch(persistRecordID)
 				}
-				_ = conn.WriteJSON(replayMetaEnvelope{
+				_ = writeJSONSafe(&wsWriteMu, conn, replayMetaEnvelope{
 					Type:   "replay_meta",
 					Epoch:  replayEpoch,
 					Window: seqWindow{MinSeq: minSeq, MaxSeq: maxSeq, NextSeq: nextSeq},
@@ -1440,7 +1449,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 			stream.RequestTUISnapshot(primaryClientID, sub, fallbackSnapshot, tuiSnapshotTimeout)
 			debug.Printf("[chat/replay] requested TUI snapshot from primary=%s session=%s", primaryClientID, sessionID)
 		} else if snapshot := ptySess.RingBufferSnapshotPublic(); len(snapshot) > 0 {
-			_ = conn.WriteJSON(chat.ChatEvent{Type: "pty_replay", Text: string(snapshot)})
+			_ = writeJSONSafe(&wsWriteMu, conn, chat.ChatEvent{Type: "pty_replay", Text: string(snapshot)})
 			debug.Printf("[chat/replay] sent %d bytes PTY ring buffer to new subscriber session=%s", len(snapshot), sessionID)
 		}
 	}
@@ -1495,7 +1504,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 					cancel()
 					return
 				}
-				if err := conn.WriteJSON(evt); err != nil {
+				if err := writeJSONSafe(&wsWriteMu, conn, evt); err != nil {
 					cancel()
 					return
 				}
@@ -1504,13 +1513,13 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 					cancel()
 					return
 				}
-				if err := conn.WriteJSON(evt); err != nil {
+				if err := writeJSONSafe(&wsWriteMu, conn, evt); err != nil {
 					cancel()
 					return
 				}
 			case <-pingTicker.C:
 				// RFC645 protocol ping (browser auto-responds with pong).
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				if err := writeMessageSafe(&wsWriteMu, conn, websocket.PingMessage, nil); err != nil {
 					cancel()
 					return
 				}
@@ -1548,7 +1557,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		// ADR-0006: app-level ping/pong from client (client-side liveness).
 		if msg.Type == "ping" {
-			_ = conn.WriteJSON(chatWSInbound{Type: "pong", Timestamp: time.Now().UnixMilli()})
+			_ = writeJSONSafe(&wsWriteMu, conn, chatWSInbound{Type: "pong", Timestamp: time.Now().UnixMilli()})
 			continue
 		}
 		if msg.Type == "pong" {
@@ -1577,7 +1586,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "hello":
 			// ClientId handshake acknowledged; nothing else to do beyond registration above.
 			if cc != nil {
-				_ = conn.WriteJSON(chatWSInbound{Type: "hello_ack", ClientID: cc.clientID})
+				_ = writeJSONSafe(&wsWriteMu, conn, chatWSInbound{Type: "hello_ack", ClientID: cc.clientID})
 			}
 
 		case "message":
@@ -1645,7 +1654,7 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		case "fetch_timeline":
 			// ADR-0002: cursor-based catch-up RPC.
-			a.handleFetchTimeline(conn, sessionID, msg)
+			a.handleFetchTimeline(conn, &wsWriteMu, sessionID, msg)
 
 		case "tui_snapshot":
 			// ADR-0005: client sends serialized terminal state for TUI mode
@@ -1807,9 +1816,13 @@ func computeTimelineState(events []chat.EventRecord, win seqWindow, currentEpoch
 // catch-up (ADR-0002). Client sends {type:"fetch_timeline", afterSeq: N,
 // epoch: "..."} and receives the full timelineResponse shape with reset,
 // staleCursor, gap, window, hasOlder, hasNewer, endCursor, events.
-func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg chatWSInbound) {
+//
+// writeMu serializes all conn writes so this method (invoked from the main
+// read loop) does not race with the outbound goroutine (gorilla/websocket
+// permits only one concurrent writer per connection).
+func (a *API) handleFetchTimeline(conn wsConn, writeMu *sync.Mutex, sessionID string, msg chatWSInbound) {
 	if a.chatStore == nil {
-		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: "chat store unavailable"})
+		_ = writeJSONSafe(writeMu, conn, chat.ChatEvent{Type: "error", Error: "chat store unavailable"})
 		return
 	}
 
@@ -1818,7 +1831,7 @@ func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg ch
 		persistRecordID = a.chatStore.ResolveRecordID(sessionID)
 	}
 	if persistRecordID == "" {
-		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: "session record not found"})
+		_ = writeJSONSafe(writeMu, conn, chat.ChatEvent{Type: "error", Error: "session record not found"})
 		return
 	}
 
@@ -1833,14 +1846,14 @@ func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg ch
 		// No cursor — return tail (last N events).
 		fetched, err := a.chatStore.GetEventsTail(persistRecordID, limit)
 		if err != nil {
-			_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+			_ = writeJSONSafe(writeMu, conn, chat.ChatEvent{Type: "error", Error: err.Error()})
 			return
 		}
 		events = fetched
 	} else {
 		fetched, err := a.chatStore.GetEventsAfterSeq(persistRecordID, afterSeq, limit)
 		if err != nil {
-			_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+			_ = writeJSONSafe(writeMu, conn, chat.ChatEvent{Type: "error", Error: err.Error()})
 			return
 		}
 		events = fetched
@@ -1848,14 +1861,14 @@ func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg ch
 
 	minSeq, maxSeq, nextSeq, err := a.chatStore.GetEventWindow(persistRecordID)
 	if err != nil {
-		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+		_ = writeJSONSafe(writeMu, conn, chat.ChatEvent{Type: "error", Error: err.Error()})
 		return
 	}
 	win := seqWindow{MinSeq: minSeq, MaxSeq: maxSeq, NextSeq: nextSeq}
 
 	currentEpoch, err := a.chatStore.GetCurrentEpoch(persistRecordID)
 	if err != nil {
-		_ = conn.WriteJSON(chat.ChatEvent{Type: "error", Error: err.Error()})
+		_ = writeJSONSafe(writeMu, conn, chat.ChatEvent{Type: "error", Error: err.Error()})
 		return
 	}
 	if currentEpoch == "" && len(events) > 0 {
@@ -1873,10 +1886,12 @@ func (a *API) handleFetchTimeline(conn *websocket.Conn, sessionID string, msg ch
 		resp.HasNewer = true
 	}
 
-	_ = conn.WriteJSON(resp)
+	_ = writeJSONSafe(writeMu, conn, resp)
 }
 
-func (a *API) sendTimelineResponse(conn *websocket.Conn, events []chat.EventRecord, recordID string, hasMore bool) {
+// sendTimelineResponse is the legacy timeline-response helper. It shares the
+// write mutex with handleChatWebSocket so concurrent writes are serialized.
+func (a *API) sendTimelineResponse(conn wsConn, writeMu *sync.Mutex, events []chat.EventRecord, recordID string, hasMore bool) {
 	epoch := ""
 	if len(events) > 0 {
 		epoch = events[len(events)-1].Epoch
@@ -1908,7 +1923,7 @@ func (a *API) sendTimelineResponse(conn *websocket.Conn, events []chat.EventReco
 	if hasMore {
 		resp.HasNewer = true
 	}
-	_ = conn.WriteJSON(resp)
+	_ = writeJSONSafe(writeMu, conn, resp)
 }
 
 func (a *API) handleChatRestore(w http.ResponseWriter, r *http.Request) {
