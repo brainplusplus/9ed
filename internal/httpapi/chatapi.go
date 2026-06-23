@@ -1455,8 +1455,19 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// ADR-0006: Hybrid liveness — server sends RFC645 protocol pings (browser
 	// auto-responds) and client sends app-level JSON pings. Both with deadline.
+	//
+	// ADR-0006: Liveness failure threshold — the server does NOT tear down the
+	// connection on the first missed pong. It tracks a consecutive-miss counter
+	// and only tears down after LIVENESS_FAILURE_THRESHOLD (default 2) misses.
+	// livenessState is safe for single-goroutine access: gorilla/websocket
+	// invokes the pong handler synchronously inside ReadJSON, so the pong
+	// handler and the read-loop error handling below run on the same goroutine.
+	liveness := newLivenessState(a.livenessFailureThreshold, a.livenessTimeout)
 	conn.SetPongHandler(func(string) error {
-		_ = conn.SetReadDeadline(time.Now().Add(a.livenessTimeout))
+		// VAL-LIVENESS-002: a pong resets the miss counter to 0 and extends
+		// the read deadline by the liveness timeout.
+		nextDeadline := liveness.resetOnPong(time.Now())
+		_ = conn.SetReadDeadline(nextDeadline)
 		return nil
 	})
 
@@ -1507,12 +1518,30 @@ func (a *API) handleChatWebSocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		var msg chatWSInbound
 		if err := conn.ReadJSON(&msg); err != nil {
+			// ADR-0006: liveness failure threshold. A read deadline exceeded
+			// is treated as a missed pong. Only tear down after
+			// LIVENESS_FAILURE_THRESHOLD (default 2) consecutive misses;
+			// the first miss(es) extend the deadline and continue the loop.
+			// Non-deadline errors (close, parse, network reset) always tear down.
+			if isReadDeadlineExceeded(err) {
+				teardown, nextDeadline := liveness.onReadDeadlineExceeded(time.Now())
+				if !teardown {
+					debug.Printf("[chat/liveness] missed pong (session=%s) counter=%d/%d — extending deadline",
+						sessionID, liveness.missedPongsCount(), a.livenessFailureThreshold)
+					_ = conn.SetReadDeadline(nextDeadline)
+					continue
+				}
+				debug.Printf("[chat/liveness] teardown after %d consecutive missed pongs (session=%s, threshold=%d)",
+					liveness.missedPongsCount(), sessionID, a.livenessFailureThreshold)
+			}
 			cancel()
 			return
 		}
 
-		// Reset read deadline on any successful read.
+		// Reset read deadline on any successful read. A successful read also
+		// counts as proof of liveness, so reset the miss counter too.
 		_ = conn.SetReadDeadline(time.Now().Add(pongTimeout))
+		liveness.resetOnPong(time.Now())
 
 		// ADR-0006: app-level ping/pong from client (client-side liveness).
 		if msg.Type == "ping" {

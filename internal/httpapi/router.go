@@ -54,6 +54,9 @@ type Dependencies struct {
 	LivenessPingInterval time.Duration
 	LivenessTimeout      time.Duration
 	StreamCoalesceWindow time.Duration
+	// LivenessFailureThreshold is the number of consecutive missed pongs
+	// before the WebSocket is torn down (ADR-0006). Default 2 when zero.
+	LivenessFailureThreshold int
 }
 
 type API struct {
@@ -76,7 +79,10 @@ type API struct {
 	terminalRuns         map[string]time.Time
 	livenessPingInterval time.Duration
 	livenessTimeout      time.Duration
-	visualSignaling      *visualstream.SignalingHandler
+	// livenessFailureThreshold is the consecutive-missed-pong count that
+	// triggers teardown (ADR-0006). Always >= 1 (defaults to 2).
+	livenessFailureThreshold int
+	visualSignaling          *visualstream.SignalingHandler
 }
 
 func New(deps Dependencies) *API {
@@ -92,28 +98,33 @@ func New(deps Dependencies) *API {
 	if coalesce == 0 {
 		coalesce = 60 * time.Millisecond
 	}
+	livenessThreshold := deps.LivenessFailureThreshold
+	if livenessThreshold < 1 {
+		livenessThreshold = 2
+	}
 	chatStreams := newChatStreamRegistry()
 	chatStreams.SetCoalesceWindow(coalesce)
 	api := &API{
-		shells:               deps.Shells,
-		sessions:             deps.Sessions,
-		upgrader:             websocket.Upgrader{CheckOrigin: sameOrigin},
-		workspaceRoot:        deps.WorkspaceRoot,
-		terminalAiMaxLines:   deps.TerminalAIMaxLines,
-		watcher:              deps.Watcher,
-		chatSessionManager:   deps.ChatSessionManager,
-		chatStore:            deps.ChatStore,
-		chatStreams:          chatStreams,
-		chatConnections:      newChatConnectionRegistry(),
-		browser:              deps.Browser,
-		settingsTunnels:      deps.SettingsTunnels,
-		tunnelURL:            deps.TunnelURL,
-		terminalMCPToken:     deps.TerminalMCPToken,
-		browserMCPToken:      deps.BrowserMCPToken,
-		terminalRuns:         make(map[string]time.Time),
-		livenessPingInterval: pingInterval,
-		livenessTimeout:      timeout,
-		visualSignaling:      visualstream.NewSignalingHandler(),
+		shells:                   deps.Shells,
+		sessions:                 deps.Sessions,
+		upgrader:                 websocket.Upgrader{CheckOrigin: sameOrigin},
+		workspaceRoot:            deps.WorkspaceRoot,
+		terminalAiMaxLines:       deps.TerminalAIMaxLines,
+		watcher:                  deps.Watcher,
+		chatSessionManager:       deps.ChatSessionManager,
+		chatStore:                deps.ChatStore,
+		chatStreams:              chatStreams,
+		chatConnections:          newChatConnectionRegistry(),
+		browser:                  deps.Browser,
+		settingsTunnels:          deps.SettingsTunnels,
+		tunnelURL:                deps.TunnelURL,
+		terminalMCPToken:         deps.TerminalMCPToken,
+		browserMCPToken:          deps.BrowserMCPToken,
+		terminalRuns:             make(map[string]time.Time),
+		livenessPingInterval:     pingInterval,
+		livenessTimeout:          timeout,
+		livenessFailureThreshold: livenessThreshold,
+		visualSignaling:          visualstream.NewSignalingHandler(),
 	}
 
 	// ADR-0003: start grace window sweeper to clean up expired chat connections.

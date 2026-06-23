@@ -102,21 +102,22 @@ func New(cfg config.Config) *Server {
 	}
 
 	api := httpapi.New(httpapi.Dependencies{
-		Shells:               profiles,
-		Sessions:             manager,
-		WorkspaceRoot:        cfg.WorkspaceRoot,
-		TerminalAIMaxLines:   cfg.TerminalAIMaxLines,
-		Watcher:              fw,
-		ChatSessionManager:   chatSessionMgr,
-		ChatStore:            chatStore,
-		Browser:              browserMgr,
-		SettingsTunnels:      settingsTunnels,
-		TunnelURL:            func() string { return "" }, // placeholder, set via SetTunnel
-		TerminalMCPToken:     terminalMCPToken,
-		BrowserMCPToken:      browserMCPToken,
-		LivenessPingInterval: cfg.LivenessPingInterval,
-		LivenessTimeout:      cfg.LivenessTimeout,
-		StreamCoalesceWindow: cfg.StreamCoalesceWindow,
+		Shells:                   profiles,
+		Sessions:                 manager,
+		WorkspaceRoot:            cfg.WorkspaceRoot,
+		TerminalAIMaxLines:       cfg.TerminalAIMaxLines,
+		Watcher:                  fw,
+		ChatSessionManager:       chatSessionMgr,
+		ChatStore:                chatStore,
+		Browser:                  browserMgr,
+		SettingsTunnels:          settingsTunnels,
+		TunnelURL:                func() string { return "" }, // placeholder, set via SetTunnel
+		TerminalMCPToken:         terminalMCPToken,
+		BrowserMCPToken:          browserMCPToken,
+		LivenessPingInterval:     cfg.LivenessPingInterval,
+		LivenessTimeout:          cfg.LivenessTimeout,
+		StreamCoalesceWindow:     cfg.StreamCoalesceWindow,
+		LivenessFailureThreshold: cfg.LivenessFailureThreshold,
 	})
 
 	return &Server{

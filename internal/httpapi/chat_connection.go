@@ -96,26 +96,6 @@ func (r *chatConnectionRegistry) removeSocket(cs *chatSocket) {
 	debug.Printf("[chat/conn] remove socket=%s client=%s remaining=%d", cs.id, cs.clientID, remaining)
 }
 
-// broadcast sends a message to all sockets in a chatConnection (fan-out to
-// multi-tab/multi-device). Sockets that fail to write are removed.
-func (r *chatConnectionRegistry) broadcast(cc *chatConnection, msg any) {
-	if cc == nil {
-		return
-	}
-	cc.mu.Lock()
-	sockets := make([]*chatSocket, 0, len(cc.sockets))
-	for _, s := range cc.sockets {
-		sockets = append(sockets, s)
-	}
-	cc.mu.Unlock()
-
-	for _, s := range sockets {
-		if err := s.conn.WriteJSON(msg); err != nil {
-			r.removeSocket(s)
-		}
-	}
-}
-
 // sweepExpired removes chatConnections that have no sockets and haven't been
 // seen since the given TTL. Called periodically by the grace window sweeper
 // (ADR-0003).
