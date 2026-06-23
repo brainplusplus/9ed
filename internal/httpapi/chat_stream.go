@@ -337,21 +337,35 @@ func (s *chatStream) publishDirect(evt chat.ChatEvent) {
 	}
 	defer s.mu.Unlock()
 	isCritical := criticalEventTypes[evt.Type]
+
+	// ADR-0003: track whether ANY priority overflow occurred during this
+	// fan-out. Backpressure-to-agent triggers on any priority overflow (not
+	// gated on len(subscribers)==0). Critical events that overflow are
+	// buffered (already persisted above) and retried for delivery after the
+	// agent is cancelled.
+	var backpressureNeeded bool
+	var bufferedCritical []chat.ChatEvent
+	var bulkDropped bool
+
 	for sub := range s.subscribers {
 		if isCritical {
 			// ADR-0003: critical events go to priority channel (never drop).
 			select {
 			case sub.priority <- evt:
 			default:
-				// Priority channel full — apply backpressure: cancel the agent
-				// turn and emit a done event so the client can re-prompt.
-				debug.Printf("[chat/stream] priority overflow session=%s subscriber dropped, backpressure", s.sessionID)
-				delete(s.subscribers, sub)
-				close(sub.C)
-				close(sub.priority)
+				// Priority channel full — do NOT drop the subscriber. Set the
+				// backpressure flag, buffer the critical event for retry after
+				// Cancel, and keep the subscriber alive.
+				backpressureNeeded = true
+				bufferedCritical = append(bufferedCritical, evt)
+				debug.Printf("[chat/stream] priority overflow session=%s subscriber kept, backpressure flagged", s.sessionID)
 			}
 		} else {
 			// ADR-0003: bulk events go to main channel (drop oldest if full).
+			// The subscriber is NEVER dropped on bulk overflow — drop-oldest
+			// only; if still full after drop, drop the new event (subscriber
+			// stays alive). The client detects the seq gap via the seq_gap
+			// signal below and re-fetches missing events (ADR-0002 catch-up).
 			select {
 			case sub.C <- evt:
 			default:
@@ -362,27 +376,135 @@ func (s *chatStream) publishDirect(evt chat.ChatEvent) {
 				}
 				select {
 				case sub.C <- evt:
+					// Made room by dropping oldest — signal the client that a
+					// bulk event was dropped so it can re-fetch (ADR-0003).
+					bulkDropped = true
 				default:
-					// Still full after dropping one — drop subscriber.
-					debug.Printf("[chat/stream] bulk overflow session=%s subscriber dropped", s.sessionID)
-					delete(s.subscribers, sub)
-					close(sub.C)
-					close(sub.priority)
+					// Still full after dropping one — drop the new event. The
+					// subscriber stays alive. The client will detect the gap
+					// via the seq_gap signal and re-fetch (ADR-0002 catch-up).
+					bulkDropped = true
+					debug.Printf("[chat/stream] bulk overflow session=%s new event dropped, subscriber kept", s.sessionID)
 				}
 			}
 		}
 	}
 
-	// ADR-0003: if any priority overflow occurred, apply backpressure to agent.
-	// This is done after the loop to avoid cancelling mid-iteration.
-	// The backpressure (Cancel + done) is emitted once, not per-subscriber.
-	if isCritical && len(s.subscribers) == 0 && evt.Type != "done" && evt.Type != "error" {
-		// All subscribers dropped due to priority overflow — cancel agent.
+	// ADR-0003: emit a seq_gap signal to subscribers when a bulk event was
+	// dropped, so the client knows to re-fetch missing events via ADR-0002
+	// catch-up. The signal is transient (not persisted) and best-effort: it
+	// goes to the priority channel non-blocking; if the priority channel is
+	// also full the client will still detect the gap on its next fetch.
+	if bulkDropped {
+		s.deliverSeqGapLocked()
+	}
+
+	// ADR-0003: if any priority overflow occurred, apply backpressure to the
+	// agent. Cancel the agent turn, retry delivery of buffered critical
+	// events, and emit a done event with stopReason=client_backpressure so
+	// the client can re-prompt and re-fetch the timeline tail. This triggers
+	// on ANY priority overflow (not gated on len(subscribers)==0).
+	if backpressureNeeded && evt.Type != "done" && evt.Type != "error" {
+		// Snapshot the buffered critical events so the goroutine can safely
+		// reference them after the lock is released.
+		retryEvents := bufferedCritical
 		go func() {
 			_ = s.session.Cancel()
-			s.publish(chat.ChatEvent{Type: "done", StopReason: "client_backpressure"})
+			// Retry delivery of buffered critical events to subscribers. These
+			// were already persisted above, so this path does NOT re-persist.
+			// If priority channels are still full, the events are dropped here
+			// (they are persisted) — the client re-fetches them via catch-up.
+			s.redeliverCritical(retryEvents)
+			// Emit the terminal done event. It is delivered with drop-oldest
+			// semantics on the priority channel so it always gets through to
+			// the (slow) client, even if the channel is full. Dropped pending
+			// priority events are persisted and re-fetched via ADR-0002.
+			s.publishBackpressureDone()
 		}()
 	}
+}
+
+// deliverSeqGapLocked emits a transient seq_gap signal to every subscriber's
+// priority channel (non-blocking). The caller must hold s.mu. The signal tells
+// the client that a bulk event was dropped due to overflow so it can re-fetch
+// the missing events via ADR-0002 catch-up. It is NOT persisted.
+func (s *chatStream) deliverSeqGapLocked() {
+	signal := chat.ChatEvent{Type: "seq_gap"}
+	for sub := range s.subscribers {
+		select {
+		case sub.priority <- signal:
+		default:
+			// Priority channel full — skip; client will still detect the gap
+			// on its next fetch_timeline call.
+		}
+	}
+}
+
+// redeliverCritical attempts to re-deliver buffered critical events to all
+// subscribers' priority channels (non-blocking). It does NOT persist (the
+// events were already persisted in the original publishDirect call). If a
+// priority channel is still full, the event is skipped — the client will
+// detect the gap via the subsequent client_backpressure done event and
+// re-fetch via ADR-0002 catch-up.
+func (s *chatStream) redeliverCritical(events []chat.ChatEvent) {
+	if len(events) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, evt := range events {
+		for sub := range s.subscribers {
+			select {
+			case sub.priority <- evt:
+			default:
+				// Still full — client will re-fetch via catch-up.
+			}
+		}
+	}
+	s.mu.Unlock()
+}
+
+// publishBackpressureDone emits the terminal done event with
+// stopReason=client_backpressure. It persists the event (so it is part of the
+// timeline the client re-fetches) and delivers it to every subscriber's
+// priority channel with drop-oldest semantics: if the priority channel is
+// full, the oldest pending priority event is dropped to make room. This
+// guarantees the terminal signal always reaches the slow client. Dropped
+// pending events are persisted and re-fetched via ADR-0002 catch-up.
+func (s *chatStream) publishBackpressureDone() {
+	evt := chat.ChatEvent{Type: "done", StopReason: "client_backpressure"}
+	if s.persist != nil {
+		s.persist(evt)
+	}
+	s.mu.Lock()
+	if s.turnDoneEmitted {
+		// A terminal event was already emitted for this turn; do not emit a
+		// second one. The client already received (or will re-fetch) the
+		// prior terminal event.
+		s.mu.Unlock()
+		return
+	}
+	s.turnDoneEmitted = true
+	for sub := range s.subscribers {
+		select {
+		case sub.priority <- evt:
+		default:
+			// Priority channel full — drop the oldest pending priority event
+			// to make room for the terminal done. The dropped event is
+			// persisted and the client re-fetches it via ADR-0002 catch-up.
+			select {
+			case <-sub.priority:
+			default:
+			}
+			select {
+			case sub.priority <- evt:
+			default:
+				// Extremely unlikely: still full after dropping one. Drop the
+				// event itself — the client will re-fetch via catch-up since
+				// it is persisted.
+			}
+		}
+	}
+	s.mu.Unlock()
 }
 
 func (s *chatStream) handleToolFallbackTrigger(evt chat.ChatEvent) {
