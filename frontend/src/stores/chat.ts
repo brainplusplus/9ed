@@ -1493,24 +1493,55 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // Unified browser-toggle entry point used by both the chat config bar
-  // (AgentPicker) and the BrowserPanel / inspect-mode UI. It routes to the
-  // hard-restart path (restartActiveSessionForBrowser) when an active chat
-  // session exists that can be restarted or queued, and falls back to a
-  // frontend-only soft toggle when there is no session or the session is in
-  // a non-restartable state (e.g. 'error'). This keeps both UI surfaces
-  // consistent and prevents the state desync that occurred when one path
-  // hard-restarted while the other only flipped frontend state.
+  // (AgentPicker) and the BrowserPanel / inspect-mode UI. Uses the SOFT
+  // WebSocket toggle as the primary path: it updates `useActiveBrowser` in
+  // the store AND on the active session object. The existing WS effect in
+  // useChatSession.ts (which reads from activeSession?.useActiveBrowser as
+  // the primary source) automatically sends a `set_use_active_browser`
+  // message to the running session, which calls the backend's lightweight
+  // SetUseActiveBrowser() — an in-memory state change that controls prompt
+  // decoration (decorateActiveToolMessage). No subprocess restart, no HTTP
+  // resume, no WebSocket teardown.
+  //
+  // Why soft toggle is correct: browser MCP tools are ALWAYS registered in
+  // the ACP adapter (activeMCPServersForOptions appends browserServers
+  // unconditionally). UseActiveBrowser only controls prompt decoration and
+  // debug logging — so no restart is needed to enable/disable browser MCP.
+  //
+  // restartActiveSessionForBrowser is retained as a deprecated/internal
+  // method but is NOT called here. It remains for potential future use.
   setBrowserEnabled: async (enabled) => {
     const state = get();
     const sessionId = state.activeSessionId;
     const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
-    if (session && (session.status === 'idle' || session.status === 'connecting' || session.status === 'streaming')) {
-      const ok = await get().restartActiveSessionForBrowser(enabled);
-      if (ok) return true;
-      // Hard restart refused (e.g. session moved to an error state); fall
-      // through to a soft toggle so the user's intent is still reflected.
-    }
+
+    // Update the global store flag (drives the WS effect fallback path).
     set({ useActiveBrowser: enabled });
+
+    // Mirror the flag onto the active session object so the UI (checkbox,
+    // AgentPicker, BrowserPanel) reflects the toggle immediately and so the
+    // WS effect in useChatSession.ts fires (it reads
+    // activeSession?.useActiveBrowser as its primary source). We update the
+    // session in every status: for a live session (idle/streaming/connecting)
+    // the WS effect delivers `set_use_active_browser` to the backend; for an
+    // errored session there is no live WS, but mirroring the flag keeps the
+    // UI consistent with the user's intent and it is honored when the session
+    // is recovered/restarted. The WS effect itself guards on `connected`, so
+    // no message is sent to a dead session.
+    if (session) {
+      set((current) => ({
+        sessions: updateSession(current.sessions, session.id, (s) => ({
+          ...s,
+          useActiveBrowser: enabled,
+          // Clear any stale deferred hard-restart toggle: the soft path
+          // applies the user's intent immediately, so there is nothing to
+          // defer. (pendingBrowserToggle was only used by the deprecated
+          // restartActiveSessionForBrowser queueing path.)
+          pendingBrowserToggle: undefined,
+        })),
+      }));
+    }
+
     return true;
   },
 

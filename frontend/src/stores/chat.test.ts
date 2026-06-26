@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useChatStore } from './chat';
 import { useWorkspaceStore } from './workspace';
 import { registerTerminal, unregisterTerminal } from '../terminalRegistry';
-import type { HistoryMessageRecord, HistorySessionRecord } from '../types';
+import type { ChatSessionInfo, HistoryMessageRecord, HistorySessionRecord } from '../types';
 import { replayTranscriptToMessages, parseSnapshotJson } from './chat';
 
 const getChatHistory = vi.fn<() => Promise<HistorySessionRecord[]>>();
@@ -811,7 +811,7 @@ describe('restartActiveSessionForBrowser toggle queueing', () => {
   });
 });
 
-describe('setBrowserEnabled unified routing', () => {
+describe('setBrowserEnabled soft WS toggle (primary path)', () => {
   beforeEach(() => {
     resetChatStore();
     vi.clearAllMocks();
@@ -836,6 +836,22 @@ describe('setBrowserEnabled unified routing', () => {
     useWorkspaceStore.getState().addBrowserTab(project.id, 'tab-1');
   });
 
+  function makeSession(overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo {
+    return {
+      id: 'live-idle',
+      recordId: 'record-idle',
+      agentId: 'opencode',
+      title: 'Idle',
+      messages: [],
+      status: 'idle',
+      createdAt: 1,
+      kind: 'live' as const,
+      workDir: '/repo',
+      acpSessionId: 'acp-idle',
+      ...overrides,
+    };
+  }
+
   it('soft-toggles frontend state when there is no active session', async () => {
     useChatStore.setState({ sessions: [], activeSessionId: null, useActiveBrowser: false });
 
@@ -847,26 +863,9 @@ describe('setBrowserEnabled unified routing', () => {
     expect(resumeChatSession).not.toHaveBeenCalled();
   });
 
-  it('hard-restarts when an idle active session exists', async () => {
-    resumeChatSession.mockResolvedValue({
-      id: 'live-restart',
-      mode: 'acp',
-      acpSessionId: 'acp-r',
-      workDir: '/repo',
-    });
+  it('soft-toggles when an idle active session exists: updates store + session.useActiveBrowser, no resume', async () => {
     useChatStore.setState({
-      sessions: [{
-        id: 'live-idle',
-        recordId: 'record-idle',
-        agentId: 'opencode',
-        title: 'Idle',
-        messages: [],
-        status: 'idle',
-        createdAt: 1,
-        kind: 'live',
-        workDir: '/repo',
-        acpSessionId: 'acp-idle',
-      }],
+      sessions: [makeSession({ id: 'live-idle', useActiveBrowser: false })],
       activeSessionId: 'live-idle',
       useActiveBrowser: false,
     });
@@ -874,63 +873,121 @@ describe('setBrowserEnabled unified routing', () => {
     const ok = await useChatStore.getState().setBrowserEnabled(true);
 
     expect(ok).toBe(true);
-    // Hard restart path fired the resume request.
-    expect(resumeChatSession).toHaveBeenCalledTimes(1);
+    // Store flag updated — drives the WS effect.
     expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    // Session object flag updated — UI (checkbox, AgentPicker, BrowserPanel) reflects immediately.
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    expect(session?.useActiveBrowser).toBe(true);
+    // VAL-SOFTTOGGLE-001: NO hard restart / HTTP resume occurs.
+    expect(resumeChatSession).not.toHaveBeenCalled();
   });
 
-  it('queues the toggle when the active session is busy (streaming)', async () => {
+  it('does NOT change session status to connecting during the toggle (VAL-SOFTTOGGLE-001)', async () => {
     useChatStore.setState({
-      sessions: [{
-        id: 'live-busy',
-        recordId: 'record-busy',
-        agentId: 'opencode',
-        title: 'Busy',
-        messages: [],
-        status: 'streaming',
-        createdAt: 1,
-        kind: 'live',
-        workDir: '/repo',
-        acpSessionId: 'acp-busy',
-      }],
+      sessions: [makeSession({ id: 'live-idle', status: 'idle', useActiveBrowser: false })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+    });
+
+    await useChatStore.getState().setBrowserEnabled(true);
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    // Session must remain idle (not 'connecting') — the WS stays open.
+    expect(session?.status).toBe('idle');
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('soft-toggles when the active session is busy (streaming) without queueing a hard restart', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-busy', status: 'streaming', useActiveBrowser: false })],
       activeSessionId: 'live-busy',
       useActiveBrowser: false,
     });
 
     const ok = await useChatStore.getState().setBrowserEnabled(true);
 
-    // Queued via the hard-restart path; not a silent soft toggle.
     expect(ok).toBe(true);
-    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-busy');
-    expect(session?.pendingBrowserToggle).toBe(true);
     expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-busy');
+    expect(session?.useActiveBrowser).toBe(true);
+    // Soft toggle works while busy — no hard-restart queue needed.
+    expect(session?.pendingBrowserToggle).toBeUndefined();
+    // Session status unchanged (still streaming).
+    expect(session?.status).toBe('streaming');
     expect(resumeChatSession).not.toHaveBeenCalled();
   });
 
-  it('falls back to soft toggle when active session is in error state', async () => {
+  it('soft-toggles when the active session is connecting', async () => {
     useChatStore.setState({
-      sessions: [{
-        id: 'live-err',
-        recordId: 'record-err',
-        agentId: 'opencode',
-        title: 'Error',
-        messages: [],
-        status: 'error',
-        createdAt: 1,
-        kind: 'live',
-        workDir: '/repo',
-        acpSessionId: 'acp-err',
-      }],
+      sessions: [makeSession({ id: 'live-connecting', status: 'connecting', useActiveBrowser: false })],
+      activeSessionId: 'live-connecting',
+      useActiveBrowser: false,
+    });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(true);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-connecting');
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('soft-toggles when active session is in error state', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-err', status: 'error', useActiveBrowser: false })],
       activeSessionId: 'live-err',
       useActiveBrowser: false,
     });
 
     const ok = await useChatStore.getState().setBrowserEnabled(true);
 
-    // Error state cannot be hard-restarted; fall back to soft toggle so the
-    // user's intent is still captured in frontend state.
+    // Error state still gets a soft toggle so the user's intent is captured.
     expect(ok).toBe(true);
     expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-err');
+    expect(session?.useActiveBrowser).toBe(true);
     expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('toggling off updates store + session.useActiveBrowser without resume (VAL-SOFTTOGGLE-003)', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-on', status: 'idle', useActiveBrowser: true })],
+      activeSessionId: 'live-on',
+      useActiveBrowser: true,
+    });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(false);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveBrowser).toBe(false);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-on');
+    expect(session?.useActiveBrowser).toBe(false);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('preserves other session fields when updating useActiveBrowser', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({
+        id: 'live-idle',
+        status: 'idle',
+        useActiveBrowser: false,
+        useActiveTerminal: true,
+        terminalId: 'term-1',
+        acpSessionId: 'acp-preserved',
+      })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+    });
+
+    await useChatStore.getState().setBrowserEnabled(true);
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    expect(session?.useActiveBrowser).toBe(true);
+    // Other fields untouched.
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.terminalId).toBe('term-1');
+    expect(session?.acpSessionId).toBe('acp-preserved');
+    expect(session?.status).toBe('idle');
   });
 });
