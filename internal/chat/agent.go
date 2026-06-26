@@ -219,6 +219,13 @@ func activeMCPServersForOptions(opts SessionOptions) []acp.MCPServer {
 	return servers
 }
 
+// newAdapterForRestart is the indirection point over newAdapterWithHeal used
+// by tryRestart when re-spawning the subprocess after a crash. It defaults to
+// newAdapterWithHeal; tests substitute a fake to assert tryRestart reuses the
+// current sessionOpts (e.g. UseActiveBrowser) when building the adapter config
+// (VAL-RESUME-001 / TestTryRestartPreservesBrowserMCP).
+var newAdapterForRestart = newAdapterWithHeal
+
 // newAdapterWithHeal spawns an ACP adapter with resilience against concurrent
 // updates and corrupted installs.
 //
@@ -933,7 +940,7 @@ func (s *acpSession) tryRestart() bool {
 			MCPServers: activeMCPServersForOptions(s.sessionOpts),
 		}
 
-		newAdapter, err := newAdapterWithHeal(s.ctx, s.agentID, cfg)
+		newAdapter, err := newAdapterForRestart(s.ctx, s.agentID, cfg)
 		if err != nil {
 			debug.Printf("[chat/restart] attempt %d adapter create failed: %v", attempt+1, err)
 			if isPersistentError(err) {

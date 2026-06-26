@@ -78,6 +78,7 @@ export function ChatPanel() {
   const deleteSessionStore = useChatStore((s) => s.deleteSession);
   const resumeSession = useChatStore((s) => s.resumeSession);
   const restoring = useChatStore((s) => s.restoring);
+  const lastRestoreError = useChatStore((s) => s.lastRestoreError);
   const { sendMessage, cancel, setConfigOption, respondPermission, rejectPermission, setAutoApprove, connected } = useChatSession();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const autoResumeKeysRef = useRef<Set<string>>(new Set());
@@ -96,6 +97,9 @@ export function ChatPanel() {
   const projectSessionIds = projectSessions.map((session) => session.id).join('|');
   const isStreaming = activeSession?.status === 'streaming';
   const isConnecting = activeSession?.status === 'connecting' || creating;
+  // ADR-0004: reconnecting is true while a crash-recovery resume request is
+  // in flight (status flips to 'connecting' via resumeSession).
+  const reconnecting = !!activeSession && activeSession.status === 'connecting' && activeSession.crashed;
   const isArchived = activeSession?.kind === 'archived';
   const canResumeArchived = Boolean(activeSession?.kind === 'archived' && activeSession.agentId && activeSession.workDir);
   // ADR-0005 VAL-PTY-007: pass the lock holder so ChatInput disables + shows banner.
@@ -276,6 +280,17 @@ export function ChatPanel() {
     sendMessage(content, undefined, attachments);
   };
 
+  // ADR-0004 / VAL-RESUME-005: recover a crashed agent session. The backend
+  // emits a done event with stopReason='agent_crash_unrecoverable' when the
+  // subprocess cannot be auto-restarted; the reconnect button triggers an
+  // explicit resume (HTTP POST /api/chat/sessions/resume), which re-resumes
+  // the ACP session or falls back to a fresh Create. resumeSession surfaces
+  // failures via lastRestoreError (shown in the banner below).
+  const handleReconnect = () => {
+    if (!activeSession) return;
+    void resumeSession(activeSession.id);
+  };
+
   if (agents.length === 0 && !activeSession && !restoring) {
     return (
       <div className="chat-panel">
@@ -418,6 +433,47 @@ export function ChatPanel() {
                     ? `No new update for a while.${liveStepLabel ? ` Last step: ${liveStepLabel}.` : ''}`
                     : (liveStepLabel ? `Working: ${liveStepLabel}` : 'Working...')}
                 </span>
+              </div>
+            )}
+            {/* ADR-0004 / VAL-RESUME-005: actionable recovery prompt when the
+                agent subprocess crashed unrecoverably. The backend sent a done
+                event with stopReason='agent_crash_unrecoverable' and CanResume.
+                Show a reconnect button so the user can recover the session via
+                the resume endpoint (which falls back to a fresh session). */}
+            {activeSession.crashed && (
+              <div className="chat-crash-recovery" role="alert">
+                <div className="chat-crash-recovery-message">
+                  ⚠️ AI Agent connection crashed and could not auto-recover.
+                  {activeSession.canResume
+                    ? ' You can try to reconnect and resume the session.'
+                    : ' This agent does not support resuming — start a new session.'}
+                </div>
+                <button
+                  className="chat-crash-recovery-btn"
+                  type="button"
+                  onClick={handleReconnect}
+                  disabled={reconnecting}
+                >
+                  {reconnecting ? 'Reconnecting…' : (activeSession.canResume ? 'Reconnect' : 'New session')}
+                </button>
+              </div>
+            )}
+            {/* ADR-0004: surface resume/restart HTTP failures (network error,
+                500, timeout) from resumeChatSession in the main panel, not just
+                the session-list dropdown, so the user always sees the failure. */}
+            {lastRestoreError && lastRestoreError.sessionId === (activeSession.recordId ?? activeSession.id) && (
+              <div className="chat-crash-recovery chat-restore-error-inline" role="alert">
+                <div className="chat-crash-recovery-message">
+                  ⚠️ Reconnect failed: {lastRestoreError.reason}
+                </div>
+                <button
+                  className="chat-crash-recovery-btn"
+                  type="button"
+                  onClick={handleReconnect}
+                  disabled={reconnecting}
+                >
+                  {reconnecting ? 'Reconnecting…' : 'Retry'}
+                </button>
               </div>
             )}
             <div ref={messagesEndRef} />

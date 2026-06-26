@@ -88,6 +88,11 @@ type ChatState = {
   handleChatEvent: (sessionId: string, event: ChatEvent) => void;
   finalizeAssistantMessage: (sessionId: string) => void;
   setSessionStatus: (sessionId: string, status: ChatSessionInfo['status']) => void;
+  // ADR-0004 / VAL-RESUME-005: clear the crash recovery flag set by an
+  // unrecoverable-crash done event. Called when the session is resumed
+  // (session_resumed) or manually recovered so the UI hides the reconnect
+  // prompt and re-enables input.
+  clearCrashState: (sessionId: string) => void;
   setSessionStalled: (sessionId: string, stalled: boolean) => void;
   appendSessionDebug: (sessionId: string, entry: Omit<ChatDebugEntry, 'timestamp'> & { timestamp?: number }) => void;
   setSessionKind: (sessionId: string, kind: ChatSessionKind) => void;
@@ -635,11 +640,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
             };
 
           case 'done': {
+            // ADR-0004 / VAL-RESUME-005: when the agent subprocess crashes
+            // unrecoverably, the backend sends a done event with
+            // stopReason='agent_crash_unrecoverable' and CanResume reflecting
+            // whether session/resume is supported. Capture this so the UI can
+            // show an actionable recovery prompt (reconnect button) instead of
+            // silently returning to idle. A normal done (end_turn, etc.)
+            // clears any prior crash flag.
+            const isCrash = event.stopReason === 'agent_crash_unrecoverable';
             // When a browser toggle was queued while the session was busy
             // (restartActiveSessionForBrowser deferred it via
             // pendingBrowserToggle), fire the deferred restart now that the
-            // session has returned to idle.
-            if (s.pendingBrowserToggle !== undefined && s.pendingBrowserToggle !== null) {
+            // session has returned to idle. Skip this on an unrecoverable
+            // crash — the session is dead and must be recovered via the
+            // reconnect button, not a silent browser-toggle restart.
+            if (!isCrash && s.pendingBrowserToggle !== undefined && s.pendingBrowserToggle !== null) {
               const desired = s.pendingBrowserToggle;
               // Defer so the state update (status -> idle) commits first;
               // restartActiveSessionForBrowser re-checks status itself.
@@ -647,7 +662,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 get().restartActiveSessionForBrowser(desired, true);
               });
             }
-            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined, pendingBrowserToggle: null, lastEventAt: eventAt, stalled: false };
+            return {
+              ...s,
+              messages: msgs,
+              status: 'idle',
+              pendingPermission: undefined,
+              pendingBrowserToggle: null,
+              crashed: isCrash,
+              canResume: isCrash ? Boolean(event.canResume) : false,
+              lastEventAt: eventAt,
+              stalled: false,
+            };
           }
 
           case 'terminal_execute': {
@@ -711,6 +736,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setSessionStalled: (sessionId, stalled) =>
     set((state) => ({
       sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, stalled })),
+    })),
+
+  clearCrashState: (sessionId) =>
+    set((state) => ({
+      sessions: updateSession(state.sessions, sessionId, (s) => ({ ...s, crashed: false, canResume: false })),
     })),
 
   appendSessionDebug: (sessionId, entry) =>
@@ -991,12 +1021,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
       return true;
-    })().catch(() => {
+    })().catch((err) => {
+      // ADR-0004 / VAL-RESUME-005: surface the actual failure reason
+      // (network error, 500, timeout) so the user sees an actionable message
+      // via lastRestoreError instead of a generic "Resume request failed".
       set((state) => ({
         sessions: updateSession(state.sessions, session.id, (s) => ({ ...s, status: 'error' })),
         lastRestoreError: {
           sessionId: recordId,
-          reason: 'Resume request failed',
+          reason: err instanceof Error ? err.message : 'Resume request failed',
         },
       }));
       return false;

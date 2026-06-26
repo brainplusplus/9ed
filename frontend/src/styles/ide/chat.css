@@ -25,6 +25,14 @@
 .chat-streaming { padding: 8px 12px; color: var(--activity-fg); font-size: 0.82rem; display: flex; align-items: center; gap: 8px; }
 .chat-streaming.stalled { color: #f9e2af; }
 .chat-streaming-label { opacity: 0.86; font-size: 0.76rem; line-height: 1.35; }
+/* ADR-0004 / VAL-RESUME-005: actionable recovery prompt shown when the agent
+ * subprocess crashed unrecoverably, and inline reconnect-failure banner. */
+.chat-crash-recovery { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 6px 8px; border-radius: 6px; background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.35); color: #f9c0c0; font-size: 0.78rem; line-height: 1.4; }
+.chat-crash-recovery-message { flex: 1; min-width: 0; }
+.chat-crash-recovery-btn { flex-shrink: 0; padding: 5px 12px; border-radius: 5px; border: 1px solid rgba(239,68,68,0.5); background: rgba(239,68,68,0.18); color: #ffd5d5; font-size: 0.76rem; cursor: pointer; transition: background 0.15s; }
+.chat-crash-recovery-btn:hover:not(:disabled) { background: rgba(239,68,68,0.32); }
+.chat-crash-recovery-btn:disabled { opacity: 0.6; cursor: default; }
+.chat-restore-error-inline { background: rgba(239,68,68,0.08); }
 .chat-connecting { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--activity-fg); }
 .chat-connecting-spinner { width: 14px; height: 14px; border: 2px solid var(--border-color); border-top-color: var(--activity-fg); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

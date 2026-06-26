@@ -421,6 +421,11 @@ export type ChatEvent = {
   // ADR-0002: cursor tracking for gap/stale detection.
   seq?: number;
   epoch?: string;
+  // ADR-0004: CanResume is set on the crash done event
+  // (stopReason='agent_crash_unrecoverable') to indicate whether the agent
+  // supports session/resume, so the client can show a reconnect button vs. a
+  // "start new session" prompt (VAL-RESUME-005).
+  canResume?: boolean;
   // ADR-0005: input_locked dedicated event fields (VAL-PTY-004).
   // Holder is the clientId of the client holding the per-pane input soft
   // lock. TTL is the remaining lock duration in milliseconds.
@@ -482,6 +487,14 @@ export type ChatSessionInfo = {
   costAmount?: number;
   costCurrency?: string;
   debugEntries?: ChatDebugEntry[];
+  // ADR-0004: crash recovery state. When the agent subprocess crashes
+  // unrecoverably (stop_reason='agent_crash_unrecoverable'), `crashed` is set
+  // so the UI can show an actionable reconnect/restart prompt. `canResume`
+  // reflects whether the agent supports session/resume (so the UI offers a
+  // "Reconnect" button vs. a "Start new session" prompt). Both are cleared
+  // when the session is successfully resumed (session_resumed event).
+  crashed?: boolean;
+  canResume?: boolean;
 };
 
 export type HistorySessionRecord = {

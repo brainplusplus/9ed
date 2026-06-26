@@ -662,16 +662,24 @@ export function useChatSession(): UseChatSessionResult {
           }
           // ADR-0004: session resumed — refresh state, don't show as error.
           if (data.type === 'session_resumed') {
-            // ADR-0002: reset cursor on epoch change (session resumed = new epoch).
-            cursorRef.current.delete(sessionId);
+            // ADR-0002: reset cursor on epoch change (session resumed = new
+            // epoch). Seed the cursor with the fresh epoch carried by the
+            // event so the subsequent fetch_timeline is not treated as stale
+            // and so the client tracks the new timeline.
+            const newEpoch = data.epoch ?? '';
+            cursorRef.current.set(sessionId, { seq: 0, epoch: newEpoch });
+            // ADR-0004 / VAL-RESUME-005: the agent recovered — clear any
+            // prior crash flag so the reconnect prompt disappears.
+            useChatStore.getState().clearCrashState(sessionId);
             appendSessionDebugRef.current(sessionId, {
               source: 'ws',
               level: 'info',
-              message: 'agent session resumed after crash',
+              message: `agent session resumed after crash (epoch=${newEpoch.slice(0, 8) || 'none'})`,
             });
             // ADR-0002: re-fetch the timeline tail to catch up on events that
-            // occurred during the epoch change (VAL-CATCHUP-005).
-            conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: 0 }));
+            // occurred during the epoch change (VAL-CATCHUP-005). Pass the new
+            // epoch so the server treats the cursor as current.
+            conn.ws?.send(JSON.stringify({ type: 'fetch_timeline', afterSeq: 0, epoch: newEpoch }));
             void refreshSessionStateRef.current(sessionId);
             return;
           }
