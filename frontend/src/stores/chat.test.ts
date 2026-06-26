@@ -664,7 +664,7 @@ describe('parseSnapshotJson', () => {
   });
 });
 
-describe('restartActiveSessionForBrowser toggle queueing', () => {
+describe('hard restart path removed (VAL-SOFT-TOGGLE-008)', () => {
   beforeEach(() => {
     resetChatStore();
     vi.clearAllMocks();
@@ -673,141 +673,109 @@ describe('restartActiveSessionForBrowser toggle queueing', () => {
     getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
     saveChatMessage.mockResolvedValue(undefined);
     deleteChatHistory.mockResolvedValue(undefined);
-    // Give the active project an open browser tab so the browser can be
-    // enabled for the session.
-    window.sessionStorage.clear();
-    useWorkspaceStore.setState({
-      projects: [],
-      activeProjectId: null,
-      activePanel: 'explorer',
-      sidebarVisible: true,
-      terminalVisible: true,
-      chatVisible: true,
-      browserVisible: false,
-      showPicker: false,
-    });
-    useWorkspaceStore.getState().addProject('/repo', 'repo');
-    const project = useWorkspaceStore.getState().projects[0];
-    useWorkspaceStore.getState().addBrowserTab(project.id, 'tab-1');
   });
 
-  it('queues the toggle when session is connecting instead of silently failing', async () => {
-    useChatStore.setState({
-      sessions: [{
-        id: 'live-busy',
-        recordId: 'record-busy',
-        agentId: 'opencode',
-        title: 'Busy',
-        messages: [],
-        status: 'connecting',
-        createdAt: 1,
-        kind: 'live',
-        workDir: '/repo',
-        acpSessionId: 'acp-busy',
-      }],
-      activeSessionId: 'live-busy',
-    });
-
-    const ok = await useChatStore.getState().restartActiveSessionForBrowser(true);
-
-    // Queued, not silently dropped.
-    expect(ok).toBe(true);
-    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-busy');
-    expect(session?.pendingBrowserToggle).toBe(true);
-    // useActiveBrowser reflects the user's intent immediately.
-    expect(useChatStore.getState().useActiveBrowser).toBe(true);
-    // No resume request fired yet (session is still connecting).
-    expect(resumeChatSession).not.toHaveBeenCalled();
+  it('does not expose restartActiveSessionForBrowser on the store (removed)', () => {
+    // The hard-restart method was removed once soft toggle became the primary
+    // path. Asserting it is gone prevents accidental reintroduction.
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser)
+      .toBeUndefined();
   });
 
-  it('queues the toggle when session is streaming instead of silently failing', async () => {
+  it('done event does not set pendingBrowserToggle (field removed)', () => {
     useChatStore.setState({
       sessions: [{
-        id: 'live-stream',
-        recordId: 'record-stream',
+        id: 'live-done',
+        recordId: 'record-done',
         agentId: 'opencode',
-        title: 'Streaming',
+        title: 'Done',
         messages: [],
         status: 'streaming',
         createdAt: 1,
         kind: 'live',
         workDir: '/repo',
-        acpSessionId: 'acp-stream',
+        acpSessionId: 'acp-done',
       }],
-      activeSessionId: 'live-stream',
+      activeSessionId: 'live-done',
     });
 
-    const ok = await useChatStore.getState().restartActiveSessionForBrowser(true);
+    useChatStore.getState().handleChatEvent('live-done', { type: 'done' });
 
-    expect(ok).toBe(true);
-    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-stream');
-    expect(session?.pendingBrowserToggle).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-done');
+    // The field is gone entirely; accessing it yields undefined.
+    expect((session as unknown as Record<string, unknown>)?.pendingBrowserToggle).toBeUndefined();
+    // No resume/hard-restart fired.
     expect(resumeChatSession).not.toHaveBeenCalled();
   });
+});
 
-  it('applies the queued toggle when the session returns to idle via done event', async () => {
+describe('hard restart path removed (VAL-SOFT-TOGGLE-008/009 cleanup)', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+  });
+
+  it('does not expose restartActiveSessionForBrowser on the store', () => {
+    // The deprecated hard-restart method has been removed; soft toggle
+    // (setBrowserEnabled) is the only browser-toggle entry point.
+    expect((useChatStore.getState() as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
+  });
+
+  it('ChatSessionInfo no longer carries a pendingBrowserToggle field', () => {
+    // After enabling the browser via the soft path, the session object must
+    // not contain the removed pendingBrowserToggle queueing field.
     useChatStore.setState({
       sessions: [{
-        id: 'live-queue',
-        recordId: 'record-queue',
+        id: 'live-1',
+        recordId: 'record-1',
         agentId: 'opencode',
-        title: 'Queue',
+        title: 'Cleanup',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: false,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: false,
+    });
+
+    return useChatStore.getState().setBrowserEnabled(true).then(() => {
+      const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1')!;
+      expect(session).toBeDefined();
+      expect((session as Record<string, unknown>).pendingBrowserToggle).toBeUndefined();
+      expect(session.useActiveBrowser).toBe(true);
+    });
+  });
+
+  it('done event no longer references pendingBrowserToggle (no deferred restart)', () => {
+    // A done event on a session must not leave any pendingBrowserToggle
+    // artifact behind (the deferred-restart queueing path is gone).
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-done',
+        recordId: 'record-done',
+        agentId: 'opencode',
+        title: 'Done cleanup',
         messages: [],
         status: 'streaming',
         createdAt: 1,
         kind: 'live',
         workDir: '/repo',
-        acpSessionId: 'acp-queue',
-        pendingBrowserToggle: true,
+        acpSessionId: 'acp-done',
+        useActiveBrowser: true,
       }],
-      activeSessionId: 'live-queue',
+      activeSessionId: 'live-done',
       useActiveBrowser: true,
     });
 
-    resumeChatSession.mockResolvedValue({
-      id: 'live-queue-2',
-      mode: 'acp',
-      acpSessionId: 'acp-queue',
-      workDir: '/repo',
-    });
+    useChatStore.getState().handleChatEvent('live-done', { type: 'done', stopReason: 'end_turn' });
 
-    // Session finishes its turn -> done event clears pendingBrowserToggle and
-    // fires the deferred restart via a microtask.
-    useChatStore.getState().handleChatEvent('live-queue', { type: 'done' });
-
-    // The deferred restart is scheduled with queueMicrotask; flush it.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(resumeChatSession).toHaveBeenCalledTimes(1);
-    // pendingBrowserToggle is cleared once the done event fires.
-    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-queue-2');
-    expect(session?.pendingBrowserToggle).toBeNull();
-  });
-
-  it('does not queue when session is in error state', async () => {
-    useChatStore.setState({
-      sessions: [{
-        id: 'live-err',
-        recordId: 'record-err',
-        agentId: 'opencode',
-        title: 'Error',
-        messages: [],
-        status: 'error',
-        createdAt: 1,
-        kind: 'live',
-        workDir: '/repo',
-        acpSessionId: 'acp-err',
-      }],
-      activeSessionId: 'live-err',
-    });
-
-    const ok = await useChatStore.getState().restartActiveSessionForBrowser(true);
-
-    expect(ok).toBe(false);
-    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-err');
-    expect(session?.pendingBrowserToggle).toBeUndefined();
-    expect(resumeChatSession).not.toHaveBeenCalled();
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-done')!;
+    expect(session.status).toBe('idle');
+    expect((session as Record<string, unknown>).pendingBrowserToggle).toBeUndefined();
   });
 });
 
@@ -910,8 +878,9 @@ describe('setBrowserEnabled soft WS toggle (primary path)', () => {
     expect(useChatStore.getState().useActiveBrowser).toBe(true);
     const session = useChatStore.getState().sessions.find((s) => s.id === 'live-busy');
     expect(session?.useActiveBrowser).toBe(true);
-    // Soft toggle works while busy — no hard-restart queue needed.
-    expect(session?.pendingBrowserToggle).toBeUndefined();
+    // Soft toggle works while busy — no hard-restart queue needed. The
+    // pendingBrowserToggle field has been removed entirely.
+    expect((session as unknown as Record<string, unknown>)?.pendingBrowserToggle).toBeUndefined();
     // Session status unchanged (still streaming).
     expect(session?.status).toBe('streaming');
     expect(resumeChatSession).not.toHaveBeenCalled();

@@ -233,7 +233,6 @@ export function useChatSession(): UseChatSessionResult {
   const setSessionStalled = useChatStore((s) => s.setSessionStalled);
   const appendSessionDebug = useChatStore((s) => s.appendSessionDebug);
   const setSessionKind = useChatStore((s) => s.setSessionKind);
-  const restartActiveSessionForBrowser = useChatStore((s) => s.restartActiveSessionForBrowser);
   const finalizeAssistantMessage = useChatStore((s) => s.finalizeAssistantMessage);
   const dequeueMessage = useChatStore((s) => s.dequeueMessage);
   const refreshSessionState = useChatStore((s) => s.refreshSessionState);
@@ -260,8 +259,6 @@ export function useChatSession(): UseChatSessionResult {
   const sendQueuedRef = useRef<((queued: QueuedMessage) => Promise<void>) | null>(null);
   const setSessionKindRef = useRef(setSessionKind);
   setSessionKindRef.current = setSessionKind;
-  const restartActiveSessionForBrowserRef = useRef(restartActiveSessionForBrowser);
-  restartActiveSessionForBrowserRef.current = restartActiveSessionForBrowser;
   const appendSessionDebugRef = useRef(appendSessionDebug);
   appendSessionDebugRef.current = appendSessionDebug;
   const upgradedRef = useRef<Set<string>>(new Set());
@@ -777,13 +774,33 @@ export function useChatSession(): UseChatSessionResult {
               browserToolRecoveryRef.current.set(sessionId, now);
               const state = useChatStore.getState();
               const session = state.sessions.find((s) => s.id === sessionId);
-              // Only restart if the session that emitted the invalid browser
-              // tool event is still the active one AND still has the browser
-              // enabled. restartActiveSessionForBrowser operates on the active
-              // session, so restarting when the user has switched sessions
-              // would restart the wrong session.
+              // Soft-toggle recovery (VAL-SOFT-TOGGLE-009): when the agent
+              // emits an invalid/unknown browser tool event, the backend has
+              // likely lost its UseActiveBrowser state. Instead of a hard
+              // restart (which destroys the ACP subprocess and causes seconds
+              // of disconnection), re-send the lightweight `set_use_active_browser`
+              // WebSocket message to re-sync the backend's in-memory flag.
+              // Only recover if the session that emitted the event is still
+              // the active one AND still has the browser enabled, so we never
+              // re-enable browser MCP on a session the user has moved away
+              // from or explicitly disabled.
               if (session?.useActiveBrowser && state.activeSessionId === sessionId) {
-                void restartActiveSessionForBrowserRef.current(true, true);
+                const recoveryProject = useWorkspaceStore.getState().projects.find(
+                  (project) => normalizeWorkDir(project.path) === normalizeWorkDir(session.workDir),
+                );
+                const recoveryTabId = recoveryProject?.activeBrowserTabId ?? null;
+                if (conn.ws && conn.ws.readyState === WebSocket.OPEN) {
+                  conn.ws.send(JSON.stringify({
+                    type: 'set_use_active_browser',
+                    useActiveBrowser: true && !!recoveryTabId,
+                    activeBrowserTabId: recoveryTabId,
+                  }));
+                  appendSessionDebugRef.current(sessionId, {
+                    source: 'client',
+                    level: 'info',
+                    message: 'invalid browser tool event: re-sent set_use_active_browser (soft recovery)',
+                  });
+                }
               }
             }
           }

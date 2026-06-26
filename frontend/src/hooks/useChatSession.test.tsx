@@ -669,9 +669,9 @@ describe('useChatSession', () => {
     expect(session.debugEntries?.some((entry) => entry.message.includes('client backpressure') && entry.message.includes('re-fetching timeline'))).toBe(true);
   });
 
-  // --- Browser tool recovery (only restarts the still-active session) ---
+  // --- Browser tool recovery (soft-toggle, not hard restart) ---
 
-  it('restarts the active browser session on an invalid browser tool event', async () => {
+  it('soft-toggles (re-sends set_use_active_browser WS) on an invalid browser tool event instead of hard-restarting', async () => {
     const socket = createMockSocket();
     getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
     createChatWebSocket.mockReturnValue(socket);
@@ -694,10 +694,6 @@ describe('useChatSession', () => {
       useActiveBrowser: true,
     });
 
-    // Install the spy before rendering so the hook's ref captures the spied
-    // method (the ref is assigned from the store selector during render).
-    const restartSpy = vi.spyOn(useChatStore.getState(), 'restartActiveSessionForBrowser').mockResolvedValue(true);
-
     await act(async () => {
       root.render(<Harness />);
       await Promise.resolve();
@@ -712,6 +708,11 @@ describe('useChatSession', () => {
       socket.onopen?.(new Event('open'));
       await Promise.resolve();
     });
+
+    // Snapshot the send calls emitted by the WS-open handshake (e.g. the
+    // set_use_active_terminal / set_use_active_browser WS effects) so we can
+    // isolate the recovery message sent in response to the invalid-tool event.
+    const preRecoverySendCount = socket.send.mock.calls.length;
 
     await act(async () => {
       socket.onmessage?.({
@@ -728,11 +729,24 @@ describe('useChatSession', () => {
       await Promise.resolve();
     });
 
-    expect(restartSpy).toHaveBeenCalledWith(true, true);
-    restartSpy.mockRestore();
+    // Recovery must re-send the soft `set_use_active_browser` WS message —
+    // NOT call restartActiveSessionForBrowser (which was removed).
+    const recoveryMessages = socket.send.mock.calls
+      .slice(preRecoverySendCount)
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string; useActiveBrowser?: boolean })
+      .filter((msg) => msg.type === 'set_use_active_browser');
+    expect(recoveryMessages.length).toBeGreaterThanOrEqual(1);
+    expect(recoveryMessages.some((msg) => msg.useActiveBrowser === true || msg.useActiveBrowser === false)).toBe(true);
+
+    // The removed hard-restart method must not exist on the store.
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
+
+    // Debug entry should record the soft recovery.
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.debugEntries?.some((entry) => entry.message.includes('soft recovery'))).toBe(true);
   });
 
-  it('does not restart when the session that emitted the invalid browser tool event is no longer active', async () => {
+  it('does not soft-recover when the session that emitted the invalid browser tool event is no longer active', async () => {
     const socket = createMockSocket();
     getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
     createChatWebSocket.mockReturnValue(socket);
@@ -770,11 +784,13 @@ describe('useChatSession', () => {
       await Promise.resolve();
     });
 
-    const restartSpy = vi.spyOn(useChatStore.getState(), 'restartActiveSessionForBrowser').mockResolvedValue(true);
-
     // The user switched to a different session before the invalid-tool event
-    // arrived, so restarting would target the wrong session.
+    // arrived, so re-enabling browser MCP would target the wrong session.
     useChatStore.setState({ activeSessionId: 'other-session' });
+
+    // Snapshot the send count AFTER the open-handshake control messages so we
+    // only count recovery messages emitted by the invalid-tool event.
+    const preRecoverySendCount = socket.send.mock.calls.length;
 
     await act(async () => {
       socket.onmessage?.({
@@ -791,8 +807,16 @@ describe('useChatSession', () => {
       await Promise.resolve();
     });
 
-    expect(restartSpy).not.toHaveBeenCalled();
-    restartSpy.mockRestore();
+    // No soft-recovery `set_use_active_browser` message should be sent for a
+    // session that is no longer the active one.
+    const recoveryMessages = socket.send.mock.calls
+      .slice(preRecoverySendCount)
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string })
+      .filter((msg) => msg.type === 'set_use_active_browser');
+    expect(recoveryMessages).toHaveLength(0);
+
+    // The removed hard-restart method must not exist on the store.
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
   });
 
   // --- ADR-0006: exponential reconnect backoff ---

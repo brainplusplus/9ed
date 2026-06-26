@@ -125,8 +125,11 @@ describe('ACP crash recovery / reconnect resilience (ADR-0004 / VAL-RESUME-005)'
     expect(session?.canResume).toBe(false);
   });
 
-  it('crash done does not fire a deferred pendingBrowserToggle restart (session is dead)', () => {
-    // Queue a pending browser toggle while busy.
+  it('crash done does not throw and leaves no pendingBrowserToggle (hard-restart path removed)', () => {
+    // The deferred pendingBrowserToggle / restartActiveSessionForBrowser
+    // queueing path has been removed (soft toggle is now the primary path).
+    // A crash done event must still work and must not leave any stale
+    // pendingBrowserToggle field on the session.
     useChatStore.setState({
       sessions: [{
         id: 'live-crash',
@@ -139,22 +142,22 @@ describe('ACP crash recovery / reconnect resilience (ADR-0004 / VAL-RESUME-005)'
         kind: 'live',
         workDir: '/repo',
         acpSessionId: 'acp-crash',
-        pendingBrowserToggle: true,
       }],
       activeSessionId: 'live-crash',
     });
-    const restartSpy = vi.spyOn(useChatStore.getState(), 'restartActiveSessionForBrowser').mockResolvedValue(true);
 
-    useChatStore.getState().handleChatEvent('live-crash', {
+    expect(() => useChatStore.getState().handleChatEvent('live-crash', {
       type: 'done',
       stopReason: 'agent_crash_unrecoverable',
       canResume: true,
-    });
+    })).not.toThrow();
 
-    // The deferred browser-toggle restart must NOT fire on an unrecoverable
-    // crash — the session is dead and must be recovered explicitly.
-    expect(restartSpy).not.toHaveBeenCalled();
-    restartSpy.mockRestore();
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-crash');
+    expect(session?.crashed).toBe(true);
+    // The removed pendingBrowserToggle field must not be present.
+    expect((session as unknown as Record<string, unknown>)?.pendingBrowserToggle).toBeUndefined();
+    // The hard-restart method must no longer exist on the store.
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
   });
 
   it('resumeSession surfaces HTTP failure via lastRestoreError', async () => {

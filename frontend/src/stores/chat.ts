@@ -133,7 +133,6 @@ type ChatState = {
   toggleUseActiveTerminal: () => void;
   setUseActiveTerminal: (enabled: boolean) => void;
   restartActiveSessionForTerminal: (enabled: boolean) => Promise<boolean>;
-  restartActiveSessionForBrowser: (enabled: boolean, force?: boolean) => Promise<boolean>;
   setActiveTerminalId: (id: string | null) => void;
 };
 
@@ -648,26 +647,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // silently returning to idle. A normal done (end_turn, etc.)
             // clears any prior crash flag.
             const isCrash = event.stopReason === 'agent_crash_unrecoverable';
-            // When a browser toggle was queued while the session was busy
-            // (restartActiveSessionForBrowser deferred it via
-            // pendingBrowserToggle), fire the deferred restart now that the
-            // session has returned to idle. Skip this on an unrecoverable
-            // crash — the session is dead and must be recovered via the
-            // reconnect button, not a silent browser-toggle restart.
-            if (!isCrash && s.pendingBrowserToggle !== undefined && s.pendingBrowserToggle !== null) {
-              const desired = s.pendingBrowserToggle;
-              // Defer so the state update (status -> idle) commits first;
-              // restartActiveSessionForBrowser re-checks status itself.
-              queueMicrotask(() => {
-                get().restartActiveSessionForBrowser(desired, true);
-              });
-            }
             return {
               ...s,
               messages: msgs,
               status: 'idle',
               pendingPermission: undefined,
-              pendingBrowserToggle: null,
               crashed: isCrash,
               canResume: isCrash ? Boolean(event.canResume) : false,
               lastEventAt: eventAt,
@@ -1385,113 +1369,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return request;
   },
 
-  restartActiveSessionForBrowser: async (enabled, force = false) => {
-    const state = get();
-    const sessionId = state.activeSessionId;
-    const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
-    if (!session) return false;
-    if (!session.agentId || !session.workDir) return false;
-
-    // If the session is busy (streaming/connecting) or waiting on a permission
-    // prompt, we cannot hard-restart it right now. Instead of silently dropping
-    // the toggle, queue the desired state on the session so it applies once the
-    // session returns to idle (handled in the 'done' event handler). This keeps
-    // the frontend toggle responsive and avoids lost user intent. A session in
-    // 'error' state is not retried — the user must resolve the error first.
-    const isBusy = session.status === 'connecting' || session.status === 'streaming' || !!session.pendingPermission;
-    if (isBusy) {
-      set((current) => ({
-        useActiveBrowser: enabled,
-        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, pendingBrowserToggle: enabled })),
-      }));
-      return true;
-    }
-    // status === 'error' (or any other non-idle, non-busy state) cannot be
-    // restarted; surface the failure rather than silently swallowing the toggle.
-    if (session.status !== 'idle') return false;
-
-    const previousEnabled = state.useActiveBrowser;
-    const browserState = activeBrowserStateForWorkDir(state, session.workDir);
-    const browserEnabledForSession = enabled && !!browserState.tabId;
-    const terminalEnabled = session.useActiveTerminal ?? shouldEnableTerminalForAgent(state);
-    const terminalId = terminalEnabled ? (session.terminalId ?? state.activeTerminalId ?? undefined) : undefined;
-    set({ useActiveBrowser: enabled });
-
-    if (!force && !!session.useActiveBrowser === browserEnabledForSession) return true;
-
-    const recordId = session.recordId ?? session.id;
-    const requestKey = `${recordId}\x00browser:${browserEnabledForSession ? 'on' : 'off'}:${browserState.tabId ?? 'none'}`;
-    const existingRequest = resumeRequests.get(requestKey);
-    if (existingRequest) return existingRequest;
-
-    const request = (async () => {
-      set((current) => ({
-        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'connecting', kind: 'archived' })),
-      }));
-
-      const resumed = await resumeChatSession(
-        recordId,
-        session.agentId,
-        session.workDir!,
-        session.acpSessionId,
-        terminalEnabled,
-        terminalId,
-        browserEnabledForSession,
-        browserEnabledForSession ? browserState.tabId : undefined,
-      );
-      if (!('id' in resumed)) {
-        throw new Error(resumed.resumeError ?? 'Restart failed');
-      }
-
-      const liveSessionId = resumed.id;
-      const acpSessionId = resumed.acpSessionId ?? session.acpSessionId;
-      const nextWorkDir = resumed.workDir ?? session.workDir;
-      const nextSelection = browserEnabledForSession ? browserState.selection : null;
-      const nextSelectionCapture = browserEnabledForSession ? browserState.selectionCapture : null;
-      set((current) => {
-        const idsToRemove = new Set([session.id, liveSessionId]);
-        const nextSession: ChatSessionInfo = {
-          ...session,
-          id: liveSessionId,
-          recordId,
-          status: 'connecting',
-          kind: 'resumable',
-          workDir: nextWorkDir,
-          acpSessionId,
-          useActiveTerminal: terminalEnabled,
-          terminalId,
-          useActiveBrowser: browserEnabledForSession,
-          browserSelection: nextSelection,
-          browserSelectionMode: browserState.selectionMode,
-          browserSelectionCapture: nextSelectionCapture,
-        };
-        const nextSessions = [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
-        const nextState = { ...current, sessions: nextSessions };
-        return {
-          sessions: nextSessions,
-          ...(current.activeSessionId === session.id ? activateSessionState(nextState, liveSessionId) : {}),
-          lastRestoreError: null,
-        };
-      });
-      return true;
-    })().catch((err) => {
-      set((current) => ({
-        useActiveBrowser: previousEnabled,
-        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'error' })),
-        lastRestoreError: {
-          sessionId: recordId,
-          reason: err instanceof Error ? err.message : 'Restart request failed',
-        },
-      }));
-      return false;
-    }).finally(() => {
-      resumeRequests.delete(requestKey);
-    });
-
-    resumeRequests.set(requestKey, request);
-    return request;
-  },
-
   // Unified browser-toggle entry point used by both the chat config bar
   // (AgentPicker) and the BrowserPanel / inspect-mode UI. Uses the SOFT
   // WebSocket toggle as the primary path: it updates `useActiveBrowser` in
@@ -1507,9 +1384,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // the ACP adapter (activeMCPServersForOptions appends browserServers
   // unconditionally). UseActiveBrowser only controls prompt decoration and
   // debug logging — so no restart is needed to enable/disable browser MCP.
-  //
-  // restartActiveSessionForBrowser is retained as a deprecated/internal
-  // method but is NOT called here. It remains for potential future use.
   setBrowserEnabled: async (enabled) => {
     const state = get();
     const sessionId = state.activeSessionId;
@@ -1533,11 +1407,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sessions: updateSession(current.sessions, session.id, (s) => ({
           ...s,
           useActiveBrowser: enabled,
-          // Clear any stale deferred hard-restart toggle: the soft path
-          // applies the user's intent immediately, so there is nothing to
-          // defer. (pendingBrowserToggle was only used by the deprecated
-          // restartActiveSessionForBrowser queueing path.)
-          pendingBrowserToggle: undefined,
         })),
       }));
 
