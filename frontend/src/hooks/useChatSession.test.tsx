@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatSession } from './useChatSession';
 import { useChatStore } from '../stores/chat';
+import { useWorkspaceStore } from '../stores/workspace';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -77,6 +78,18 @@ function resetChatStore() {
     activeTerminalId: null,
     restoring: false,
     lastRestoreError: null,
+  });
+  // Ensure no browser tab is associated with the /repo project so the
+  // browser WS effect treats browserTabId as null by default.
+  useWorkspaceStore.setState({
+    projects: [],
+    activeProjectId: null,
+    activePanel: 'explorer',
+    sidebarVisible: true,
+    terminalVisible: true,
+    chatVisible: true,
+    browserVisible: false,
+    showPicker: false,
   });
 }
 
@@ -826,5 +839,60 @@ describe('useChatSession', () => {
 
     // socket2 should have been created for the reconnect attempt
     expect(createChatWebSocket).toHaveBeenCalledTimes(2);
+  });
+
+  // --- VAL-SOFTTOGGLE-002: WS effect warns when browser toggle is on but no tab is open ---
+
+  it('emits a warn debug entry when useActiveBrowser is on but no browser tab is open', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    // Session has the browser toggle ON, but no project/tab exists for /repo
+    // (resetChatStore leaves useWorkspaceStore with empty projects).
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'No tab',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: true,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: true,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    // The WS effect sends useActiveBrowser:false (no tab) and surfaces a warn.
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_browser',
+      useActiveBrowser: false,
+      activeBrowserTabId: null,
+    }));
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    const warn = session?.debugEntries?.find(
+      (entry) => entry.level === 'warn' && entry.source === 'client' && entry.message.includes('no browser tab is open'),
+    );
+    expect(warn).toBeTruthy();
   });
 });

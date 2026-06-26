@@ -990,4 +990,63 @@ describe('setBrowserEnabled soft WS toggle (primary path)', () => {
     expect(session?.acpSessionId).toBe('acp-preserved');
     expect(session?.status).toBe('idle');
   });
+
+  it('warns via session debug entry when enabling with no browser tab open (VAL-SOFTTOGGLE-002)', async () => {
+    // Remove the browser tab the shared beforeEach added so no tab is open.
+    const project = useWorkspaceStore.getState().projects[0];
+    useWorkspaceStore.getState().removeBrowserTab(project.id, 'tab-1');
+
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-idle', status: 'idle', useActiveBrowser: false })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+    });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(true);
+
+    expect(ok).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    expect(session?.useActiveBrowser).toBe(true);
+    // Toggle is NOT blocked; a transient warn debug entry is surfaced.
+    const warn = session?.debugEntries?.find(
+      (e) => e.level === 'warn' && e.source === 'client' && e.message.includes('no browser tab is open'),
+    );
+    expect(warn).toBeTruthy();
+  });
+
+  it('does not warn when enabling with a browser tab open', async () => {
+    // Shared beforeEach already added 'tab-1' to the /repo project.
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-idle', status: 'idle', useActiveBrowser: false })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+    });
+
+    await useChatStore.getState().setBrowserEnabled(true);
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    const warn = session?.debugEntries?.find(
+      (e) => e.level === 'warn' && e.message.includes('no browser tab is open'),
+    );
+    expect(warn).toBeUndefined();
+  });
+
+  it('does not warn when toggling off even with no browser tab open', async () => {
+    const project = useWorkspaceStore.getState().projects[0];
+    useWorkspaceStore.getState().removeBrowserTab(project.id, 'tab-1');
+
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-on', status: 'idle', useActiveBrowser: true })],
+      activeSessionId: 'live-on',
+      useActiveBrowser: true,
+    });
+
+    await useChatStore.getState().setBrowserEnabled(false);
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-on');
+    const warn = session?.debugEntries?.find(
+      (e) => e.level === 'warn' && e.message.includes('no browser tab is open'),
+    );
+    expect(warn).toBeUndefined();
+  });
 });

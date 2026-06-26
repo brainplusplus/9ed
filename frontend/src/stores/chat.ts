@@ -1540,6 +1540,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
           pendingBrowserToggle: undefined,
         })),
       }));
+
+      // Immediate UI feedback (VAL-SOFTTOGGLE-002): when the user enables
+      // browser MCP but no browser tab is open for the session's project,
+      // surface a transient warn-level debug entry on the session so the
+      // silent disable (the WS effect sends useActiveBrowser:false until a
+      // tab is opened) is visible in the debug panel. We do NOT block the
+      // toggle — the user may open a tab later, at which point the WS effect
+      // re-evaluates and re-enables browser MCP. This mirrors the warning
+      // emitted by the WS effect in useChatSession.ts, but at the store level
+      // so feedback is instant and testable independent of WS timing.
+      if (enabled && !activeBrowserTabForWorkDir(session.workDir)) {
+        const sid = session.id;
+        set((current) => ({
+          sessions: updateSession(current.sessions, sid, (s) => ({
+            ...s,
+            debugEntries: appendDebugEntry(s.debugEntries, {
+              source: 'client',
+              level: 'warn',
+              message: 'Browser toggle is on but no browser tab is open; browser MCP disabled until a tab is opened.',
+            }),
+          })),
+        }));
+      }
     }
 
     return true;

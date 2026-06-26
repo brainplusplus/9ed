@@ -189,3 +189,63 @@ describe('ChatPanel new chat', () => {
     expect(useChatStore.getState().activeSessionId).toBe('live-auto');
   });
 });
+
+describe('ChatPanel browser soft toggle (VAL-SOFTTOGGLE-001)', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStores();
+    getChatAgents.mockResolvedValue([{ id: 'opencode', label: 'OpenCode', available: true, configFound: true, activeModel: '', models: [], providers: [] }]);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('does not show a connecting spinner when the browser toggle is flipped on', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Idle',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: false,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: false,
+    });
+
+    await act(async () => {
+      root.render(<ChatPanel />);
+      await Promise.resolve();
+    });
+
+    // No connecting spinner while idle.
+    expect(container.querySelectorAll('.chat-connecting-spinner').length).toBe(0);
+
+    await act(async () => {
+      await useChatStore.getState().setBrowserEnabled(true);
+    });
+
+    // VAL-SOFTTOGGLE-001: the soft toggle must NOT introduce a connecting
+    // status or spinner — it is an instant in-memory state change.
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.status).toBe('idle');
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(container.querySelectorAll('.chat-connecting-spinner').length).toBe(0);
+  });
+});
