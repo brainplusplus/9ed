@@ -114,11 +114,10 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   const autoApprove = useChatStore((s) => s.autoApprove);
   const toggleAutoApprove = useChatStore((s) => s.toggleAutoApprove);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
-  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
+  const setBrowserEnabled = useChatStore((s) => s.setBrowserEnabled);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
   const toggleUseActiveTerminal = useChatStore((s) => s.toggleUseActiveTerminal);
   const restartActiveSessionForTerminal = useChatStore((s) => s.restartActiveSessionForTerminal);
-  const restartActiveSessionForBrowser = useChatStore((s) => s.restartActiveSessionForBrowser);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
@@ -159,15 +158,13 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   };
 
   const handleBrowserToggle = () => {
+    // Unified path: route to hard-restart when an idle/busy session exists,
+    // otherwise fall back to a frontend-only soft toggle. This is the same
+    // code path used by BrowserPanel/useInspectMode, preventing state desync
+    // when toggling from different UI locations.
+    if (activeSession && !browserToggleEnabled) return;
     const enabled = !(activeSession?.useActiveBrowser ?? useActiveBrowser);
-    if (!activeSession) {
-      if (enabled !== useActiveBrowser) {
-        toggleUseActiveBrowser();
-      }
-      return;
-    }
-    if (!browserToggleEnabled) return;
-    void restartActiveSessionForBrowser(enabled);
+    void setBrowserEnabled(enabled);
   };
 
   const handleTerminalToggle = () => {

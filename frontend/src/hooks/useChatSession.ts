@@ -769,7 +769,12 @@ export function useChatSession(): UseChatSessionResult {
               browserToolRecoveryRef.current.set(sessionId, now);
               const state = useChatStore.getState();
               const session = state.sessions.find((s) => s.id === sessionId);
-              if (session?.useActiveBrowser) {
+              // Only restart if the session that emitted the invalid browser
+              // tool event is still the active one AND still has the browser
+              // enabled. restartActiveSessionForBrowser operates on the active
+              // session, so restarting when the user has switched sessions
+              // would restart the wrong session.
+              if (session?.useActiveBrowser && state.activeSessionId === sessionId) {
                 void restartActiveSessionForBrowserRef.current(true, true);
               }
             }

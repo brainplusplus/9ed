@@ -486,7 +486,7 @@ export function useInspectMode(
   const keyboardElementRef = useRef<Element | null>(null);
 
   const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
-  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
+  const setBrowserEnabled = useChatStore((s) => s.setBrowserEnabled);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
 
   const clearSelection = useCallback(() => {
@@ -687,7 +687,7 @@ export function useInspectMode(
           keyboardElementRef.current = el;
 
           if (!useActiveBrowser) {
-            toggleUseActiveBrowser();
+            void setBrowserEnabled(true);
           }
 
           // Keep the highlight on selected element
@@ -725,7 +725,7 @@ export function useInspectMode(
                 const selection = createFullSelection(activeTab, navTarget, frameWindow);
                 setBrowserSelection(selection);
                 setSelectedElement(navTarget);
-                if (!useActiveBrowser) toggleUseActiveBrowser();
+                if (!useActiveBrowser) void setBrowserEnabled(true);
                 updateHighlight(navTarget);
                 setInspectMode(false);
               }
@@ -796,7 +796,7 @@ export function useInspectMode(
     iframeRef,
     stageRef,
     setBrowserSelection,
-    toggleUseActiveBrowser,
+    setBrowserEnabled,
     useActiveBrowser,
   ]);
 

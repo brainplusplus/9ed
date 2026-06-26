@@ -109,6 +109,19 @@ type ChatState = {
   toggleIncludeIgnored: () => void;
   toggleAutoApprove: () => void;
   toggleUseActiveBrowser: () => void;
+  /**
+   * Unified browser-toggle entry point used by every UI surface that toggles
+   * the active-browser MCP bridge (AgentPicker/ConfigBar, BrowserPanel,
+   * useInspectMode). It routes to a hard restart when there is an active,
+   * idle chat session (so the backend sessionOpts stay in sync), and falls
+   * back to a frontend-only soft toggle when no session exists or the session
+   * cannot be restarted right now. This eliminates the prior state desync
+   * where some UI paths soft-toggled while others hard-restarted.
+   *
+   * Returns true if the requested state was applied (or queued), false if it
+   * could not be applied.
+   */
+  setBrowserEnabled: (enabled: boolean) => Promise<boolean>;
   setBrowserSelection: (selection: BrowserElementSelection | null) => void;
   setBrowserSelectionMode: (mode: BrowserSelectionMode) => void;
   setBrowserSelectionCapture: (capture: BrowserElementCapture | null) => void;
@@ -1444,6 +1457,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     resumeRequests.set(requestKey, request);
     return request;
+  },
+
+  // Unified browser-toggle entry point used by both the chat config bar
+  // (AgentPicker) and the BrowserPanel / inspect-mode UI. It routes to the
+  // hard-restart path (restartActiveSessionForBrowser) when an active chat
+  // session exists that can be restarted or queued, and falls back to a
+  // frontend-only soft toggle when there is no session or the session is in
+  // a non-restartable state (e.g. 'error'). This keeps both UI surfaces
+  // consistent and prevents the state desync that occurred when one path
+  // hard-restarted while the other only flipped frontend state.
+  setBrowserEnabled: async (enabled) => {
+    const state = get();
+    const sessionId = state.activeSessionId;
+    const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
+    if (session && (session.status === 'idle' || session.status === 'connecting' || session.status === 'streaming')) {
+      const ok = await get().restartActiveSessionForBrowser(enabled);
+      if (ok) return true;
+      // Hard restart refused (e.g. session moved to an error state); fall
+      // through to a soft toggle so the user's intent is still reflected.
+    }
+    set({ useActiveBrowser: enabled });
+    return true;
   },
 
   setActiveTerminalId: (id) =>

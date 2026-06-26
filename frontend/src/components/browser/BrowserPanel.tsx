@@ -385,7 +385,7 @@ export function BrowserPanel() {
   const setBrowserSelectionCapture = useChatStore((s) => s.setBrowserSelectionCapture);
   const setBrowserSelection = useChatStore((s) => s.setBrowserSelection);
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
-  const toggleUseActiveBrowser = useChatStore((s) => s.toggleUseActiveBrowser);
+  const setBrowserEnabled = useChatStore((s) => s.setBrowserEnabled);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
   const addBrowserTab = useWorkspaceStore((s) => s.addBrowserTab);
@@ -1294,7 +1294,7 @@ export function BrowserPanel() {
       if (commitSelection) {
         setBrowserSelection(selection);
         if (!useActiveBrowser) {
-          toggleUseActiveBrowser();
+          void setBrowserEnabled(true);
         }
         if (inspectMode) {
           toggleInspectMode();
@@ -1312,7 +1312,7 @@ export function BrowserPanel() {
         void runRemoteInspect(pending, false);
       }
     }
-  }, [activeTabId, inspectMode, remoteOverlayScale.x, remoteOverlayScale.y, setBrowserSelection, toggleInspectMode, toggleUseActiveBrowser, useActiveBrowser]);
+  }, [activeTabId, inspectMode, remoteOverlayScale.x, remoteOverlayScale.y, setBrowserSelection, setBrowserEnabled, toggleInspectMode, useActiveBrowser]);
 
   const queueRemoteInspect = useCallback((point: { x: number; y: number }, commitSelection = false) => {
     if (commitSelection) {
@@ -1557,7 +1557,7 @@ export function BrowserPanel() {
       event.preventDefault();
       setBrowserSelection(selection);
       if (!useActiveBrowser) {
-        toggleUseActiveBrowser();
+        void setBrowserEnabled(true);
       }
       toggleInspectMode();
       return;
@@ -1572,7 +1572,7 @@ export function BrowserPanel() {
     if (!direction) return;
     event.preventDefault();
     void runRemoteNavigate(direction);
-  }, [activeTabId, bumpWebRTCFrame, inspectMode, remoteHoverSelection, remoteSelectedCandidate, runRemoteNavigate, setBrowserSelection, toggleInspectMode, toggleUseActiveBrowser, useActiveBrowser]);
+  }, [activeTabId, bumpWebRTCFrame, inspectMode, remoteHoverSelection, remoteSelectedCandidate, runRemoteNavigate, setBrowserEnabled, setBrowserSelection, toggleInspectMode, useActiveBrowser]);
 
   const handleWebRTCPaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
     if (inspectMode || !activeTabId) return;

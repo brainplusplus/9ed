@@ -810,3 +810,127 @@ describe('restartActiveSessionForBrowser toggle queueing', () => {
     expect(resumeChatSession).not.toHaveBeenCalled();
   });
 });
+
+describe('setBrowserEnabled unified routing', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+    getChatHistory.mockResolvedValue([]);
+    getChatSessionMessages.mockResolvedValue([]);
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+    saveChatMessage.mockResolvedValue(undefined);
+    deleteChatHistory.mockResolvedValue(undefined);
+    window.sessionStorage.clear();
+    useWorkspaceStore.setState({
+      projects: [],
+      activeProjectId: null,
+      activePanel: 'explorer',
+      sidebarVisible: true,
+      terminalVisible: true,
+      chatVisible: true,
+      browserVisible: false,
+      showPicker: false,
+    });
+    useWorkspaceStore.getState().addProject('/repo', 'repo');
+    const project = useWorkspaceStore.getState().projects[0];
+    useWorkspaceStore.getState().addBrowserTab(project.id, 'tab-1');
+  });
+
+  it('soft-toggles frontend state when there is no active session', async () => {
+    useChatStore.setState({ sessions: [], activeSessionId: null, useActiveBrowser: false });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(true);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    // No hard restart fired.
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('hard-restarts when an idle active session exists', async () => {
+    resumeChatSession.mockResolvedValue({
+      id: 'live-restart',
+      mode: 'acp',
+      acpSessionId: 'acp-r',
+      workDir: '/repo',
+    });
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-idle',
+        recordId: 'record-idle',
+        agentId: 'opencode',
+        title: 'Idle',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-idle',
+      }],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+    });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(true);
+
+    expect(ok).toBe(true);
+    // Hard restart path fired the resume request.
+    expect(resumeChatSession).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+  });
+
+  it('queues the toggle when the active session is busy (streaming)', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-busy',
+        recordId: 'record-busy',
+        agentId: 'opencode',
+        title: 'Busy',
+        messages: [],
+        status: 'streaming',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-busy',
+      }],
+      activeSessionId: 'live-busy',
+      useActiveBrowser: false,
+    });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(true);
+
+    // Queued via the hard-restart path; not a silent soft toggle.
+    expect(ok).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-busy');
+    expect(session?.pendingBrowserToggle).toBe(true);
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('falls back to soft toggle when active session is in error state', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-err',
+        recordId: 'record-err',
+        agentId: 'opencode',
+        title: 'Error',
+        messages: [],
+        status: 'error',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-err',
+      }],
+      activeSessionId: 'live-err',
+      useActiveBrowser: false,
+    });
+
+    const ok = await useChatStore.getState().setBrowserEnabled(true);
+
+    // Error state cannot be hard-restarted; fall back to soft toggle so the
+    // user's intent is still captured in frontend state.
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+});

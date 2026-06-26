@@ -656,6 +656,132 @@ describe('useChatSession', () => {
     expect(session.debugEntries?.some((entry) => entry.message.includes('client backpressure') && entry.message.includes('re-fetching timeline'))).toBe(true);
   });
 
+  // --- Browser tool recovery (only restarts the still-active session) ---
+
+  it('restarts the active browser session on an invalid browser tool event', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Browser recovery',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: true,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: true,
+    });
+
+    // Install the spy before rendering so the hook's ref captures the spied
+    // method (the ref is assigned from the store selector during render).
+    const restartSpy = vi.spyOn(useChatStore.getState(), 'restartActiveSessionForBrowser').mockResolvedValue(true);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'tool_call',
+          toolTitle: 'browser_navigate',
+          toolKind: 'unknown tool: browser_navigate',
+          toolStatus: 'error',
+          error: 'tool not found',
+          seq: 1,
+        }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(restartSpy).toHaveBeenCalledWith(true, true);
+    restartSpy.mockRestore();
+  });
+
+  it('does not restart when the session that emitted the invalid browser tool event is no longer active', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Stale browser recovery',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: true,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: true,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    const restartSpy = vi.spyOn(useChatStore.getState(), 'restartActiveSessionForBrowser').mockResolvedValue(true);
+
+    // The user switched to a different session before the invalid-tool event
+    // arrived, so restarting would target the wrong session.
+    useChatStore.setState({ activeSessionId: 'other-session' });
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'tool_call',
+          toolTitle: 'browser_navigate',
+          toolKind: 'unknown tool: browser_navigate',
+          toolStatus: 'error',
+          error: 'tool not found',
+          seq: 1,
+        }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(restartSpy).not.toHaveBeenCalled();
+    restartSpy.mockRestore();
+  });
+
   // --- ADR-0006: exponential reconnect backoff ---
 
   it('uses exponential backoff delays for reconnection', async () => {
