@@ -472,6 +472,11 @@ export type ChatSessionInfo = {
   commands?: SlashCommandInfo[];
   configOptions?: ConfigOptionInfo[];
   pendingPermission?: PendingPermission;
+  // Queued browser toggle request: when the user toggles the browser MCP while
+  // the session is busy (streaming/connecting), the desired enabled state is
+  // stored here and applied once the session returns to idle. Null/undefined
+  // means no pending toggle.
+  pendingBrowserToggle?: boolean | null;
   contextWindow?: number;
   contextUsed?: number;
   costAmount?: number;

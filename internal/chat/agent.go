@@ -586,6 +586,12 @@ func (s *acpSession) SetAutoApprove(enabled bool) {
 func (s *acpSession) SetUseActiveTerminal(enabled bool, terminalID string) {
 	s.useActiveTerminal = enabled
 	s.activeTerminalID = strings.TrimSpace(terminalID)
+	// Keep sessionOpts in sync so tryRestart() recreates the adapter with the
+	// current active-tool state instead of stale options captured at session
+	// creation/resume time. Without this, an auto-restart after a toggle would
+	// silently drop the terminal MCP server.
+	s.sessionOpts.UseActiveTerminal = enabled
+	s.sessionOpts.ActiveTerminalID = s.activeTerminalID
 }
 
 func (s *acpSession) UseActiveTerminalEnabled() bool {
@@ -599,6 +605,12 @@ func (s *acpSession) ActiveTerminalID() string {
 func (s *acpSession) SetUseActiveBrowser(enabled bool, tabID string) {
 	s.useActiveBrowser = enabled
 	s.activeBrowserTabID = strings.TrimSpace(tabID)
+	// Keep sessionOpts in sync so tryRestart() recreates the adapter with the
+	// current active-tool state instead of stale options captured at session
+	// creation/resume time. Without this, an auto-restart after a toggle would
+	// silently drop the browser MCP server.
+	s.sessionOpts.UseActiveBrowser = enabled
+	s.sessionOpts.ActiveBrowserTabID = s.activeBrowserTabID
 }
 
 func (s *acpSession) UseActiveBrowserEnabled() bool {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatStore } from './chat';
+import { useWorkspaceStore } from './workspace';
 import { registerTerminal, unregisterTerminal } from '../terminalRegistry';
 import type { HistoryMessageRecord, HistorySessionRecord } from '../types';
 import { replayTranscriptToMessages, parseSnapshotJson } from './chat';
@@ -12,6 +13,7 @@ const saveChatMessage = vi.fn();
 const deleteChatHistory = vi.fn();
 const getRestorableChatSession = vi.fn();
 const resumeChatSession = vi.fn();
+const saveRecentProject = vi.fn();
 
 vi.mock('../api', () => ({
   getChatHistory: () => getChatHistory(),
@@ -21,6 +23,7 @@ vi.mock('../api', () => ({
   deleteChatHistory: (sessionId: string) => deleteChatHistory(sessionId),
   getRestorableChatSession: (...args: unknown[]) => getRestorableChatSession(...args),
   resumeChatSession: (...args: unknown[]) => resumeChatSession(...args),
+  saveRecentProject: (...args: unknown[]) => saveRecentProject(...args),
 }));
 
 function resetChatStore() {
@@ -658,5 +661,152 @@ describe('parseSnapshotJson', () => {
 
   it('returns undefined for non-array JSON', () => {
     expect(parseSnapshotJson('{"key":"value"}')).toBeUndefined();
+  });
+});
+
+describe('restartActiveSessionForBrowser toggle queueing', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+    getChatHistory.mockResolvedValue([]);
+    getChatSessionMessages.mockResolvedValue([]);
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+    saveChatMessage.mockResolvedValue(undefined);
+    deleteChatHistory.mockResolvedValue(undefined);
+    // Give the active project an open browser tab so the browser can be
+    // enabled for the session.
+    window.sessionStorage.clear();
+    useWorkspaceStore.setState({
+      projects: [],
+      activeProjectId: null,
+      activePanel: 'explorer',
+      sidebarVisible: true,
+      terminalVisible: true,
+      chatVisible: true,
+      browserVisible: false,
+      showPicker: false,
+    });
+    useWorkspaceStore.getState().addProject('/repo', 'repo');
+    const project = useWorkspaceStore.getState().projects[0];
+    useWorkspaceStore.getState().addBrowserTab(project.id, 'tab-1');
+  });
+
+  it('queues the toggle when session is connecting instead of silently failing', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-busy',
+        recordId: 'record-busy',
+        agentId: 'opencode',
+        title: 'Busy',
+        messages: [],
+        status: 'connecting',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-busy',
+      }],
+      activeSessionId: 'live-busy',
+    });
+
+    const ok = await useChatStore.getState().restartActiveSessionForBrowser(true);
+
+    // Queued, not silently dropped.
+    expect(ok).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-busy');
+    expect(session?.pendingBrowserToggle).toBe(true);
+    // useActiveBrowser reflects the user's intent immediately.
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    // No resume request fired yet (session is still connecting).
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('queues the toggle when session is streaming instead of silently failing', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-stream',
+        recordId: 'record-stream',
+        agentId: 'opencode',
+        title: 'Streaming',
+        messages: [],
+        status: 'streaming',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-stream',
+      }],
+      activeSessionId: 'live-stream',
+    });
+
+    const ok = await useChatStore.getState().restartActiveSessionForBrowser(true);
+
+    expect(ok).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-stream');
+    expect(session?.pendingBrowserToggle).toBe(true);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('applies the queued toggle when the session returns to idle via done event', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-queue',
+        recordId: 'record-queue',
+        agentId: 'opencode',
+        title: 'Queue',
+        messages: [],
+        status: 'streaming',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-queue',
+        pendingBrowserToggle: true,
+      }],
+      activeSessionId: 'live-queue',
+      useActiveBrowser: true,
+    });
+
+    resumeChatSession.mockResolvedValue({
+      id: 'live-queue-2',
+      mode: 'acp',
+      acpSessionId: 'acp-queue',
+      workDir: '/repo',
+    });
+
+    // Session finishes its turn -> done event clears pendingBrowserToggle and
+    // fires the deferred restart via a microtask.
+    useChatStore.getState().handleChatEvent('live-queue', { type: 'done' });
+
+    // The deferred restart is scheduled with queueMicrotask; flush it.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(resumeChatSession).toHaveBeenCalledTimes(1);
+    // pendingBrowserToggle is cleared once the done event fires.
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-queue-2');
+    expect(session?.pendingBrowserToggle).toBeNull();
+  });
+
+  it('does not queue when session is in error state', async () => {
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-err',
+        recordId: 'record-err',
+        agentId: 'opencode',
+        title: 'Error',
+        messages: [],
+        status: 'error',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-err',
+      }],
+      activeSessionId: 'live-err',
+    });
+
+    const ok = await useChatStore.getState().restartActiveSessionForBrowser(true);
+
+    expect(ok).toBe(false);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-err');
+    expect(session?.pendingBrowserToggle).toBeUndefined();
+    expect(resumeChatSession).not.toHaveBeenCalled();
   });
 });

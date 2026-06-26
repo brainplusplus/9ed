@@ -621,8 +621,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
               },
             };
 
-          case 'done':
-            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined, lastEventAt: eventAt, stalled: false };
+          case 'done': {
+            // When a browser toggle was queued while the session was busy
+            // (restartActiveSessionForBrowser deferred it via
+            // pendingBrowserToggle), fire the deferred restart now that the
+            // session has returned to idle.
+            if (s.pendingBrowserToggle !== undefined && s.pendingBrowserToggle !== null) {
+              const desired = s.pendingBrowserToggle;
+              // Defer so the state update (status -> idle) commits first;
+              // restartActiveSessionForBrowser re-checks status itself.
+              queueMicrotask(() => {
+                get().restartActiveSessionForBrowser(desired, true);
+              });
+            }
+            return { ...s, messages: msgs, status: 'idle', pendingPermission: undefined, pendingBrowserToggle: null, lastEventAt: eventAt, stalled: false };
+          }
 
           case 'terminal_execute': {
             if (event.terminalCommand) {
@@ -1330,8 +1343,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const state = get();
     const sessionId = state.activeSessionId;
     const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
-    if (!session || session.status !== 'idle' || session.pendingPermission) return false;
+    if (!session) return false;
     if (!session.agentId || !session.workDir) return false;
+
+    // If the session is busy (streaming/connecting) or waiting on a permission
+    // prompt, we cannot hard-restart it right now. Instead of silently dropping
+    // the toggle, queue the desired state on the session so it applies once the
+    // session returns to idle (handled in the 'done' event handler). This keeps
+    // the frontend toggle responsive and avoids lost user intent. A session in
+    // 'error' state is not retried — the user must resolve the error first.
+    const isBusy = session.status === 'connecting' || session.status === 'streaming' || !!session.pendingPermission;
+    if (isBusy) {
+      set((current) => ({
+        useActiveBrowser: enabled,
+        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, pendingBrowserToggle: enabled })),
+      }));
+      return true;
+    }
+    // status === 'error' (or any other non-idle, non-busy state) cannot be
+    // restarted; surface the failure rather than silently swallowing the toggle.
+    if (session.status !== 'idle') return false;
 
     const previousEnabled = state.useActiveBrowser;
     const browserState = activeBrowserStateForWorkDir(state, session.workDir);

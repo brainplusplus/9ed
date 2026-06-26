@@ -1013,17 +1013,29 @@ export function useChatSession(): UseChatSessionResult {
   useEffect(() => {
     const project = projects.find((entry) => normalizeWorkDir(entry.path) === normalizeWorkDir(activeSession?.workDir));
     const browserTabId = project?.activeBrowserTabId ?? null;
+    const desiredUseActiveBrowser = activeSession?.useActiveBrowser ?? useActiveBrowser;
     const payload = {
       type: 'set_use_active_browser',
-      useActiveBrowser: (activeSession?.useActiveBrowser ?? useActiveBrowser) && !!browserTabId,
+      useActiveBrowser: desiredUseActiveBrowser && !!browserTabId,
       activeBrowserTabId: browserTabId,
     };
     const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
     if (controlKey === lastBrowserControlKeyRef.current) return;
+    // Warn (once per control-key change) when the user has the browser toggle
+    // ON but no browser tab is open: we still send useActiveBrowser:false so
+    // the backend stays consistent, but surface a user-visible debug warning
+    // so the silent disable is no longer invisible.
+    if (desiredUseActiveBrowser && !browserTabId && activeSessionId) {
+      appendSessionDebugRef.current(activeSessionId, {
+        source: 'client',
+        level: 'warn',
+        message: 'Browser toggle is on but no browser tab is open; browser MCP disabled until a tab is opened.',
+      });
+    }
     if (sendControl(payload)) {
       lastBrowserControlKeyRef.current = controlKey;
     }
-  }, [activeSession?.useActiveBrowser, activeSession?.workDir, connected, projects, sendControl, useActiveBrowser]);
+  }, [activeSession?.useActiveBrowser, activeSession?.workDir, activeSessionId, connected, projects, sendControl, useActiveBrowser]);
 
   const cancel = useCallback(() => {
     if (!activeSessionId) return;
