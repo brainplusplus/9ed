@@ -115,3 +115,57 @@ func TestSetUseActiveTerminalTrimsTerminalID(t *testing.T) {
 		t.Errorf("s.sessionOpts.ActiveTerminalID = %q, want %q (trimmed)", s.sessionOpts.ActiveTerminalID, "term-y")
 	}
 }
+
+// TestSoftSettersPreserveBothSessionOpts verifies VAL-HARDEN-009:
+// soft-enabling browser AND terminal leaves sessionOpts with both flags and
+// resource IDs. Neither flag is dropped solely because the other was also set,
+// and toggling one side must not clobber the other.
+func TestSoftSettersPreserveBothSessionOpts(t *testing.T) {
+	s := &acpSession{sessionOpts: SessionOptions{}}
+
+	s.SetUseActiveBrowser(true, "tab-both")
+	s.SetUseActiveTerminal(true, "term-both")
+
+	if !s.sessionOpts.UseActiveBrowser {
+		t.Errorf("sessionOpts.UseActiveBrowser = false, want true after both soft setters")
+	}
+	if s.sessionOpts.ActiveBrowserTabID != "tab-both" {
+		t.Errorf("sessionOpts.ActiveBrowserTabID = %q, want %q", s.sessionOpts.ActiveBrowserTabID, "tab-both")
+	}
+	if !s.sessionOpts.UseActiveTerminal {
+		t.Errorf("sessionOpts.UseActiveTerminal = false, want true after both soft setters")
+	}
+	if s.sessionOpts.ActiveTerminalID != "term-both" {
+		t.Errorf("sessionOpts.ActiveTerminalID = %q, want %q", s.sessionOpts.ActiveTerminalID, "term-both")
+	}
+
+	// Live fields must match sessionOpts so crash paths reading either source
+	// agree.
+	if !s.useActiveBrowser || s.activeBrowserTabID != "tab-both" {
+		t.Errorf("live browser state = (%v, %q), want (true, tab-both)", s.useActiveBrowser, s.activeBrowserTabID)
+	}
+	if !s.useActiveTerminal || s.activeTerminalID != "term-both" {
+		t.Errorf("live terminal state = (%v, %q), want (true, term-both)", s.useActiveTerminal, s.activeTerminalID)
+	}
+
+	// Turning browser off must not drop the terminal soft flag / id.
+	s.SetUseActiveBrowser(false, "")
+	if s.sessionOpts.UseActiveBrowser {
+		t.Errorf("sessionOpts.UseActiveBrowser = true, want false after browser off")
+	}
+	if !s.sessionOpts.UseActiveTerminal || s.sessionOpts.ActiveTerminalID != "term-both" {
+		t.Errorf("terminal sessionOpts clobbered by browser off: UseActiveTerminal=%v ActiveTerminalID=%q",
+			s.sessionOpts.UseActiveTerminal, s.sessionOpts.ActiveTerminalID)
+	}
+
+	// Re-enable browser, then turn terminal off; browser must remain.
+	s.SetUseActiveBrowser(true, "tab-both")
+	s.SetUseActiveTerminal(false, "")
+	if s.sessionOpts.UseActiveTerminal {
+		t.Errorf("sessionOpts.UseActiveTerminal = true, want false after terminal off")
+	}
+	if !s.sessionOpts.UseActiveBrowser || s.sessionOpts.ActiveBrowserTabID != "tab-both" {
+		t.Errorf("browser sessionOpts clobbered by terminal off: UseActiveBrowser=%v ActiveBrowserTabID=%q",
+			s.sessionOpts.UseActiveBrowser, s.sessionOpts.ActiveBrowserTabID)
+	}
+}

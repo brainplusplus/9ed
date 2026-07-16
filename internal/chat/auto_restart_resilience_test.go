@@ -123,6 +123,141 @@ func TestTryRestartPreservesBrowserMCP(t *testing.T) {
 	}
 }
 
+// TestTryRestartPreservesBothSoftSessionOpts verifies VAL-HARDEN-009:
+// after soft-enabling both browser and terminal, tryRestart recreates the
+// adapter from sessionOpts that still carry both flags (+ resource IDs).
+// Neither soft flag is dropped solely because the other was also set.
+func TestTryRestartPreservesBothSoftSessionOpts(t *testing.T) {
+	browserSrv := acp.MCPServer{Name: "test-browser-mcp-dual", Command: "echo"}
+	terminalSrv := acp.MCPServer{Name: "test-terminal-mcp-dual", Command: "echo"}
+	SetActiveBrowserMCPServers([]acp.MCPServer{browserSrv})
+	SetActiveTerminalMCPServers([]acp.MCPServer{terminalSrv})
+	t.Cleanup(func() {
+		SetActiveBrowserMCPServers(nil)
+		SetActiveTerminalMCPServers(nil)
+	})
+
+	fakeAdapter := &resumeSucceedFakeAdapter{sessionID: "acp-sess-dual"}
+
+	var capturedCfgs []acp.AdapterConfig
+	var cfgMu sync.Mutex
+	origCtor := newAdapterForRestart
+	newAdapterForRestart = func(_ context.Context, _ string, cfg acp.AdapterConfig) (acp.Adapter, error) {
+		cfgMu.Lock()
+		servers := make([]acp.MCPServer, len(cfg.MCPServers))
+		copy(servers, cfg.MCPServers)
+		capturedCfgs = append(capturedCfgs, acp.AdapterConfig{
+			Command:    cfg.Command,
+			WorkDir:    cfg.WorkDir,
+			MCPServers: servers,
+		})
+		cfgMu.Unlock()
+		return fakeAdapter, nil
+	}
+	t.Cleanup(func() { newAdapterForRestart = origCtor })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Start with neither soft flag so the dual soft setters must be what
+	// populates sessionOpts (mirrors real WS control path before a crash).
+	s := &acpSession{
+		id:        "live-dual",
+		agentID:   "opencode",
+		workDir:   "/repo",
+		sessionID: "acp-sess-dual",
+		ctx:       ctx,
+		events:    make(chan ChatEvent, 64),
+		done:      make(chan struct{}),
+		adapter:   &resumeSucceedFakeAdapter{sessionID: "acp-sess-dual"},
+		agentDesc: AgentDescriptor{
+			ID:          "opencode",
+			Command:     "opencode",
+			ACPCommand:  "opencode",
+			Available:   true,
+			SupportsACP: true,
+		},
+		sessionOpts: SessionOptions{
+			AutoRestart:      true,
+			MaxRetries:       1,
+			RestartBaseDelay: 1 * time.Millisecond,
+			RestartMaxDelay:  5 * time.Millisecond,
+		},
+		autoRestart:      true,
+		maxRetries:       1,
+		restartBaseDelay: 1 * time.Millisecond,
+		restartMaxDelay:  5 * time.Millisecond,
+	}
+
+	s.SetUseActiveBrowser(true, "tab-dual")
+	s.SetUseActiveTerminal(true, "term-dual")
+
+	if !s.sessionOpts.UseActiveBrowser || s.sessionOpts.ActiveBrowserTabID != "tab-dual" {
+		t.Fatalf("pre-restart browser sessionOpts not synced: UseActiveBrowser=%v tab=%q",
+			s.sessionOpts.UseActiveBrowser, s.sessionOpts.ActiveBrowserTabID)
+	}
+	if !s.sessionOpts.UseActiveTerminal || s.sessionOpts.ActiveTerminalID != "term-dual" {
+		t.Fatalf("pre-restart terminal sessionOpts not synced: UseActiveTerminal=%v id=%q",
+			s.sessionOpts.UseActiveTerminal, s.sessionOpts.ActiveTerminalID)
+	}
+
+	if !s.tryRestart() {
+		t.Fatalf("tryRestart returned false; expected successful restart with both soft flags")
+	}
+
+	// sessionOpts must still carry both soft flags after restart - tryRestart
+	// must not rebuild from a partial snapshot that keeps only one side.
+	if !s.sessionOpts.UseActiveBrowser {
+		t.Errorf("post-restart sessionOpts.UseActiveBrowser = false, want true")
+	}
+	if s.sessionOpts.ActiveBrowserTabID != "tab-dual" {
+		t.Errorf("post-restart sessionOpts.ActiveBrowserTabID = %q, want %q", s.sessionOpts.ActiveBrowserTabID, "tab-dual")
+	}
+	if !s.sessionOpts.UseActiveTerminal {
+		t.Errorf("post-restart sessionOpts.UseActiveTerminal = false, want true")
+	}
+	if s.sessionOpts.ActiveTerminalID != "term-dual" {
+		t.Errorf("post-restart sessionOpts.ActiveTerminalID = %q, want %q", s.sessionOpts.ActiveTerminalID, "term-dual")
+	}
+	if !s.useActiveBrowser || s.activeBrowserTabID != "tab-dual" {
+		t.Errorf("post-restart live browser state = (%v, %q), want (true, tab-dual)", s.useActiveBrowser, s.activeBrowserTabID)
+	}
+	if !s.useActiveTerminal || s.activeTerminalID != "term-dual" {
+		t.Errorf("post-restart live terminal state = (%v, %q), want (true, term-dual)", s.useActiveTerminal, s.activeTerminalID)
+	}
+
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	if len(capturedCfgs) == 0 {
+		t.Fatalf("expected newAdapterForRestart to be invoked at least once")
+	}
+	cfg := capturedCfgs[len(capturedCfgs)-1]
+	foundBrowser, foundTerminal := false, false
+	for _, srv := range cfg.MCPServers {
+		if srv.Name == "test-browser-mcp-dual" {
+			foundBrowser = true
+		}
+		if srv.Name == "test-terminal-mcp-dual" {
+			foundTerminal = true
+		}
+	}
+	if !foundBrowser {
+		t.Errorf("expected rebuilt adapter config to include browser MCP server")
+	}
+	if !foundTerminal {
+		t.Errorf("expected rebuilt adapter config to include terminal MCP server")
+	}
+
+	select {
+	case evt := <-s.events:
+		if evt.Type != "session_resumed" {
+			t.Errorf("expected session_resumed event, got %q", evt.Type)
+		}
+	case <-time.After(time.Second):
+		t.Error("timed out waiting for session_resumed event")
+	}
+}
+
 // TestTryRestartPersistentErrorEmitsCrash verifies that when the adapter crash
 // is a persistent error (not retryable), tryRestart returns false WITHOUT
 // consuming a restart attempt, and the caller (processNotifications) is
