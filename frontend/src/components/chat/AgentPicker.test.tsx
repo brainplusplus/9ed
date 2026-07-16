@@ -214,6 +214,84 @@ describe('ConfigBar browser toggle', () => {
     // VAL-SOFTTOGGLE-001: no connecting status introduced by the toggle.
     expect(session?.status).toBe('idle');
   });
+
+  function getBrowserToggle(): { label: HTMLLabelElement; checkbox: HTMLInputElement } {
+    const labels = Array.from(container.querySelectorAll<HTMLLabelElement>('.chat-config-toggle-mcp'));
+    const label = labels.find((el) => el.textContent?.includes('Browser'));
+    expect(label).toBeTruthy();
+    const checkbox = label!.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(checkbox).not.toBeNull();
+    return { label: label!, checkbox: checkbox! };
+  }
+
+  it('allows soft browser toggle while streaming (VAL-HARDEN-006 soft-safe)', async () => {
+    resetConfigStores({ withTab: true });
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-1', status: 'streaming', useActiveBrowser: false })],
+      activeSessionId: 'live-1',
+      useActiveBrowser: false,
+    });
+
+    act(() => {
+      root.render(<ConfigBar connected />);
+    });
+
+    const { checkbox, label } = getBrowserToggle();
+    // Soft path must not hard-restart-gate on streaming status.
+    expect(checkbox.disabled).toBe(false);
+    expect(label.title.toLowerCase()).not.toMatch(/restart|reconnect|ready/);
+
+    await act(async () => {
+      checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(session?.status).toBe('streaming');
+    expect(session?.kind).toBe('live');
+  });
+
+  it('allows soft browser disable while streaming when already enabled (VAL-HARDEN-006)', async () => {
+    resetConfigStores({ withTab: true });
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-1', status: 'streaming', useActiveBrowser: true })],
+      activeSessionId: 'live-1',
+      useActiveBrowser: true,
+    });
+
+    act(() => {
+      root.render(<ConfigBar connected />);
+    });
+
+    const { checkbox } = getBrowserToggle();
+    expect(checkbox.disabled).toBe(false);
+    expect(checkbox.checked).toBe(true);
+
+    await act(async () => {
+      checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.useActiveBrowser).toBe(false);
+    expect(session?.status).toBe('streaming');
+  });
+
+  it('still disables browser enable when no browser tab is open (legitimate gate)', () => {
+    resetConfigStores({ withTab: false });
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-1', status: 'streaming', useActiveBrowser: false })],
+      activeSessionId: 'live-1',
+      useActiveBrowser: false,
+    });
+
+    act(() => {
+      root.render(<ConfigBar connected />);
+    });
+
+    const { checkbox, label } = getBrowserToggle();
+    expect(checkbox.disabled).toBe(true);
+    expect(label.title.toLowerCase()).toMatch(/no browser tab/i);
+  });
 });
 
 describe('ConfigBar terminal soft toggle (VAL-HARDEN-001/007)', () => {

@@ -738,12 +738,145 @@ describe('useChatSession', () => {
     expect(recoveryMessages.length).toBeGreaterThanOrEqual(1);
     expect(recoveryMessages.some((msg) => msg.useActiveBrowser === true || msg.useActiveBrowser === false)).toBe(true);
 
-    // The removed hard-restart method must not exist on the store.
+    // The removed hard-restart method must not exist on the store (VAL-HARDEN-008).
     expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForTerminal).toBeUndefined();
 
-    // Debug entry should record the soft recovery.
+    // Session remains live — recovery must not flip to connecting/archived.
     const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.status).not.toBe('connecting');
+    expect(session?.kind).toBe('live');
+    // Debug entry should record the soft recovery.
     expect(session?.debugEntries?.some((entry) => entry.message.includes('soft recovery'))).toBe(true);
+  });
+
+  it('soft-recovers invalid browser tool while session is streaming (VAL-HARDEN-008)', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Streaming browser recovery',
+        messages: [],
+        status: 'streaming',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: true,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: true,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    const preRecoverySendCount = socket.send.mock.calls.length;
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'tool_call',
+          toolTitle: 'active_browser_navigate',
+          toolKind: 'browser',
+          toolStatus: 'error',
+          error: 'invalid tool: active_browser_navigate',
+          seq: 1,
+        }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+
+    const recoveryMessages = socket.send.mock.calls
+      .slice(preRecoverySendCount)
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string; useActiveBrowser?: boolean })
+      .filter((msg) => msg.type === 'set_use_active_browser');
+    expect(recoveryMessages.length).toBeGreaterThanOrEqual(1);
+
+    // Hard-restart helpers must stay undefined / not reintroduced on this path.
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForTerminal).toBeUndefined();
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    // Soft recovery must not force connecting/archived hard-restart UX.
+    expect(session?.status).not.toBe('connecting');
+    expect(session?.kind).toBe('live');
+  });
+
+  it('does not soft-recover when session browser intent is OFF (VAL-HARDEN-008 guard)', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'No browser intent recovery',
+        messages: [],
+        status: 'streaming',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: false,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: false,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    const preRecoverySendCount = socket.send.mock.calls.length;
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'tool_call',
+          toolTitle: 'browser_navigate',
+          toolKind: 'unknown tool: browser_navigate',
+          toolStatus: 'error',
+          error: 'tool not found',
+          seq: 1,
+        }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+
+    const recoveryMessages = socket.send.mock.calls
+      .slice(preRecoverySendCount)
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string })
+      .filter((msg) => msg.type === 'set_use_active_browser');
+    expect(recoveryMessages).toHaveLength(0);
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForBrowser).toBeUndefined();
   });
 
   it('does not soft-recover when the session that emitted the invalid browser tool event is no longer active', async () => {

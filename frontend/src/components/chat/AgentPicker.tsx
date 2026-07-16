@@ -105,7 +105,9 @@ type ConfigBarProps = {
   busyLabel?: string | null;
 };
 
-export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, busy = false, busyLabel = null }: ConfigBarProps) {
+// `connected` remains in the public prop API (ChatPanel still passes it) but soft
+// MCP toggles are no longer gated on WS connection / idle hard-restart safety.
+export function ConfigBar({ setConfigOption, setAutoApprove, connected: _connected = false, busy = false, busyLabel = null }: ConfigBarProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const activeProject = useWorkspaceStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null);
@@ -126,18 +128,23 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   const activeBrowserTabId = activeProject?.activeBrowserTabId ?? null;
   const browserCurrentEnabled = !!(activeSession?.useActiveBrowser ?? useActiveBrowser);
   const terminalCurrentEnabled = !!(activeSession?.useActiveTerminal ?? (useActiveTerminal && !!activeTerminalId));
-  const browserCanRestart = !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
-  const browserCanEnable = browserCanRestart && !!activeBrowserTabId;
-  const browserToggleEnabled = !activeSession ? true : (browserCurrentEnabled ? browserCanRestart : browserCanEnable);
+  // Soft browser toggle: safe while idle or streaming (VAL-HARDEN-006).
+  // Soft WS path does not require status==='idle' (legacy hard-restart gate).
+  // Legitimate gates only: pending permission, and open tab required to enable.
+  const browserSoftSafe = !activeSession || !activeSession.pendingPermission;
+  const browserCanEnable = browserSoftSafe && !!activeBrowserTabId;
+  const browserToggleEnabled = !activeSession
+    ? true
+    : (browserCurrentEnabled ? browserSoftSafe : browserCanEnable);
   const browserToggleTitle = browserCurrentEnabled
-    ? (browserCanRestart
+    ? (browserSoftSafe
       ? 'Enable or disable the active browser MCP bridge for this agent session'
-      : 'Browser can be toggled when the agent is Ready')
+      : 'Browser can be toggled when no permission is pending')
     : (!activeBrowserTabId
       ? 'No browser tab active in this project'
       : (browserCanEnable
         ? 'Enable or disable the active browser MCP bridge for this agent session'
-        : 'Browser can be toggled when the agent is Ready'));
+        : 'Browser can be toggled when no permission is pending'));
   // Soft terminal toggle: safe while idle or streaming (VAL-HARDEN-001/007).
   // Only requires a bound active terminal id; never restarts the session.
   const terminalToggleEnabled = !!activeTerminalId && (!activeSession || !activeSession.pendingPermission);
