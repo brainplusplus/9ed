@@ -1179,3 +1179,339 @@ describe('setTerminalEnabled soft WS toggle (primary path) VAL-HARDEN-001', () =
     expect(typeof useChatStore.getState().setTerminalEnabled).toBe('function');
   });
 });
+
+describe('concurrent browser+terminal soft toggles preserve both intents (VAL-HARDEN-004)', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+    getChatHistory.mockResolvedValue([]);
+    getChatSessionMessages.mockResolvedValue([]);
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+    saveChatMessage.mockResolvedValue(undefined);
+    deleteChatHistory.mockResolvedValue(undefined);
+    window.sessionStorage.clear();
+    useWorkspaceStore.setState({
+      projects: [{
+        id: 'proj-repo',
+        path: '/repo',
+        name: 'repo',
+        openFiles: [],
+        activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
+        terminalSessions: [],
+        browserTabIds: ['tab-1'],
+        activeBrowserTabId: 'tab-1',
+      }],
+      activeProjectId: 'proj-repo',
+    });
+  });
+
+  function makeSession(overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo {
+    return {
+      id: 'live-idle',
+      recordId: 'record-idle',
+      agentId: 'opencode',
+      title: 'Idle',
+      messages: [],
+      status: 'idle',
+      createdAt: 1,
+      kind: 'live' as const,
+      workDir: '/repo',
+      acpSessionId: 'acp-idle',
+      ...overrides,
+    };
+  }
+
+  it('sequential dual toggles leave both store and session intents true', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ useActiveBrowser: false, useActiveTerminal: false })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    await useChatStore.getState().setBrowserEnabled(true);
+    await useChatStore.getState().setTerminalEnabled(true);
+
+    const state = useChatStore.getState();
+    const session = state.sessions.find((s) => s.id === 'live-idle');
+    expect(state.useActiveBrowser).toBe(true);
+    expect(state.useActiveTerminal).toBe(true);
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.status).toBe('idle');
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('concurrent dual toggles do not lose either intent (no snapshot freeze)', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ useActiveBrowser: false, useActiveTerminal: false })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: false,
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    await Promise.all([
+      useChatStore.getState().setBrowserEnabled(true),
+      useChatStore.getState().setTerminalEnabled(true),
+    ]);
+
+    const state = useChatStore.getState();
+    const session = state.sessions.find((s) => s.id === 'live-idle');
+    expect(state.useActiveBrowser).toBe(true);
+    expect(state.useActiveTerminal).toBe(true);
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.status).toBe('idle');
+    expect(session?.kind).toBe('live');
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('concurrent dual toggles OFF both apply after starting ON', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ useActiveBrowser: true, useActiveTerminal: true, terminalId: 'term-1' })],
+      activeSessionId: 'live-idle',
+      useActiveBrowser: true,
+      useActiveTerminal: true,
+      activeTerminalId: 'term-1',
+    });
+
+    await Promise.all([
+      useChatStore.getState().setBrowserEnabled(false),
+      useChatStore.getState().setTerminalEnabled(false),
+    ]);
+
+    const state = useChatStore.getState();
+    const session = state.sessions.find((s) => s.id === 'live-idle');
+    expect(state.useActiveBrowser).toBe(false);
+    expect(state.useActiveTerminal).toBe(false);
+    expect(session?.useActiveBrowser).toBe(false);
+    expect(session?.useActiveTerminal).toBe(false);
+  });
+});
+
+describe('resume/restore browser intent vs effective enablement (VAL-HARDEN-005)', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+    getChatHistory.mockResolvedValue([]);
+    getChatSessionMessages.mockResolvedValue([]);
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+    saveChatMessage.mockResolvedValue(undefined);
+    deleteChatHistory.mockResolvedValue(undefined);
+    getRestorableChatSession.mockResolvedValue(null);
+    resumeChatSession.mockResolvedValue({ id: 'live-resumed', acpSessionId: 'acp-resumed', workDir: '/repo' });
+    window.sessionStorage.clear();
+    useWorkspaceStore.setState({
+      projects: [{
+        id: 'proj-repo',
+        path: '/repo',
+        name: 'repo',
+        openFiles: [],
+        activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
+        terminalSessions: [],
+        browserTabIds: [],
+        activeBrowserTabId: null,
+      }],
+      activeProjectId: 'proj-repo',
+    });
+  });
+
+  function makeSession(overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo {
+    return {
+      id: 'live-idle',
+      recordId: 'record-idle',
+      agentId: 'opencode',
+      title: 'Idle',
+      messages: [],
+      status: 'idle',
+      createdAt: 1,
+      kind: 'live' as const,
+      workDir: '/repo',
+      acpSessionId: 'acp-idle',
+      ...overrides,
+    };
+  }
+
+  it('resume with intent ON + no tab keeps session intent ON and passes effective false to API', async () => {
+    // No browser tab open for /repo.
+    useChatStore.setState({
+      sessions: [makeSession({
+        id: 'archived-1',
+        recordId: 'record-1',
+        useActiveBrowser: true,
+        useActiveTerminal: false,
+        status: 'idle',
+        kind: 'archived',
+      })],
+      activeSessionId: 'archived-1',
+      useActiveBrowser: true,
+      useActiveTerminal: false,
+      activeTerminalId: null,
+    });
+
+    const ok = await useChatStore.getState().resumeSession('archived-1');
+    expect(ok).toBe(true);
+
+    // Backend resume opts: effective useActiveBrowser is false (intent && hasTab).
+    expect(resumeChatSession).toHaveBeenCalledWith(
+      'record-1',
+      'opencode',
+      '/repo',
+      'acp-idle',
+      false,
+      undefined,
+      false, // effective enablement for backend
+      undefined,
+    );
+
+    const state = useChatStore.getState();
+    // Store intent remains ON (user preference preserved).
+    expect(state.useActiveBrowser).toBe(true);
+    const session = state.sessions.find((s) => s.recordId === 'record-1' || s.id === 'live-resumed');
+    expect(session).toBeTruthy();
+    // Session intent remains ON — no permanent store/session split brain.
+    expect(session?.useActiveBrowser).toBe(true);
+    // Warning surfaced for no-tab case.
+    const warn = session?.debugEntries?.find(
+      (e) => e.level === 'warn' && e.message.includes('no browser tab is open'),
+    );
+    expect(warn).toBeTruthy();
+  });
+
+  it('resume with intent ON + tab present passes effective true and keeps intent ON', async () => {
+    useWorkspaceStore.setState({
+      projects: [{
+        id: 'proj-repo',
+        path: '/repo',
+        name: 'repo',
+        openFiles: [],
+        activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
+        terminalSessions: [],
+        browserTabIds: ['tab-9'],
+        activeBrowserTabId: 'tab-9',
+      }],
+      activeProjectId: 'proj-repo',
+    });
+
+    useChatStore.setState({
+      sessions: [makeSession({
+        id: 'archived-2',
+        recordId: 'record-2',
+        useActiveBrowser: true,
+        status: 'idle',
+        kind: 'archived',
+      })],
+      activeSessionId: 'archived-2',
+      useActiveBrowser: true,
+    });
+
+    const ok = await useChatStore.getState().resumeSession('archived-2');
+    expect(ok).toBe(true);
+
+    expect(resumeChatSession).toHaveBeenCalledWith(
+      'record-2',
+      'opencode',
+      '/repo',
+      'acp-idle',
+      false,
+      undefined,
+      true, // effective enablement
+      'tab-9',
+    );
+
+    const state = useChatStore.getState();
+    expect(state.useActiveBrowser).toBe(true);
+    const session = state.sessions.find((s) => s.recordId === 'record-2' || s.id === 'live-resumed');
+    expect(session?.useActiveBrowser).toBe(true);
+  });
+
+  it('restoreSessionForProject with intent ON + no tab preserves intent and does not force session OFF', async () => {
+    resumeChatSession.mockResolvedValue({ id: 'live-restored', acpSessionId: 'acp-r', workDir: '/repo' });
+    getRestorableChatSession.mockResolvedValue({
+      found: true,
+      sessionId: 'record-restore',
+      agentId: 'opencode',
+      workDir: '/repo',
+      acpSessionId: 'acp-old',
+      isLive: false,
+      title: 'Restorable',
+    });
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+
+    useChatStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      useActiveBrowser: true,
+      historyLoaded: true,
+      historyWorkDir: '/repo',
+      historySessions: [{
+        id: 'record-restore',
+        agentId: 'opencode',
+        title: 'Restorable',
+        createdAt: 1,
+        updatedAt: 1,
+        workDir: '/repo',
+        acpSessionId: 'acp-old',
+      }],
+    });
+
+    await useChatStore.getState().restoreSessionForProject('/repo');
+
+    const state = useChatStore.getState();
+    expect(state.useActiveBrowser).toBe(true);
+    const session = state.sessions.find((s) => s.recordId === 'record-restore' || s.id === 'live-restored');
+    expect(session).toBeTruthy();
+    // Intent preserved on session even though no tab (effective was false for resume API).
+    expect(session?.useActiveBrowser).toBe(true);
+
+    // Resume API received effective false + undefined tab (and terminal effective false).
+    expect(resumeChatSession).toHaveBeenCalledWith(
+      'record-restore',
+      'opencode',
+      '/repo',
+      'acp-old',
+      false,
+      undefined,
+      false,
+      undefined,
+    );
+  });
+
+  it('loadHistorySession with intent ON + no tab preserves intent on restored session', async () => {
+    resumeChatSession.mockResolvedValue({ id: 'live-hist', acpSessionId: 'acp-h', workDir: '/repo' });
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+
+    useChatStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      useActiveBrowser: true,
+      historyLoaded: true,
+      historyWorkDir: '/repo',
+      historySessions: [{
+        id: 'hist-1',
+        agentId: 'opencode',
+        title: 'History',
+        createdAt: 1,
+        updatedAt: 1,
+        workDir: '/repo',
+        acpSessionId: 'acp-hist',
+      }],
+    });
+
+    await useChatStore.getState().loadHistorySession('hist-1');
+
+    const state = useChatStore.getState();
+    expect(state.useActiveBrowser).toBe(true);
+    const session = state.sessions.find((s) => s.recordId === 'hist-1' || s.id === 'live-hist');
+    expect(session).toBeTruthy();
+    expect(session?.useActiveBrowser).toBe(true);
+  });
+});

@@ -182,8 +182,23 @@ function activateSessionState(state: ChatState, id: string | null): Partial<Chat
   };
 }
 
-function shouldEnableTerminalForAgent(state: Pick<ChatState, 'useActiveTerminal' | 'activeTerminalId'>): boolean {
-  return state.useActiveTerminal && !!state.activeTerminalId;
+/**
+ * Terminal intent (user preference) vs effective enablement (intent && bound terminal).
+ * Session/store must keep intent; only backend resume/WS use effective.
+ */
+function terminalIntentAndEffective(
+  state: Pick<ChatState, 'useActiveTerminal' | 'activeTerminalId'>,
+  session?: Pick<ChatSessionInfo, 'useActiveTerminal' | 'terminalId'> | null,
+): { intent: boolean; effective: boolean; terminalId: string | undefined } {
+  const intent = session?.useActiveTerminal ?? state.useActiveTerminal;
+  const terminalId = session?.terminalId ?? state.activeTerminalId ?? undefined;
+  const effective = intent && !!terminalId;
+  return {
+    intent,
+    effective,
+    // Keep bound id when intent is on so a later resource can reconcile; clear not required on disable here.
+    terminalId: intent ? terminalId : (effective ? terminalId : undefined),
+  };
 }
 
 function activeBrowserTabForWorkDir(workDir?: string | null): string | undefined {
@@ -193,15 +208,51 @@ function activeBrowserTabForWorkDir(workDir?: string | null): string | undefined
   return project?.activeBrowserTabId ?? undefined;
 }
 
-function activeBrowserStateForWorkDir(state: Pick<ChatState, 'useActiveBrowser' | 'browserSelection' | 'browserSelectionMode' | 'browserSelectionCapture'>, workDir?: string | null) {
+/**
+ * Browser intent vs effective enablement (VAL-HARDEN-005).
+ * - intent: user preference (session-scoped if provided, else store flag)
+ * - enabled/effective: intent && has open tab — what backend/resume/WS should receive
+ * Session/store must store intent, not effective, so no permanent split brain when no tab.
+ */
+function activeBrowserStateForWorkDir(
+  state: Pick<ChatState, 'useActiveBrowser' | 'browserSelection' | 'browserSelectionMode' | 'browserSelectionCapture'>,
+  workDir?: string | null,
+  sessionIntent?: boolean,
+) {
+  const intent = sessionIntent ?? state.useActiveBrowser;
   const tabId = activeBrowserTabForWorkDir(workDir);
-  const enabled = state.useActiveBrowser && !!tabId;
+  const effective = intent && !!tabId;
   return {
-    enabled,
+    intent,
+    /** Effective enablement for backend/resume (intent && hasTab). */
+    enabled: effective,
     tabId,
-    selection: enabled ? state.browserSelection : null,
+    selection: effective ? state.browserSelection : null,
     selectionMode: state.browserSelectionMode,
-    selectionCapture: enabled ? state.browserSelectionCapture : null,
+    selectionCapture: effective ? state.browserSelectionCapture : null,
+  };
+}
+
+const NO_BROWSER_TAB_WARN =
+  'Browser toggle is on but no browser tab is open; browser MCP disabled until a tab is opened.';
+
+function withNoTabBrowserWarning(
+  session: ChatSessionInfo,
+  intent: boolean,
+  tabId: string | undefined,
+): ChatSessionInfo {
+  if (!intent || tabId) return session;
+  const already = session.debugEntries?.some(
+    (e) => e.level === 'warn' && e.message.includes('no browser tab is open'),
+  );
+  if (already) return session;
+  return {
+    ...session,
+    debugEntries: appendDebugEntry(session.debugEntries, {
+      source: 'client',
+      level: 'warn',
+      message: NO_BROWSER_TAB_WARN,
+    }),
   };
 }
 
@@ -801,26 +852,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let kind: ChatSessionKind = 'archived';
       let acpSessionId: string | undefined;
 
+      // VAL-HARDEN-005: capture intent vs effective once. Backend gets effective;
+      // session/store keep intent so no permanent split brain when no tab is open.
+      const browserState = activeBrowserStateForWorkDir(get(), historyEntry?.workDir);
+      const terminalState = terminalIntentAndEffective(get());
+
       if (historyEntry?.workDir && historyEntry.agentId) {
-        const browserState = activeBrowserStateForWorkDir(get(), historyEntry.workDir);
+        const connectingSession = withNoTabBrowserWarning({
+          id: sessionId,
+          recordId: sessionId,
+          agentId: historyEntry.agentId,
+          title: fallbackTitle(historyEntry.agentId, historyEntry.title),
+          messages: [],
+          status: 'connecting',
+          createdAt: historyEntry.createdAt ?? Date.now(),
+          kind: 'archived',
+          workDir: historyEntry.workDir,
+          acpSessionId: historyEntry.acpSessionId,
+          terminalId: terminalState.intent ? terminalState.terminalId : undefined,
+          useActiveTerminal: terminalState.intent,
+          useActiveBrowser: browserState.intent,
+          browserSelection: browserState.selection,
+          browserSelectionMode: browserState.selectionMode,
+          browserSelectionCapture: browserState.selectionCapture,
+        }, browserState.intent, browserState.tabId);
         set((state) => ({
-          sessions: [...state.sessions.filter((s) => s.id !== sessionId && s.recordId !== sessionId), {
-            id: sessionId,
-            recordId: sessionId,
-            agentId: historyEntry.agentId,
-            title: fallbackTitle(historyEntry.agentId, historyEntry.title),
-            messages: [],
-            status: 'connecting',
-            createdAt: historyEntry.createdAt ?? Date.now(),
-            kind: 'archived',
-            workDir: historyEntry.workDir,
-            acpSessionId: historyEntry.acpSessionId,
-            terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
-            useActiveBrowser: browserState.enabled,
-            browserSelection: browserState.selection,
-            browserSelectionMode: browserState.selectionMode,
-            browserSelectionCapture: browserState.selectionCapture,
-          }],
+          sessions: [...state.sessions.filter((s) => s.id !== sessionId && s.recordId !== sessionId), connectingSession],
         }));
         try {
           const resumed = await resumeChatSession(
@@ -828,8 +885,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             historyEntry.agentId,
             historyEntry.workDir,
             historyEntry.acpSessionId,
-            shouldEnableTerminalForAgent(get()),
-            shouldEnableTerminalForAgent(get()) ? get().activeTerminalId : undefined,
+            terminalState.effective,
+            terminalState.effective ? terminalState.terminalId : undefined,
             browserState.enabled,
             browserState.tabId,
           );
@@ -849,7 +906,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const replayed = replaySessionState(sessionState.messages ?? [], sessionState.events ?? []);
       const snapshotCommands = parseSnapshotJson<SlashCommandInfo>(sessionState.snapshot?.commandsJson);
       const snapshotConfig = parseSnapshotJson<ConfigOptionInfo>(sessionState.snapshot?.configOptsJson);
-      const session: ChatSessionInfo = {
+      // Recompute in case user toggled mid-flight; still write INTENT to session.
+      const browserStateFinal = activeBrowserStateForWorkDir(get(), historyEntry?.workDir);
+      const terminalStateFinal = terminalIntentAndEffective(get());
+      const session: ChatSessionInfo = withNoTabBrowserWarning({
         id: liveSessionId,
         recordId: sessionId,
         agentId: historyEntry?.agentId ?? 'unknown',
@@ -860,19 +920,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         kind,
         workDir: historyEntry?.workDir,
         acpSessionId,
-        useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
-        terminalId: kind === 'resumable' && shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
-        useActiveBrowser: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).enabled,
-        browserSelection: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).selection,
-        browserSelectionMode: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).selectionMode,
-        browserSelectionCapture: activeBrowserStateForWorkDir(get(), historyEntry?.workDir).selectionCapture,
+        useActiveTerminal: kind === 'resumable' ? terminalStateFinal.intent : false,
+        terminalId: kind === 'resumable' && terminalStateFinal.intent ? terminalStateFinal.terminalId : undefined,
+        useActiveBrowser: browserStateFinal.intent,
+        browserSelection: browserStateFinal.selection,
+        browserSelectionMode: browserStateFinal.selectionMode,
+        browserSelectionCapture: browserStateFinal.selectionCapture,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
         contextUsed: replayed.contextUsed,
         costAmount: replayed.costAmount,
         costCurrency: replayed.costCurrency,
-      };
+      }, browserStateFinal.intent, browserStateFinal.tabId);
       set((state) => {
         const idsToRemove = new Set([sessionId, liveSessionId]);
         const nextSessions = [...state.sessions.filter((s) => !idsToRemove.has(s.id) && !idsToRemove.has(s.recordId)), session];
@@ -961,7 +1021,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const agentId = session.agentId;
     const workDir = session.workDir;
     const currentAcpSessionId = session.acpSessionId;
-    const browserState = activeBrowserStateForWorkDir(get(), workDir);
 
     const request = (async () => {
       set((state) => ({
@@ -971,9 +1030,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }),
       }));
 
-      const terminalEnabled = shouldEnableTerminalForAgent(get());
-      const terminalId = terminalEnabled ? get().activeTerminalId ?? undefined : undefined;
-      const resumed = await resumeChatSession(recordId, agentId, workDir, currentAcpSessionId, terminalEnabled, terminalId, browserState.enabled, browserState.tabId);
+      // Prefer session-scoped intent; re-read at resume time so concurrent soft
+      // toggles mid-flight win (VAL-HARDEN-004 / VAL-HARDEN-005).
+      const latest = findSessionByIdentity(get().sessions, session.id) ?? session;
+      const browserNow = activeBrowserStateForWorkDir(get(), workDir, latest.useActiveBrowser);
+      const terminalNow = terminalIntentAndEffective(get(), latest);
+      const resumed = await resumeChatSession(
+        recordId,
+        agentId,
+        workDir,
+        currentAcpSessionId,
+        terminalNow.effective,
+        terminalNow.effective ? terminalNow.terminalId : undefined,
+        browserNow.enabled,
+        browserNow.tabId,
+      );
       if (!('id' in resumed)) {
         set((state) => ({
           sessions: updateSession(state.sessions, session.id, (s) => ({ ...s, status: 'error' })),
@@ -990,21 +1061,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const nextWorkDir = resumed.workDir ?? workDir;
       set((state) => {
         const idsToRemove = new Set([session.id, liveSessionId]);
-        const nextSession: ChatSessionInfo = {
-          ...session,
+        // After await: use latest store/session intent so concurrent toggles are not lost.
+        const current = findSessionByIdentity(state.sessions, session.id) ?? latest;
+        const browserFinal = activeBrowserStateForWorkDir(state, nextWorkDir, current.useActiveBrowser ?? browserNow.intent);
+        const terminalFinal = terminalIntentAndEffective(state, {
+          useActiveTerminal: current.useActiveTerminal ?? terminalNow.intent,
+          terminalId: current.terminalId ?? terminalNow.terminalId,
+        });
+        const nextSession = withNoTabBrowserWarning({
+          ...current,
           id: liveSessionId,
           recordId,
           status: 'connecting',
           kind: 'resumable',
           workDir: nextWorkDir,
           acpSessionId,
-          useActiveTerminal: terminalEnabled,
-          terminalId,
-          useActiveBrowser: browserState.enabled,
-          browserSelection: browserState.selection,
-          browserSelectionMode: browserState.selectionMode,
-          browserSelectionCapture: browserState.selectionCapture,
-        };
+          // Persist INTENT on the session, not effective enablement (VAL-HARDEN-005).
+          useActiveTerminal: terminalFinal.intent,
+          terminalId: terminalFinal.intent ? terminalFinal.terminalId : current.terminalId,
+          useActiveBrowser: browserFinal.intent,
+          browserSelection: browserFinal.selection,
+          browserSelectionMode: browserFinal.selectionMode,
+          browserSelectionCapture: browserFinal.selectionCapture,
+        }, browserFinal.intent, browserFinal.tabId);
         const nextSessions = [...state.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
         const nextState = { ...state, sessions: nextSessions };
         return {
@@ -1099,25 +1178,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         liveSessionId = restore.liveSessionId ?? targetSessionId;
         kind = 'live';
       } else if (restoreAgentId && (restore.workDir ?? projectPath)) {
+        // VAL-HARDEN-005: intent stays on session; effective (intent&&tab) for API only.
         const browserState = activeBrowserStateForWorkDir(get(), restore.workDir ?? projectPath);
+        const terminalState = terminalIntentAndEffective(get());
+        const connectingSession = withNoTabBrowserWarning({
+          id: targetSessionId,
+          recordId: targetSessionId,
+          agentId: restoreAgentId,
+          title: fallbackTitle(restoreAgentId, restore.title),
+          messages: [],
+          status: 'connecting',
+          createdAt: Date.now(),
+          kind: 'archived',
+          workDir: restore.workDir ?? projectPath,
+          acpSessionId: restore.acpSessionId,
+          terminalId: terminalState.intent ? terminalState.terminalId : undefined,
+          useActiveTerminal: terminalState.intent,
+          useActiveBrowser: browserState.intent,
+          browserSelection: browserState.selection,
+          browserSelectionMode: browserState.selectionMode,
+          browserSelectionCapture: browserState.selectionCapture,
+        }, browserState.intent, browserState.tabId);
         set((state) => ({
-          sessions: [...state.sessions.filter((s) => s.id !== targetSessionId && s.recordId !== targetSessionId), {
-            id: targetSessionId,
-            recordId: targetSessionId,
-            agentId: restoreAgentId,
-            title: fallbackTitle(restoreAgentId, restore.title),
-            messages: [],
-            status: 'connecting',
-            createdAt: Date.now(),
-            kind: 'archived',
-            workDir: restore.workDir ?? projectPath,
-            acpSessionId: restore.acpSessionId,
-            terminalId: shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
-            useActiveBrowser: browserState.enabled,
-            browserSelection: browserState.selection,
-            browserSelectionMode: browserState.selectionMode,
-            browserSelectionCapture: browserState.selectionCapture,
-          }],
+          sessions: [...state.sessions.filter((s) => s.id !== targetSessionId && s.recordId !== targetSessionId), connectingSession],
         }));
         try {
           const resumed = await resumeChatSession(
@@ -1125,8 +1208,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             restoreAgentId,
             restore.workDir ?? projectPath,
             restore.acpSessionId,
-            shouldEnableTerminalForAgent(get()),
-            shouldEnableTerminalForAgent(get()) ? get().activeTerminalId : undefined,
+            terminalState.effective,
+            terminalState.effective ? terminalState.terminalId : undefined,
             browserState.enabled,
             browserState.tabId,
           );
@@ -1149,7 +1232,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const snapshotCommands = sessionState ? parseSnapshotJson<SlashCommandInfo>(sessionState.snapshot?.commandsJson) : undefined;
       const snapshotConfig = sessionState ? parseSnapshotJson<ConfigOptionInfo>(sessionState.snapshot?.configOptsJson) : undefined;
 
-      const session: ChatSessionInfo = {
+      const restoreWorkDir = restore.workDir ?? historyEntry?.workDir ?? projectPath;
+      const browserStateFinal = activeBrowserStateForWorkDir(get(), restoreWorkDir);
+      const terminalStateFinal = terminalIntentAndEffective(get());
+      const session: ChatSessionInfo = withNoTabBrowserWarning({
         id: liveSessionId,
         recordId: targetSessionId,
         agentId: restore.agentId ?? historyEntry?.agentId ?? 'unknown',
@@ -1158,21 +1244,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         status: kind === 'resumable' ? 'connecting' : 'idle',
         createdAt: historyEntry?.createdAt ?? Date.now(),
         kind,
-        workDir: restore.workDir ?? historyEntry?.workDir ?? projectPath,
+        workDir: restoreWorkDir,
         acpSessionId,
-        useActiveTerminal: kind === 'resumable' ? shouldEnableTerminalForAgent(get()) : false,
-        terminalId: kind === 'resumable' && shouldEnableTerminalForAgent(get()) ? get().activeTerminalId ?? undefined : undefined,
-        useActiveBrowser: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).enabled,
-        browserSelection: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).selection,
-        browserSelectionMode: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).selectionMode,
-        browserSelectionCapture: activeBrowserStateForWorkDir(get(), restore.workDir ?? historyEntry?.workDir ?? projectPath).selectionCapture,
+        useActiveTerminal: kind === 'resumable' ? terminalStateFinal.intent : false,
+        terminalId: kind === 'resumable' && terminalStateFinal.intent ? terminalStateFinal.terminalId : undefined,
+        useActiveBrowser: browserStateFinal.intent,
+        browserSelection: browserStateFinal.selection,
+        browserSelectionMode: browserStateFinal.selectionMode,
+        browserSelectionCapture: browserStateFinal.selectionCapture,
         commands: replayed.commands ?? snapshotCommands,
         configOptions: replayed.configOptions ?? snapshotConfig,
         contextWindow: replayed.contextWindow,
         contextUsed: replayed.contextUsed,
         costAmount: replayed.costAmount,
         costCurrency: replayed.costCurrency,
-      };
+      }, browserStateFinal.intent, browserStateFinal.tabId);
 
       set((state) => {
         const idsToRemove = new Set([targetSessionId, liveSessionId]);
@@ -1355,7 +1441,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             debugEntries: appendDebugEntry(s.debugEntries, {
               source: 'client',
               level: 'warn',
-              message: 'Browser toggle is on but no browser tab is open; browser MCP disabled until a tab is opened.',
+              message: NO_BROWSER_TAB_WARN,
             }),
           })),
         }));

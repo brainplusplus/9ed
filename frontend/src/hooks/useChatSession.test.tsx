@@ -914,10 +914,161 @@ describe('useChatSession', () => {
       activeBrowserTabId: null,
     }));
     const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    // Intent remains ON in store/session (no permanent split brain / VAL-HARDEN-005).
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+    expect(session?.useActiveBrowser).toBe(true);
     const warn = session?.debugEntries?.find(
       (entry) => entry.level === 'warn' && entry.source === 'client' && entry.message.includes('no browser tab is open'),
     );
     expect(warn).toBeTruthy();
+  });
+
+  it('sends effective true when browser intent is ON and a tab is open (VAL-HARDEN-005)', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-tab' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    // Set project + tab directly to avoid addProject's async saveRecentProject side effect.
+    useWorkspaceStore.setState({
+      projects: [{
+        id: 'proj-tab',
+        path: '/repo',
+        name: 'repo',
+        openFiles: [],
+        activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
+        terminalSessions: [],
+        browserTabIds: ['tab-42'],
+        activeBrowserTabId: 'tab-42',
+      }],
+      activeProjectId: 'proj-tab',
+    });
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-tab',
+        recordId: 'record-tab',
+        agentId: 'opencode',
+        title: 'With tab',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-tab',
+        useActiveBrowser: true,
+      }],
+      activeSessionId: 'live-tab',
+      useActiveBrowser: true,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_browser',
+      useActiveBrowser: true,
+      activeBrowserTabId: 'tab-42',
+    }));
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-tab');
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(useChatStore.getState().useActiveBrowser).toBe(true);
+  });
+
+  it('concurrent dual soft toggles reassert both control messages without losing either (VAL-HARDEN-004)', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-dual' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useWorkspaceStore.setState({
+      projects: [{
+        id: 'proj-dual',
+        path: '/repo',
+        name: 'repo',
+        openFiles: [],
+        activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
+        terminalSessions: [],
+        browserTabIds: ['tab-dual'],
+        activeBrowserTabId: 'tab-dual',
+      }],
+      activeProjectId: 'proj-dual',
+    });
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-dual',
+        recordId: 'record-dual',
+        agentId: 'opencode',
+        title: 'Dual',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-dual',
+        useActiveBrowser: false,
+        useActiveTerminal: false,
+      }],
+      activeSessionId: 'live-dual',
+      useActiveBrowser: false,
+      useActiveTerminal: false,
+      activeTerminalId: 'term-dual',
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await Promise.all([
+        useChatStore.getState().setBrowserEnabled(true),
+        useChatStore.getState().setTerminalEnabled(true),
+      ]);
+      await Promise.resolve();
+    });
+
+    const state = useChatStore.getState();
+    const session = state.sessions.find((s) => s.id === 'live-dual');
+    expect(state.useActiveBrowser).toBe(true);
+    expect(state.useActiveTerminal).toBe(true);
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(session?.useActiveTerminal).toBe(true);
+
+    // Both soft control messages should have been sent with effective true.
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_browser',
+      useActiveBrowser: true,
+      activeBrowserTabId: 'tab-dual',
+    }));
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_terminal',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-dual',
+    }));
   });
 
   // --- M-8: dedupe by seq ---
