@@ -919,4 +919,427 @@ describe('useChatSession', () => {
     );
     expect(warn).toBeTruthy();
   });
+
+  // --- M-8: dedupe by seq ---
+  //
+  // The WS handler may see the same logical event twice when timeline
+  // catch-up (after a brief disconnect / reconnect) overlaps the live
+  // stream. Each event carries an ADR-0002 seq number per epoch; we use
+  // that seq to dedupe so the chat store does not double-render messages
+  // or tool_call entries.
+
+  it('drops a live event whose seq was already applied', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    const assistantCount = () => {
+      const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+      return (session?.messages ?? []).filter((m) => m.role === 'assistant').length;
+    };
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'text', text: 'hello', seq: 5, epoch: 'e1' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    expect(assistantCount()).toBe(1);
+
+    // Replay same seq — should be ignored.
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'text', text: 'hello', seq: 5, epoch: 'e1' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    expect(assistantCount()).toBe(1);
+
+    // A lower seq must also be ignored (catch-up overlap).
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'text', text: 'older', seq: 3, epoch: 'e1' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    expect(assistantCount()).toBe(1);
+
+    // A higher seq applies normally — extends the same assistant message
+    // because consecutive text events are merged into the trailing
+    // assistant entry (see handleChatEvent in stores/chat.ts).
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'text', text: ' world', seq: 6, epoch: 'e1' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    const lastAssistant = (session?.messages ?? []).filter((m) => m.role === 'assistant').pop();
+    expect(lastAssistant?.content).toBe('hello world');
+  });
+
+  // --- H-1: connecting watchdog ---
+  //
+  // A session that gets stuck in 'connecting' for too long would previously
+  // spin forever with no user feedback. The watchdog scans every
+  // CONNECTING_WATCHDOG_TICK_MS (2s) and forcibly transitions any
+  // connection that has been 'connecting' longer than CONNECTING_WATCHDOG_MS
+  // (30s) to 'error'.
+
+  it("flips a stuck 'connecting' session to 'error' after 30s", async () => {
+    // Preflight pending forever so the session stays in 'connecting'.
+    getLiveChatSessions.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Drain the initial connect delay (250ms) so the connection enters
+    // the connecting phase.
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useChatStore.getState().sessions[0].status).toBe('connecting');
+
+    // 29s in — watchdog must NOT have fired yet (30s threshold).
+    await act(async () => {
+      vi.advanceTimersByTime(29_000);
+      await Promise.resolve();
+    });
+    expect(useChatStore.getState().sessions[0].status).toBe('connecting');
+
+    // Cross the threshold (>= 30s total in connecting). The watchdog
+    // ticks every 2s, so allow up to one extra tick of slack.
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useChatStore.getState().sessions[0].status).toBe('error');
+  });
+
+  it('does not flip the status when the session leaves connecting before the deadline', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Resolve the preflight and open the WS within a few seconds — well
+    // under the 30s watchdog window.
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    expect(useChatStore.getState().sessions[0].status).toBe('idle');
+
+    // Advance past the watchdog threshold; status must stay idle.
+    await act(async () => {
+      vi.advanceTimersByTime(40_000);
+      await Promise.resolve();
+    });
+    expect(useChatStore.getState().sessions[0].status).toBe('idle');
+  });
+
+  it('resets dedupe state on session_resumed so a fresh epoch can start at seq=1', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    const assistantCount = () => {
+      const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+      return (session?.messages ?? []).filter((m) => m.role === 'assistant').length;
+    };
+
+    // Apply seq=10 in epoch e1.
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'text', text: 'first epoch', seq: 10, epoch: 'e1' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    expect(assistantCount()).toBe(1);
+
+    // Session resumed → new epoch. Subsequent seq=1 in e2 must NOT be
+    // suppressed by the e1 "applied seq" of 10.
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'session_resumed', epoch: 'e2' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'text', text: 'second epoch', seq: 1, epoch: 'e2' }),
+      } as MessageEvent<string>);
+      await Promise.resolve();
+    });
+    // Two distinct assistant turns: one from e1, one from e2 (the
+    // session_resumed event in between does NOT close the assistant
+    // turn, but the new text event after it merges with the existing
+    // trailing assistant message because both have role='assistant'.
+    // What we care about for dedupe is that the seq=1 event was NOT
+    // silently dropped — its text must be present somewhere).
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    const joined = (session?.messages ?? [])
+      .filter((m) => m.role === 'assistant')
+      .map((m) => m.content)
+      .join(' || ');
+    expect(joined).toContain('first epoch');
+    expect(joined).toContain('second epoch');
+  });
+
+  // --- VAL-HARDEN-002: session-scoped terminal soft control ---
+  //
+  // The set_use_active_terminal WS effect must read useActiveTerminal and
+  // activeTerminalId (terminalId) from the *active session* object, not only
+  // from the global store flag. Two concurrent sessions with different
+  // terminal intents must not cross-contaminate the control payload.
+
+  it('sends set_use_active_terminal from session-scoped intent + terminalId (VAL-HARDEN-002)', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Term soft',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveTerminal: true,
+        terminalId: 'term-session-1',
+      }],
+      activeSessionId: 'live-1',
+      // Global flag deliberately disagrees — payload must follow session.
+      useActiveTerminal: false,
+      activeTerminalId: 'term-global-wrong',
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_terminal',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-session-1',
+    }));
+  });
+
+  it('does not cross-contaminate terminal control payloads across two sessions (VAL-HARDEN-002)', async () => {
+    const socketA = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-a' }]);
+    createChatWebSocket.mockReturnValue(socketA);
+
+    useChatStore.setState({
+      sessions: [
+        {
+          id: 'live-a',
+          recordId: 'record-a',
+          agentId: 'opencode',
+          title: 'Session A',
+          messages: [],
+          status: 'idle',
+          createdAt: 1,
+          kind: 'live',
+          workDir: '/repo-a',
+          acpSessionId: 'acp-a',
+          useActiveTerminal: true,
+          terminalId: 'term-a',
+        },
+        {
+          id: 'live-b',
+          recordId: 'record-b',
+          agentId: 'opencode',
+          title: 'Session B',
+          messages: [],
+          status: 'idle',
+          createdAt: 2,
+          kind: 'live',
+          workDir: '/repo-b',
+          acpSessionId: 'acp-b',
+          useActiveTerminal: false,
+          terminalId: undefined,
+        },
+      ],
+      activeSessionId: 'live-a',
+      useActiveTerminal: false,
+      activeTerminalId: null,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socketA.readyState = WebSocket.OPEN;
+      socketA.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    // Active session A: enabled with term-a.
+    expect(socketA.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_terminal',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-a',
+    }));
+
+    // Switch active session to B (different terminal intent).
+    const socketB = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-b' }]);
+    createChatWebSocket.mockReturnValue(socketB);
+
+    await act(async () => {
+      useChatStore.setState({ activeSessionId: 'live-b' });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socketB.readyState = WebSocket.OPEN;
+      socketB.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    // Session B payload must reflect B's disabled intent — no term-a leak.
+    expect(socketB.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_terminal',
+      useActiveTerminal: false,
+      activeTerminalId: null,
+    }));
+
+    // And session A must never have received a false/null payload from B.
+    const aTerminalPayloads = socketA.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string; useActiveTerminal?: boolean; activeTerminalId?: string | null })
+      .filter((msg) => msg.type === 'set_use_active_terminal');
+    expect(aTerminalPayloads.every((p) => p.useActiveTerminal === true && p.activeTerminalId === 'term-a')).toBe(true);
+  });
+
+  it('includes both useActiveTerminal and activeTerminalId when soft-enabling (VAL-HARDEN-002)', async () => {
+    const socket = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket.mockReturnValue(socket);
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Term enable',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveTerminal: false,
+      }],
+      activeSessionId: 'live-1',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-ready',
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket.readyState = WebSocket.OPEN;
+      socket.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    socket.send.mockClear();
+
+    // Soft-enable on the session object (mirrors setTerminalEnabled).
+    await act(async () => {
+      useChatStore.setState((state) => ({
+        useActiveTerminal: true,
+        sessions: state.sessions.map((s) =>
+          s.id === 'live-1'
+            ? { ...s, useActiveTerminal: true, terminalId: 'term-ready' }
+            : s,
+        ),
+      }));
+      await Promise.resolve();
+    });
+
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'set_use_active_terminal',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-ready',
+    }));
+  });
 });

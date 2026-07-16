@@ -14,6 +14,11 @@ const INITIAL_CONNECT_DELAY_MS = 250;
 const STREAM_STALL_MS = 15000;
 // ADR-0006: client-side app-level ping interval (server also sends RFC645 protocol pings).
 const LIVENESS_PING_INTERVAL_MS = 10000;
+// Fix H-1: Maximum time a session is allowed to remain in 'connecting' before
+// the watchdog flips it to 'error' so the UI can surface a reconnect affordance
+// instead of spinning forever.
+const CONNECTING_WATCHDOG_MS = 30000;
+const CONNECTING_WATCHDOG_TICK_MS = 2000;
 
 type UseChatSessionResult = {
   sendMessage: (content: string, context?: CodeContext, attachments?: Attachment[]) => Promise<void>;
@@ -39,6 +44,10 @@ type ChatConnection = {
   disposed: boolean;
   // ADR-0006: client-side app-level ping timer.
   livenessTimer?: number;
+  // Fix H-1: timestamp the most recent transition into 'connecting' so the
+  // global watchdog can detect sessions stuck in that state past
+  // CONNECTING_WATCHDOG_MS and surface an error to the user.
+  connectingSince?: number;
 };
 
 function socketIsOpen(conn: ChatConnection | undefined): boolean {
@@ -268,6 +277,11 @@ export function useChatSession(): UseChatSessionResult {
   const lastBrowserControlKeyRef = useRef<string>('');
   // ADR-0002: per-session cursor tracking for stale/gap detection.
   const cursorRef = useRef<Map<string, { seq: number; epoch: string }>>(new Map());
+  // Fix M-8: per-session highest seq already applied to the chat store. Used
+  // to dedupe events when timeline catch-up overlaps with live stream — the
+  // server's replay can re-deliver events we've already rendered, which would
+  // otherwise duplicate assistant messages or tool calls.
+  const appliedSeqRef = useRef<Map<string, number>>(new Map());
 
   const connectionTargets = useMemo(
     () => sessions
@@ -418,6 +432,12 @@ export function useChatSession(): UseChatSessionResult {
       const session = getLiveSession();
       if (!session || !isConnectableSession(session) || session.status === 'streaming') return;
       setSessionStatus(sessionId, 'connecting');
+      // Fix H-1: only record the transition timestamp if we don't already have
+      // one in-flight; the watchdog measures contiguous connecting time, not
+      // per-attempt time, so back-to-back reconnect attempts still trigger.
+      if (conn.connectingSince === undefined) {
+        conn.connectingSince = Date.now();
+      }
     };
 
     const markConnectionError = (seq: number) => {
@@ -425,6 +445,8 @@ export function useChatSession(): UseChatSessionResult {
       const session = getLiveSession();
       if (!session || session.kind === 'archived') return;
       setSessionStatus(sessionId, 'error');
+      // Fix H-1: terminal state — clear watchdog so a later retry starts fresh.
+      conn.connectingSince = undefined;
       stopConnection(sessionId);
       updateActiveConnected();
     };
@@ -545,6 +567,8 @@ export function useChatSession(): UseChatSessionResult {
         conn.hasConnected = true;
         conn.connecting = false;
         conn.reconnectAttempts = 0;
+        // Fix H-1: connection is established; reset watchdog timer.
+        conn.connectingSince = undefined;
         setSessionStatus(sessionId, 'idle');
         setSessionStalled(sessionId, false);
         appendSessionDebugRef.current(sessionId, {
@@ -625,7 +649,18 @@ export function useChatSession(): UseChatSessionResult {
             if (timeline.events && timeline.events.length > 0) {
               for (const tevt of timeline.events) {
                 const evt = { ...tevt.event, seq: tevt.seq, epoch: tevt.epoch };
+                // Fix M-8: dedupe by seq. Events with seq <= the highest
+                // seq we already applied for this session are skipped
+                // to avoid double-rendering messages when catch-up
+                // overlaps with the live stream.
+                const applied = appliedSeqRef.current.get(sessionId) ?? 0;
+                if (tevt.seq > 0 && tevt.seq <= applied) {
+                  continue;
+                }
                 handleChatEventRef.current(sessionId, evt);
+                if (tevt.seq > applied) {
+                  appliedSeqRef.current.set(sessionId, tevt.seq);
+                }
               }
               const last = timeline.events[timeline.events.length - 1];
               cursorRef.current.set(sessionId, { seq: last.seq, epoch: last.epoch ?? timeline.epoch });
@@ -665,6 +700,9 @@ export function useChatSession(): UseChatSessionResult {
             // and so the client tracks the new timeline.
             const newEpoch = data.epoch ?? '';
             cursorRef.current.set(sessionId, { seq: 0, epoch: newEpoch });
+            // Fix M-8: reset dedupe state on epoch change; the new epoch
+            // re-numbers seq from 0, so prior values are not comparable.
+            appliedSeqRef.current.set(sessionId, 0);
             // ADR-0004 / VAL-RESUME-005: the agent recovered — clear any
             // prior crash flag so the reconnect prompt disappears.
             useChatStore.getState().clearCrashState(sessionId);
@@ -754,6 +792,16 @@ export function useChatSession(): UseChatSessionResult {
           // ADR-0002: update cursor tracking (seq + epoch).
           if (data.seq !== undefined && data.seq > 0) {
             cursorRef.current.set(sessionId, { seq: data.seq, epoch: data.epoch ?? cursorRef.current.get(sessionId)?.epoch ?? '' });
+          }
+          // Fix M-8: dedupe live events. If we've already applied an event
+          // with this seq (or higher) the server is replaying overlap
+          // between catch-up and live stream — skip to avoid duplicates.
+          if (data.seq !== undefined && data.seq > 0) {
+            const applied = appliedSeqRef.current.get(sessionId) ?? 0;
+            if (data.seq <= applied) {
+              return;
+            }
+            appliedSeqRef.current.set(sessionId, data.seq);
           }
           appendSessionDebugRef.current(sessionId, {
             source: data.type === 'tool_call' || data.type === 'tool_call_update' ? 'tool' : 'ws',
@@ -899,6 +947,44 @@ export function useChatSession(): UseChatSessionResult {
     updateActiveConnected();
   }, [connectionKey, connectionTargets, liveSessionKey, startConnection, stopConnection, updateActiveConnected]);
 
+  // Fix H-1: global "connecting forever" watchdog. Periodically scans all
+  // tracked connections; any session that has remained in 'connecting' beyond
+  // CONNECTING_WATCHDOG_MS is forcibly transitioned to 'error', and the
+  // ongoing connect cycle is stopped so the user can retry instead of staring
+  // at a perpetual spinner. The watchdog is conservative: it only fires for
+  // connections whose store status is still 'connecting' (so a session that
+  // already became idle/streaming will not be affected even if connectingSince
+  // is briefly stale).
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      for (const [sessionId, conn] of connectionsRef.current.entries()) {
+        if (conn.disposed) continue;
+        if (conn.connectingSince === undefined) continue;
+        if (now - conn.connectingSince < CONNECTING_WATCHDOG_MS) continue;
+        const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+        if (!session) {
+          conn.connectingSince = undefined;
+          continue;
+        }
+        if (session.status !== 'connecting') {
+          conn.connectingSince = undefined;
+          continue;
+        }
+        appendSessionDebugRef.current(sessionId, {
+          source: 'ws',
+          level: 'error',
+          message: `connection stuck in 'connecting' for ${Math.round((now - conn.connectingSince) / 1000)}s; surfacing error`,
+        });
+        setSessionStatus(sessionId, 'error');
+        conn.connectingSince = undefined;
+        stopConnection(sessionId);
+      }
+      updateActiveConnected();
+    }, CONNECTING_WATCHDOG_TICK_MS);
+    return () => window.clearInterval(interval);
+  }, [setSessionStatus, stopConnection, updateActiveConnected]);
+
   useEffect(() => {
     return () => {
       for (const sessionId of Array.from(connectionsRef.current.keys())) {
@@ -915,7 +1001,7 @@ export function useChatSession(): UseChatSessionResult {
       const activeSession = useChatStore.getState().sessions.find((session) => session.id === activeSessionId);
 
       const displayContent = attachments?.length
-        ? content + '\n\n' + attachments.map((a) => `ðŸ“Ž ${a.name}`).join('\n')
+        ? content + '\n\n' + attachments.map((a) => `📎 ${a.name}`).join('\n')
         : content;
 
       const msgId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1028,17 +1114,34 @@ export function useChatSession(): UseChatSessionResult {
   }, [activeSessionId]);
 
   useEffect(() => {
+    // Session-scoped primary source (VAL-HARDEN-002): active session's
+    // useActiveTerminal + terminalId take precedence over global store flags
+    // so concurrent chat sessions with different terminal intents do not
+    // cross-contaminate the control payload.
+    const desiredUseActiveTerminal = activeSession?.useActiveTerminal ?? useActiveTerminal;
+    const terminalIdForSession = activeSession?.terminalId ?? activeTerminalId ?? null;
     const payload = {
       type: 'set_use_active_terminal',
-      useActiveTerminal: useActiveTerminal && !!activeTerminalId,
-      activeTerminalId: activeTerminalId,
+      useActiveTerminal: desiredUseActiveTerminal && !!terminalIdForSession,
+      activeTerminalId: desiredUseActiveTerminal ? terminalIdForSession : null,
     };
     const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
+    // The ref is only updated when sendControl reports success, so a failed
+    // send (WS not OPEN) leaves it stale and the next effect run will retry.
+    // The `connected` dependency forces a re-run when the socket opens.
     if (controlKey === lastTerminalControlKeyRef.current) return;
     if (sendControl(payload)) {
       lastTerminalControlKeyRef.current = controlKey;
     }
-  }, [activeTerminalId, connected, sendControl, useActiveTerminal]);
+  }, [
+    activeSession?.terminalId,
+    activeSession?.useActiveTerminal,
+    activeSessionId,
+    activeTerminalId,
+    connected,
+    sendControl,
+    useActiveTerminal,
+  ]);
 
   useEffect(() => {
     const project = projects.find((entry) => normalizeWorkDir(entry.path) === normalizeWorkDir(activeSession?.workDir));
@@ -1050,6 +1153,11 @@ export function useChatSession(): UseChatSessionResult {
       activeBrowserTabId: browserTabId,
     };
     const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
+    // The ref below is only updated when sendControl reports success, so a
+    // failed send (WS not OPEN) leaves it stale and the next effect run
+    // will retry. The `connected` dependency forces a re-run when the
+    // socket transitions to OPEN. NOTE: this is not covered by a unit
+    // test today — if you change the retry policy here, add one.
     if (controlKey === lastBrowserControlKeyRef.current) return;
     // Warn (once per control-key change) when the user has the browser toggle
     // ON but no browser tab is open: we still send useActiveBrowser:false so

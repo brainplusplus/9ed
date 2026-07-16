@@ -132,7 +132,15 @@ type ChatState = {
   setBrowserSelectionCapture: (capture: BrowserElementCapture | null) => void;
   toggleUseActiveTerminal: () => void;
   setUseActiveTerminal: (enabled: boolean) => void;
-  restartActiveSessionForTerminal: (enabled: boolean) => Promise<boolean>;
+  /**
+   * Unified terminal-toggle entry point used by the chat config bar
+   * (AgentPicker). Soft WS path only: updates `useActiveTerminal` in the
+   * store AND on the active session object. The WS effect in
+   * useChatSession.ts reads session-scoped intent and sends
+   * `set_use_active_terminal` over the live connection — no HTTP resume,
+   * no WebSocket teardown, no status flip to `connecting`.
+   */
+  setTerminalEnabled: (enabled: boolean) => Promise<boolean>;
   setActiveTerminalId: (id: string | null) => void;
 };
 
@@ -1289,86 +1297,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setUseActiveTerminal: (enabled) =>
     set({ useActiveTerminal: enabled }),
 
-  restartActiveSessionForTerminal: async (enabled) => {
-    const state = get();
-    const sessionId = state.activeSessionId;
-    const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
-    if (!session || session.status !== 'idle' || session.pendingPermission) return false;
-    if (!session.agentId || !session.workDir) return false;
-
-    const previousEnabled = state.useActiveTerminal;
-    const terminalId = enabled ? state.activeTerminalId ?? undefined : undefined;
-    const browserEnabled = session.useActiveBrowser ?? state.useActiveBrowser;
-    const browserTabId = browserEnabled ? activeBrowserTabForWorkDir(session.workDir) : undefined;
-    const browserSelection = browserEnabled ? state.browserSelection : null;
-    const browserSelectionMode = state.browserSelectionMode;
-    const browserSelectionCapture = browserEnabled ? state.browserSelectionCapture : null;
-    set({ useActiveTerminal: enabled });
-
-    if (session.useActiveTerminal === enabled) return true;
-
-    const recordId = session.recordId ?? session.id;
-    const requestKey = `${recordId}\x00terminal:${enabled ? 'on' : 'off'}`;
-    const existingRequest = resumeRequests.get(requestKey);
-    if (existingRequest) return existingRequest;
-
-    const request = (async () => {
-      set((current) => ({
-        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'connecting', kind: 'archived' })),
-      }));
-
-      const resumed = await resumeChatSession(recordId, session.agentId, session.workDir!, session.acpSessionId, enabled, enabled ? get().activeTerminalId : undefined, browserEnabled, browserTabId);
-      if (!('id' in resumed)) {
-        throw new Error(resumed.resumeError ?? 'Restart failed');
-      }
-
-      const liveSessionId = resumed.id;
-      const acpSessionId = resumed.acpSessionId ?? session.acpSessionId;
-      const nextWorkDir = resumed.workDir ?? session.workDir;
-      set((current) => {
-        const idsToRemove = new Set([session.id, liveSessionId]);
-        const nextSession: ChatSessionInfo = {
-          ...session,
-          id: liveSessionId,
-          recordId,
-          status: 'connecting',
-          kind: 'resumable',
-          workDir: nextWorkDir,
-          acpSessionId,
-          useActiveTerminal: enabled,
-          terminalId,
-          useActiveBrowser: browserEnabled,
-          browserSelection: browserSelection,
-          browserSelectionMode: browserSelectionMode,
-          browserSelectionCapture: browserSelectionCapture,
-        };
-        const nextSessions = [...current.sessions.filter((s) => !idsToRemove.has(s.id) && s.recordId !== recordId), nextSession];
-        const nextState = { ...current, sessions: nextSessions };
-        return {
-          sessions: nextSessions,
-          ...(current.activeSessionId === session.id ? activateSessionState(nextState, liveSessionId) : {}),
-          lastRestoreError: null,
-        };
-      });
-      return true;
-    })().catch((err) => {
-      set((current) => ({
-        useActiveTerminal: previousEnabled,
-        sessions: updateSession(current.sessions, session.id, (s) => ({ ...s, status: 'error' })),
-        lastRestoreError: {
-          sessionId: recordId,
-          reason: err instanceof Error ? err.message : 'Restart request failed',
-        },
-      }));
-      return false;
-    }).finally(() => {
-      resumeRequests.delete(requestKey);
-    });
-
-    resumeRequests.set(requestKey, request);
-    return request;
-  },
-
   // Unified browser-toggle entry point used by both the chat config bar
   // (AgentPicker) and the BrowserPanel / inspect-mode UI. Uses the SOFT
   // WebSocket toggle as the primary path: it updates `useActiveBrowser` in
@@ -1432,6 +1360,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
           })),
         }));
       }
+    }
+
+    return true;
+  },
+
+  // Unified terminal-toggle entry point used by the chat config bar
+  // (AgentPicker). Soft WS path only (mirrors setBrowserEnabled): updates
+  // `useActiveTerminal` in the store AND on the active session object. The
+  // WS effect in useChatSession.ts reads session-scoped intent + terminalId
+  // and sends `set_use_active_terminal` over the live connection. No HTTP
+  // resume, no WebSocket teardown, no status flip to `connecting` /
+  // archived. Terminal MCP tools are lifetime features; UseActiveTerminal
+  // only controls prompt decoration / routing.
+  setTerminalEnabled: async (enabled) => {
+    const state = get();
+    const sessionId = state.activeSessionId;
+    const session = sessionId ? state.sessions.find((s) => s.id === sessionId) : undefined;
+    const terminalId = enabled ? (state.activeTerminalId ?? session?.terminalId ?? undefined) : undefined;
+
+    // Update the global store flag (drives the WS effect fallback path).
+    set({ useActiveTerminal: enabled });
+
+    // Mirror the flag (+ terminal binding) onto the active session object so
+    // the UI (checkbox, AgentPicker) reflects the toggle immediately and so
+    // the WS effect in useChatSession.ts fires from session-scoped state.
+    // We update the session in every status: for a live session the WS
+    // effect delivers `set_use_active_terminal` to the backend; for an
+    // errored session there is no live WS, but mirroring the flag keeps
+    // intent consistent and is honored on recovery. Never flip status to
+    // connecting or kind to archived solely due to this toggle.
+    if (session) {
+      set((current) => ({
+        sessions: updateSession(current.sessions, session.id, (s) => ({
+          ...s,
+          useActiveTerminal: enabled,
+          terminalId: enabled ? (terminalId ?? s.terminalId) : s.terminalId,
+        })),
+      }));
     }
 
     return true;

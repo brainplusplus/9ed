@@ -116,8 +116,7 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   const useActiveBrowser = useChatStore((s) => s.useActiveBrowser);
   const setBrowserEnabled = useChatStore((s) => s.setBrowserEnabled);
   const useActiveTerminal = useChatStore((s) => s.useActiveTerminal);
-  const toggleUseActiveTerminal = useChatStore((s) => s.toggleUseActiveTerminal);
-  const restartActiveSessionForTerminal = useChatStore((s) => s.restartActiveSessionForTerminal);
+  const setTerminalEnabled = useChatStore((s) => s.setTerminalEnabled);
   const activeTerminalId = useChatStore((s) => s.activeTerminalId);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
@@ -132,20 +131,19 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   const browserToggleEnabled = !activeSession ? true : (browserCurrentEnabled ? browserCanRestart : browserCanEnable);
   const browserToggleTitle = browserCurrentEnabled
     ? (browserCanRestart
-      ? 'Restart this ready agent session with or without the active browser MCP bridge'
+      ? 'Enable or disable the active browser MCP bridge for this agent session'
       : 'Browser can be toggled when the agent is Ready')
     : (!activeBrowserTabId
       ? 'No browser tab active in this project'
       : (browserCanEnable
-        ? 'Restart this ready agent session with or without the active browser MCP bridge'
+        ? 'Enable or disable the active browser MCP bridge for this agent session'
         : 'Browser can be toggled when the agent is Ready'));
-  const terminalReady = !!activeTerminalId && !!activeSession && activeSession.status === 'idle' && !activeSession.pendingPermission && connected;
-  const terminalCanPreSet = !activeSession && !!activeTerminalId;
+  // Soft terminal toggle: safe while idle or streaming (VAL-HARDEN-001/007).
+  // Only requires a bound active terminal id; never restarts the session.
+  const terminalToggleEnabled = !!activeTerminalId && (!activeSession || !activeSession.pendingPermission);
   const terminalToggleTitle = !activeTerminalId
     ? 'No terminal active'
-    : terminalReady
-      ? 'Restart this ready agent session with or without the active terminal MCP bridge'
-      : 'Terminal can be toggled when the agent is Ready';
+    : 'Enable or disable the active terminal MCP bridge for this agent session';
   const handleChange = (configId: string, value: string) => {
     setOpenDropdown(null);
     setConfigOption?.(configId, value);
@@ -158,25 +156,23 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
   };
 
   const handleBrowserToggle = () => {
-    // Unified path: route to hard-restart when an idle/busy session exists,
-    // otherwise fall back to a frontend-only soft toggle. This is the same
-    // code path used by BrowserPanel/useInspectMode, preventing state desync
-    // when toggling from different UI locations.
+    // Soft toggle: setBrowserEnabled updates the store + session flag and the
+    // WS effect in useChatSession.ts sends `set_use_active_browser` over the
+    // existing connection — no session restart. Same path used by
+    // BrowserPanel/useInspectMode, preventing state desync when toggling from
+    // different UI locations.
     if (activeSession && !browserToggleEnabled) return;
     const enabled = !(activeSession?.useActiveBrowser ?? useActiveBrowser);
     void setBrowserEnabled(enabled);
   };
 
   const handleTerminalToggle = () => {
+    // Soft toggle only (VAL-HARDEN-001): setTerminalEnabled updates store +
+    // session and the WS effect sends `set_use_active_terminal` over the
+    // existing connection — never HTTP resume / restartActiveSessionForTerminal.
+    if (!terminalToggleEnabled) return;
     const enabled = !(activeSession?.useActiveTerminal ?? (useActiveTerminal && !!activeTerminalId));
-    if (!activeSession) {
-      if (enabled !== useActiveTerminal) {
-        toggleUseActiveTerminal();
-      }
-      return;
-    }
-    if (!terminalReady) return;
-    void restartActiveSessionForTerminal(enabled);
+    void setTerminalEnabled(enabled);
   };
 
   return (
@@ -229,14 +225,14 @@ export function ConfigBar({ setConfigOption, setAutoApprove, connected = false, 
         <span className="chat-config-toggle-label">Browser</span>
       </label>
       <label
-        className={`chat-config-toggle chat-config-toggle-mcp${terminalCurrentEnabled ? ' active' : ''}${!terminalReady && !terminalCanPreSet ? ' disabled' : ''}`}
+        className={`chat-config-toggle chat-config-toggle-mcp${terminalCurrentEnabled ? ' active' : ''}${!terminalToggleEnabled ? ' disabled' : ''}`}
         title={terminalToggleTitle}
       >
         <input
           type="checkbox"
           checked={terminalCurrentEnabled}
           onChange={handleTerminalToggle}
-          disabled={busy || (!terminalReady && !terminalCanPreSet)}
+          disabled={busy || !terminalToggleEnabled}
         />
         <span className="chat-config-toggle-label">Terminal</span>
       </label>

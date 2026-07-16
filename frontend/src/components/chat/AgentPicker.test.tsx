@@ -215,3 +215,105 @@ describe('ConfigBar browser toggle', () => {
     expect(session?.status).toBe('idle');
   });
 });
+
+describe('ConfigBar terminal soft toggle (VAL-HARDEN-001/007)', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  function getTerminalToggle(): { label: HTMLLabelElement; checkbox: HTMLInputElement } {
+    const labels = Array.from(container.querySelectorAll<HTMLLabelElement>('.chat-config-toggle-mcp'));
+    const label = labels.find((el) => el.textContent?.includes('Terminal'));
+    expect(label).toBeTruthy();
+    const checkbox = label!.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(checkbox).not.toBeNull();
+    return { label: label!, checkbox: checkbox! };
+  }
+
+  it('checkbox reflects session.useActiveTerminal (not just global flag)', () => {
+    resetConfigStores({ withTab: true });
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-1', useActiveTerminal: true, terminalId: 'term-1' })],
+      activeSessionId: 'live-1',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    act(() => {
+      root.render(<ConfigBar connected />);
+    });
+
+    const { checkbox } = getTerminalToggle();
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('clicking terminal toggle uses setTerminalEnabled soft path — no connecting status', async () => {
+    resetConfigStores({ withTab: true });
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-1', useActiveTerminal: false })],
+      activeSessionId: 'live-1',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+    const setTerminalEnabledSpy = vi.spyOn(useChatStore.getState(), 'setTerminalEnabled');
+
+    act(() => {
+      root.render(<ConfigBar connected />);
+    });
+
+    const { checkbox, label } = getTerminalToggle();
+    expect(checkbox.checked).toBe(false);
+    // Soft toggle labels must not mention restarting / reconnecting.
+    expect(label.title.toLowerCase()).not.toMatch(/restart|reconnect|connecting/);
+
+    await act(async () => {
+      checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(setTerminalEnabledSpy).toHaveBeenCalledWith(true);
+    expect(useChatStore.getState().useActiveTerminal).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.status).toBe('idle');
+    expect(session?.kind).toBe('live');
+  });
+
+  it('allows soft terminal toggle while streaming (VAL-HARDEN-007 soft-safe)', async () => {
+    resetConfigStores({ withTab: true });
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-1', status: 'streaming', useActiveTerminal: false })],
+      activeSessionId: 'live-1',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    act(() => {
+      root.render(<ConfigBar connected />);
+    });
+
+    const { checkbox, label } = getTerminalToggle();
+    expect(checkbox.disabled).toBe(false);
+    expect(label.title.toLowerCase()).not.toMatch(/restart|reconnect/);
+
+    await act(async () => {
+      checkbox.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-1');
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.status).toBe('streaming');
+  });
+});

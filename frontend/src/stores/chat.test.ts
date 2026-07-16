@@ -1019,3 +1019,163 @@ describe('setBrowserEnabled soft WS toggle (primary path)', () => {
     expect(warn).toBeUndefined();
   });
 });
+
+describe('setTerminalEnabled soft WS toggle (primary path) VAL-HARDEN-001', () => {
+  beforeEach(() => {
+    resetChatStore();
+    vi.clearAllMocks();
+    getChatHistory.mockResolvedValue([]);
+    getChatSessionMessages.mockResolvedValue([]);
+    getChatSessionState.mockResolvedValue({ session: null, messages: [], events: [], snapshot: null });
+    saveChatMessage.mockResolvedValue(undefined);
+    deleteChatHistory.mockResolvedValue(undefined);
+    window.sessionStorage.clear();
+  });
+
+  function makeSession(overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo {
+    return {
+      id: 'live-idle',
+      recordId: 'record-idle',
+      agentId: 'opencode',
+      title: 'Idle',
+      messages: [],
+      status: 'idle',
+      createdAt: 1,
+      kind: 'live' as const,
+      workDir: '/repo',
+      acpSessionId: 'acp-idle',
+      ...overrides,
+    };
+  }
+
+  it('soft-toggles frontend state when there is no active session', async () => {
+    useChatStore.setState({
+      sessions: [],
+      activeSessionId: null,
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    const ok = await useChatStore.getState().setTerminalEnabled(true);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveTerminal).toBe(true);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('soft-toggles when an idle active session exists: updates store + session, no resume (VAL-HARDEN-001)', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-idle', useActiveTerminal: false })],
+      activeSessionId: 'live-idle',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    const ok = await useChatStore.getState().setTerminalEnabled(true);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveTerminal).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.terminalId).toBe('term-1');
+    // VAL-HARDEN-001: NO hard restart / HTTP resume occurs.
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('does NOT change session status to connecting during the toggle (VAL-HARDEN-001)', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-idle', status: 'idle', useActiveTerminal: false })],
+      activeSessionId: 'live-idle',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    await useChatStore.getState().setTerminalEnabled(true);
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    expect(session?.status).toBe('idle');
+    expect(session?.kind).toBe('live');
+  });
+
+  it('soft-toggles while session is streaming without resume or status flip', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-stream', status: 'streaming', useActiveTerminal: false })],
+      activeSessionId: 'live-stream',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    const ok = await useChatStore.getState().setTerminalEnabled(true);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveTerminal).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-stream');
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.status).toBe('streaming');
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('soft-toggles when active session is in error state (captures intent)', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-err', status: 'error', useActiveTerminal: false })],
+      activeSessionId: 'live-err',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    const ok = await useChatStore.getState().setTerminalEnabled(true);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveTerminal).toBe(true);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-err');
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('toggling off updates store + session without resume', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({ id: 'live-on', status: 'idle', useActiveTerminal: true, terminalId: 'term-1' })],
+      activeSessionId: 'live-on',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-1',
+    });
+
+    const ok = await useChatStore.getState().setTerminalEnabled(false);
+
+    expect(ok).toBe(true);
+    expect(useChatStore.getState().useActiveTerminal).toBe(false);
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-on');
+    expect(session?.useActiveTerminal).toBe(false);
+    expect(resumeChatSession).not.toHaveBeenCalled();
+  });
+
+  it('preserves other session fields when updating useActiveTerminal', async () => {
+    useChatStore.setState({
+      sessions: [makeSession({
+        id: 'live-idle',
+        status: 'idle',
+        useActiveTerminal: false,
+        useActiveBrowser: true,
+        acpSessionId: 'acp-preserved',
+      })],
+      activeSessionId: 'live-idle',
+      useActiveTerminal: false,
+      activeTerminalId: 'term-1',
+    });
+
+    await useChatStore.getState().setTerminalEnabled(true);
+
+    const session = useChatStore.getState().sessions.find((s) => s.id === 'live-idle');
+    expect(session?.useActiveTerminal).toBe(true);
+    expect(session?.useActiveBrowser).toBe(true);
+    expect(session?.acpSessionId).toBe('acp-preserved');
+    expect(session?.status).toBe('idle');
+  });
+
+  it('does not expose restartActiveSessionForTerminal as the primary toggle path (removed)', () => {
+    // Soft setTerminalEnabled replaces the hard-restart method for UI toggle.
+    expect((useChatStore.getState() as unknown as Record<string, unknown>).restartActiveSessionForTerminal)
+      .toBeUndefined();
+    expect(typeof useChatStore.getState().setTerminalEnabled).toBe('function');
+  });
+});
