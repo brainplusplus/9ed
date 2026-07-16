@@ -1342,4 +1342,143 @@ describe('useChatSession', () => {
       activeTerminalId: 'term-ready',
     }));
   });
+
+  // --- VAL-HARDEN-003: soft control reassert on WS reconnect/onopen ---
+  //
+  // After a mid-flight soft toggle, last*ControlKeyRef still holds the
+  // last successfully sent key. On reconnect the payload is unchanged so
+  // without clearing those refs the effects early-return and the backend
+  // keeps a stale flag. Prove open → set intent → reconnect/onopen →
+  // second set_use_active_browser AND set_use_active_terminal sends.
+
+  it('reasserts browser and terminal soft controls on reconnect/onopen (VAL-HARDEN-003)', async () => {
+    const socket1 = createMockSocket();
+    const socket2 = createMockSocket();
+    getLiveChatSessions.mockResolvedValue([{ id: 'live-1' }]);
+    createChatWebSocket
+      .mockReturnValueOnce(socket1)
+      .mockReturnValueOnce(socket2);
+
+    useWorkspaceStore.setState({
+      projects: [{
+        id: 'proj-1',
+        path: '/repo',
+        name: 'repo',
+        openFiles: [],
+        activeFileId: null,
+        terminalTabs: [],
+        activeTerminalTabId: null,
+        terminalSessions: [],
+        browserTabIds: ['tab-1'],
+        activeBrowserTabId: 'tab-1',
+      }],
+      activeProjectId: 'proj-1',
+    });
+
+    useChatStore.setState({
+      sessions: [{
+        id: 'live-1',
+        recordId: 'record-1',
+        agentId: 'opencode',
+        title: 'Reconnect reassert',
+        messages: [],
+        status: 'idle',
+        createdAt: 1,
+        kind: 'live',
+        workDir: '/repo',
+        acpSessionId: 'acp-1',
+        useActiveBrowser: false,
+        useActiveTerminal: false,
+        terminalId: undefined,
+      }],
+      activeSessionId: 'live-1',
+      useActiveBrowser: false,
+      useActiveTerminal: false,
+      activeTerminalId: null,
+    });
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      socket1.readyState = WebSocket.OPEN;
+      socket1.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    // Mid-flight soft enable: both browser and terminal intent ON.
+    socket1.send.mockClear();
+    await act(async () => {
+      useChatStore.setState((state) => ({
+        useActiveBrowser: true,
+        useActiveTerminal: true,
+        activeTerminalId: 'term-1',
+        sessions: state.sessions.map((s) =>
+          s.id === 'live-1'
+            ? {
+                ...s,
+                useActiveBrowser: true,
+                useActiveTerminal: true,
+                terminalId: 'term-1',
+              }
+            : s,
+        ),
+      }));
+      await Promise.resolve();
+    });
+
+    const browserPayload = {
+      type: 'set_use_active_browser',
+      useActiveBrowser: true,
+      activeBrowserTabId: 'tab-1',
+    };
+    const terminalPayload = {
+      type: 'set_use_active_terminal',
+      useActiveTerminal: true,
+      activeTerminalId: 'term-1',
+    };
+
+    expect(socket1.send).toHaveBeenCalledWith(JSON.stringify(browserPayload));
+    expect(socket1.send).toHaveBeenCalledWith(JSON.stringify(terminalPayload));
+
+    // Drop the socket (simulates mid-flight disconnect). last*ControlKeyRef
+    // still holds the successful keys from above; without onopen clear the
+    // reconnect open would suppress reassert because the payload is unchanged.
+    await act(async () => {
+      socket1.readyState = WebSocket.CLOSED;
+      socket1.onclose?.(new CloseEvent('close'));
+      await Promise.resolve();
+    });
+
+    // Advance past reconnect backoff (base 150ms).
+    await act(async () => {
+      vi.advanceTimersByTime(150);
+      await Promise.resolve();
+    });
+    expect(createChatWebSocket).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      socket2.readyState = WebSocket.OPEN;
+      socket2.onopen?.(new Event('open'));
+      await Promise.resolve();
+    });
+
+    const browserResends = socket2.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string })
+      .filter((msg) => msg.type === 'set_use_active_browser');
+    const terminalResends = socket2.send.mock.calls
+      .map(([payload]) => JSON.parse(String(payload)) as { type: string })
+      .filter((msg) => msg.type === 'set_use_active_terminal');
+
+    // Force-resend on reconnect — not only the first-ever open send.
+    expect(browserResends).toContainEqual(browserPayload);
+    expect(terminalResends).toContainEqual(terminalPayload);
+    expect(browserResends.length).toBeGreaterThanOrEqual(1);
+    expect(terminalResends.length).toBeGreaterThanOrEqual(1);
+  });
 });

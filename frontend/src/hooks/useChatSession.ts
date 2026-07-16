@@ -275,6 +275,8 @@ export function useChatSession(): UseChatSessionResult {
   const stallTimersRef = useRef<Map<string, number>>(new Map());
   const lastTerminalControlKeyRef = useRef<string>('');
   const lastBrowserControlKeyRef = useRef<string>('');
+  // Ref populated later with reassertSoftControls; used from ws.onopen (VAL-HARDEN-003).
+  const reassertSoftControlsRef = useRef<() => void>(() => {});
   // ADR-0002: per-session cursor tracking for stale/gap detection.
   const cursorRef = useRef<Map<string, { seq: number; epoch: string }>>(new Map());
   // Fix M-8: per-session highest seq already applied to the chat store. Used
@@ -576,6 +578,15 @@ export function useChatSession(): UseChatSessionResult {
           level: 'info',
           message: shouldSync ? 'socket opened and state resynced' : 'socket opened',
         });
+        // VAL-HARDEN-003: clear soft-control dedupe keys so the browser and
+        // terminal effects re-send current intent after open/reconnect.
+        // Without this, mid-flight toggles leave last*ControlKeyRef equal to
+        // the desired payload and the effects early-return with backend stale.
+        lastBrowserControlKeyRef.current = '';
+        lastTerminalControlKeyRef.current = '';
+        // Explicit force-resend: do not rely only on the `connected` dependency
+        // flip (same true→true path on some reconnect races still works).
+        reassertSoftControlsRef.current();
         updateActiveConnected();
         if (shouldSync) {
           void refreshSessionStateRef.current(sessionId);
@@ -1113,67 +1124,75 @@ export function useChatSession(): UseChatSessionResult {
     return true;
   }, [activeSessionId]);
 
-  useEffect(() => {
-    // Session-scoped primary source (VAL-HARDEN-002): active session's
-    // useActiveTerminal + terminalId take precedence over global store flags
-    // so concurrent chat sessions with different terminal intents do not
-    // cross-contaminate the control payload.
-    const desiredUseActiveTerminal = activeSession?.useActiveTerminal ?? useActiveTerminal;
-    const terminalIdForSession = activeSession?.terminalId ?? activeTerminalId ?? null;
-    const payload = {
+  // Build + send both soft control messages from current store state.
+  // Called by the normal effects AND by WS onopen (VAL-HARDEN-003) so
+  // reconnect forces resend even when the `connected` dep alone is not enough
+  // to re-run effects (e.g. same desired payload after mid-flight toggle).
+  const reassertSoftControls = useCallback(() => {
+    if (!activeSessionId) return;
+    const state = useChatStore.getState();
+    const session = state.sessions.find((s) => s.id === activeSessionId);
+    const workspaceProjects = useWorkspaceStore.getState().projects;
+
+    // Terminal soft control — session-scoped primary source (VAL-HARDEN-002).
+    const desiredUseActiveTerminal = session?.useActiveTerminal ?? state.useActiveTerminal;
+    const terminalIdForSession = session?.terminalId ?? state.activeTerminalId ?? null;
+    const terminalPayload = {
       type: 'set_use_active_terminal',
       useActiveTerminal: desiredUseActiveTerminal && !!terminalIdForSession,
       activeTerminalId: desiredUseActiveTerminal ? terminalIdForSession : null,
     };
-    const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
-    // The ref is only updated when sendControl reports success, so a failed
-    // send (WS not OPEN) leaves it stale and the next effect run will retry.
-    // The `connected` dependency forces a re-run when the socket opens.
-    if (controlKey === lastTerminalControlKeyRef.current) return;
-    if (sendControl(payload)) {
-      lastTerminalControlKeyRef.current = controlKey;
+    const terminalKey = `${activeSessionId}:${JSON.stringify(terminalPayload)}`;
+    if (terminalKey !== lastTerminalControlKeyRef.current) {
+      if (sendControl(terminalPayload)) {
+        lastTerminalControlKeyRef.current = terminalKey;
+      }
     }
-  }, [
-    activeSession?.terminalId,
-    activeSession?.useActiveTerminal,
-    activeSessionId,
-    activeTerminalId,
-    connected,
-    sendControl,
-    useActiveTerminal,
-  ]);
 
-  useEffect(() => {
-    const project = projects.find((entry) => normalizeWorkDir(entry.path) === normalizeWorkDir(activeSession?.workDir));
+    // Browser soft control — session-scoped intent, tab from workspace project.
+    const project = workspaceProjects.find(
+      (entry) => normalizeWorkDir(entry.path) === normalizeWorkDir(session?.workDir),
+    );
     const browserTabId = project?.activeBrowserTabId ?? null;
-    const desiredUseActiveBrowser = activeSession?.useActiveBrowser ?? useActiveBrowser;
-    const payload = {
+    const desiredUseActiveBrowser = session?.useActiveBrowser ?? state.useActiveBrowser;
+    const browserPayload = {
       type: 'set_use_active_browser',
       useActiveBrowser: desiredUseActiveBrowser && !!browserTabId,
       activeBrowserTabId: browserTabId,
     };
-    const controlKey = `${activeSessionId ?? 'none'}:${JSON.stringify(payload)}`;
-    // The ref below is only updated when sendControl reports success, so a
-    // failed send (WS not OPEN) leaves it stale and the next effect run
-    // will retry. The `connected` dependency forces a re-run when the
-    // socket transitions to OPEN. NOTE: this is not covered by a unit
-    // test today — if you change the retry policy here, add one.
-    if (controlKey === lastBrowserControlKeyRef.current) return;
-    // Warn (once per control-key change) when the user has the browser toggle
-    // ON but no browser tab is open: we still send useActiveBrowser:false so
-    // the backend stays consistent, but surface a user-visible debug warning
-    // so the silent disable is no longer invisible.
-    if (desiredUseActiveBrowser && !browserTabId && activeSessionId) {
-      appendSessionDebugRef.current(activeSessionId, {
-        source: 'client',
-        level: 'warn',
-        message: 'Browser toggle is on but no browser tab is open; browser MCP disabled until a tab is opened.',
-      });
+    const browserKey = `${activeSessionId}:${JSON.stringify(browserPayload)}`;
+    if (browserKey !== lastBrowserControlKeyRef.current) {
+      // Warn when intent ON but no tab: send effective false, keep intent in store.
+      if (desiredUseActiveBrowser && !browserTabId) {
+        appendSessionDebugRef.current(activeSessionId, {
+          source: 'client',
+          level: 'warn',
+          message: 'Browser toggle is on but no browser tab is open; browser MCP disabled until a tab is opened.',
+        });
+      }
+      if (sendControl(browserPayload)) {
+        lastBrowserControlKeyRef.current = browserKey;
+      }
     }
-    if (sendControl(payload)) {
-      lastBrowserControlKeyRef.current = controlKey;
-    }
-  }, [activeSession?.useActiveBrowser, activeSession?.workDir, activeSessionId, connected, projects, sendControl, useActiveBrowser]);
+  }, [activeSessionId, sendControl]);
+
+  reassertSoftControlsRef.current = reassertSoftControls;
+
+  useEffect(() => {
+    reassertSoftControls();
+  }, [
+    activeSession?.terminalId,
+    activeSession?.useActiveTerminal,
+    activeSession?.useActiveBrowser,
+    activeSession?.workDir,
+    activeSessionId,
+    activeTerminalId,
+    connected,
+    projects,
+    reassertSoftControls,
+    useActiveBrowser,
+    useActiveTerminal,
+  ]);
 
   const cancel = useCallback(() => {
     if (!activeSessionId) return;
