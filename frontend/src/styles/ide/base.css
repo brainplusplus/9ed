@@ -50,3 +50,34 @@ body {
   min-height: 0;
   overflow: hidden;
 }
+
+/* IDE chrome must be non-selectable: on touch devices a long-press on any
+   chrome surface (sidebar tree, bottom nav, tabs, chat) otherwise starts a
+   native text-selection that highlights labels and swallows the touch /
+   pops the OS callout. Only the editor content (Monaco, inside
+   .workspace-editor / .editor-host / etc.) must remain selectable, so keep
+   this scoped to chrome containers. */
+.ide-shell .activity-bar,
+.ide-shell .workspace-sidebar,
+.ide-shell .workspace-chat,
+.ide-shell .bottom-nav,
+.ide-shell .editor-tabs,
+.ide-shell .workspace-terminal,
+.ide-shell .picker-shell,
+.ide-shell .workspace-browser {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* The editor's own content stays selectable (Monaco needs selection). */
+.workspace-editor,
+.workspace-editor *,
+.workspace-browser .browser-viewport,
+.workspace-browser .browser-viewport *,
+.ide-shell .terminal-panel .xterm,
+.ide-shell .terminal-panel .xterm * {
+  user-select: auto;
+  -webkit-user-select: auto;
+  -webkit-touch-callout: default;
+}

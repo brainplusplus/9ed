@@ -23,6 +23,16 @@ export function EditorTabs({ files, activeFileId, onSelect, onClose }: EditorTab
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
   const handleContextMenu = useCallback((e: React.MouseEvent, fileId: string) => {
+    // Same mobile guard as FileTree: touch long-press must not open the
+    // menu or trigger native selection. Only real right-click (or macOS
+    // Ctrl/Cmd+click) shows the tab menu.
+    const ne = e.nativeEvent;
+    const isRightClick = e.button === 2;
+    const isCtrlClick = e.ctrlKey || e.metaKey;
+    const isTouch = (ne as PointerEvent).pointerType === 'touch' || (ne as PointerEvent).pointerType === 'pen';
+    if (isTouch || (!isRightClick && !isCtrlClick)) {
+      return;
+    }
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, fileId });
   }, []);

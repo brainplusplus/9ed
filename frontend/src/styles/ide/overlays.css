@@ -427,6 +427,27 @@
     pointer-events: auto;
   }
 
+  /* CRITICAL mobile fix: .workspace-center (the editor container) is
+     position:absolute; inset:0 and paints AFTER the sidebar in DOM order,
+     so with default pointer-events:auto it silently covers the sidebar and
+     swallows every touch meant for the file tree / git commit input.
+     When a sidebar-based view is active, take the center out of the hit-test
+     path entirely so taps reach the sidebar. The editor gets its own touch
+     back (below) when it is the active view. */
+  .mobile-view-explorer .workspace-center,
+  .mobile-view-projects .workspace-center,
+  .mobile-view-git .workspace-center,
+  .mobile-view-settings .workspace-center {
+    pointer-events: none;
+  }
+
+  /* Restore pointer-events on actual children the editor needs for
+     interaction (Monaco) — only within the editor view, so the overlay
+     rule above still keeps the center transparent to sidebar taps. */
+  .mobile-view-editor .workspace-center {
+    pointer-events: auto;
+  }
+
   .bottom-nav {
     display: flex;
   }
