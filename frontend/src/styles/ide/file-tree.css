@@ -18,6 +18,23 @@
   font-size: 0.85rem;
   text-align: left;
   transition: background 0.12s ease;
+  /* Mobile-friendly: prevent text selection on tap & long-press, and let
+     taps register as clicks instead of scroll gestures. */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Larger, comfortable tap targets on touch devices (>= ~44px tall).
+   Keeps the compact desktop density untouched. */
+@media (hover: none), (pointer: coarse) {
+  .tree-row {
+    padding-top: 9px;
+    padding-bottom: 9px;
+    min-height: 40px;
+    font-size: 0.9rem;
+  }
 }
 
 .tree-row:hover {

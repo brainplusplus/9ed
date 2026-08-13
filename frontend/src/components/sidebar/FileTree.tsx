@@ -174,6 +174,18 @@ export function FileTree({ rootPath, onFileSelect, refreshKey }: FileTreeProps) 
   }, [onFileSelect]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, node: TreeNode | null) => {
+    // Mobile: on touch devices a long-press fires `contextmenu` too, and
+    // showing the menu at the finger position pops it over the bottom nav /
+    // tree and blocks scrolling & tapping. Only real mouse right-clicks (or
+    // Ctrl/Cmd+click on macOS) should show the menu. Suppress the native
+    // long-press callout as well.
+    const ne = e.nativeEvent;
+    const isRightClick = e.button === 2;
+    const isCtrlClick = e.ctrlKey || e.metaKey;
+    const isTouch = (ne as PointerEvent).pointerType === 'touch' || (ne as PointerEvent).pointerType === 'pen';
+    if (isTouch || (!isRightClick && !isCtrlClick)) {
+      return; // swallow silently — no menu, no native callout
+    }
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY, node });
